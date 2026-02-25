@@ -1,0 +1,8 @@
+[package]
+name = "custom-async"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossbeam-queue = "0.3.12"
+futures-util = "0.3.32"
