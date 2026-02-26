@@ -7,7 +7,7 @@ use crossbeam_queue::SegQueue;
 use futures_util::task::waker_ref;
 use futures_util::FutureExt;
 
-use crate::driver::{AnyDriver, Driver};
+use crate::driver::AnyDriver;
 use crate::task::Task;
 
 thread_local! {
@@ -91,6 +91,15 @@ pub fn new_runtime(driver: AnyDriver) -> Runtime {
             driver: Arc::new(driver),
         }),
     }
+}
+
+pub(crate) fn current_driver() -> Option<Arc<AnyDriver>> {
+    CURRENT_RUNTIME.with(|runtime| {
+        let runtime = runtime.lock().expect("runtime mutex is poisoned");
+        runtime
+            .as_ref()
+            .map(|runtime_inner| runtime_inner.driver.clone())
+    })
 }
 
 pub fn spawn<T>(future: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>
