@@ -108,7 +108,7 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn new_best() -> Result<Self, io::Error> {
         #[cfg(target_os = "linux")]
-        if let Ok(driver) = UringDriver::new(256) {
+        if let Ok(driver) = UringDriver::new(1024) {
             return Ok(AnyDriver::IoUring(driver));
         }
 
