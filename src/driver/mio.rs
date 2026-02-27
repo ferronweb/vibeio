@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
-use std::sync::Mutex;
 use std::task::Waker;
+use std::time::Duration;
 
 use mio::{Events, Interest, Poll, Token};
+use parking_lot::Mutex;
 
 use crate::{driver::Driver, fd_inner::InnerRawHandle, op::Op};
 
@@ -51,19 +52,17 @@ impl MioDriver {
             "mio token space exhausted for I/O registrations",
         ))
     }
-}
 
-impl Driver for MioDriver {
-    fn wait(&self) {
-        let mut poll = self.poll.lock().expect("mio poll mutex is poisoned");
-        let mut events = self.events.lock().expect("mio events mutex is poisoned");
+    pub(crate) fn wait_timeout(&self, timeout: Option<Duration>) {
+        let mut poll = self.poll.lock();
+        let mut events = self.events.lock();
 
-        poll.poll(&mut events, None)
+        poll.poll(&mut events, timeout)
             .expect("mio poll failed while waiting for I/O events");
 
         let mut to_wake = Vec::new();
         {
-            let mut state = self.state.lock().expect("mio state mutex is poisoned");
+            let mut state = self.state.lock();
             for event in events.iter() {
                 if let Some(registration) = state.registrations.get_mut(&event.token()) {
                     if let Some(task) = registration.waiter.take() {
@@ -78,6 +77,12 @@ impl Driver for MioDriver {
             waker.wake();
         }
     }
+}
+
+impl Driver for MioDriver {
+    fn wait(&self) {
+        self.wait_timeout(None);
+    }
 
     fn submit<O, R>(&self, mut op: O, waker: Waker) -> Result<R, io::Error>
     where
@@ -89,7 +94,7 @@ impl Driver for MioDriver {
         match result {
             Ok(output) => Ok(output),
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                let mut state = self.state.lock().expect("mio state mutex is poisoned");
+                let mut state = self.state.lock();
                 let registration = state.registrations.get_mut(&token).ok_or_else(|| {
                     io::Error::new(
                         ErrorKind::NotFound,
@@ -109,7 +114,7 @@ impl Driver for MioDriver {
         interest: Interest,
     ) -> Result<Token, io::Error> {
         let token = {
-            let mut state = self.state.lock().expect("mio state mutex is poisoned");
+            let mut state = self.state.lock();
             let token = Self::allocate_token(&mut state)?;
             state
                 .registrations
@@ -117,10 +122,10 @@ impl Driver for MioDriver {
             token
         };
 
-        let poll = self.poll.lock().expect("mio poll mutex is poisoned");
+        let poll = self.poll.lock();
         let mut source = mio::unix::SourceFd(&handle.handle);
         if let Err(err) = poll.registry().register(&mut source, token, interest) {
-            let mut state = self.state.lock().expect("mio state mutex is poisoned");
+            let mut state = self.state.lock();
             state.registrations.remove(&token);
             return Err(err);
         }
@@ -134,7 +139,7 @@ impl Driver for MioDriver {
         interest: Interest,
     ) -> Result<(), io::Error> {
         {
-            let state = self.state.lock().expect("mio state mutex is poisoned");
+            let state = self.state.lock();
             if !state.registrations.contains_key(&handle.token) {
                 return Err(io::Error::new(
                     ErrorKind::NotFound,
@@ -146,18 +151,18 @@ impl Driver for MioDriver {
             }
         }
 
-        let poll = self.poll.lock().expect("mio poll mutex is poisoned");
+        let poll = self.poll.lock();
         let mut source = mio::unix::SourceFd(&handle.handle);
         poll.registry()
             .reregister(&mut source, handle.token, interest)
     }
 
     fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), io::Error> {
-        let poll = self.poll.lock().expect("mio poll mutex is poisoned");
+        let poll = self.poll.lock();
         let mut source = mio::unix::SourceFd(&handle.handle);
         poll.registry().deregister(&mut source)?;
 
-        let mut state = self.state.lock().expect("mio state mutex is poisoned");
+        let mut state = self.state.lock();
         state.registrations.remove(&handle.token);
         Ok(())
     }
@@ -264,7 +269,7 @@ mod tests {
 
         let token = Token(7);
         {
-            let mut state = driver.state.lock().expect("mio state mutex is poisoned");
+            let mut state = driver.state.lock();
             state
                 .registrations
                 .insert(token, Registration { waiter: None });
@@ -276,7 +281,7 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
         assert_eq!(wake.wake_count(), 0);
 
-        let state = driver.state.lock().expect("mio state mutex is poisoned");
+        let state = driver.state.lock();
         let registration = state
             .registrations
             .get(&token)
@@ -292,7 +297,7 @@ mod tests {
 
         let token = Token(9);
         {
-            let mut state = driver.state.lock().expect("mio state mutex is poisoned");
+            let mut state = driver.state.lock();
             state.registrations.insert(
                 token,
                 Registration {
@@ -301,7 +306,7 @@ mod tests {
             );
         }
 
-        let poll = driver.poll.lock().expect("mio poll mutex is poisoned");
+        let poll = driver.poll.lock();
         let waker = Waker::new(poll.registry(), token).expect("test waker should register");
         drop(poll);
         waker.wake().expect("test waker should wake poll");

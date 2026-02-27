@@ -1,11 +1,12 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use crossbeam_queue::SegQueue;
 use futures_util::task::waker_ref;
 use futures_util::FutureExt;
+use parking_lot::Mutex;
 
 use crate::driver::AnyDriver;
 use crate::task::Task;
@@ -38,7 +39,7 @@ impl<T> JoinHandle<T> {
     }
 
     fn try_take_output(&self) -> Option<T> {
-        let mut state = self.state.lock().expect("join state mutex is poisoned");
+        let mut state = self.state.lock();
         state.output.take()
     }
 }
@@ -47,7 +48,7 @@ impl<T> Future for JoinHandle<T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self.state.lock().expect("join state mutex is poisoned");
+        let mut state = self.state.lock();
         if let Some(output) = state.output.take() {
             Poll::Ready(output)
         } else {
@@ -62,7 +63,7 @@ struct CurrentRuntimeGuard;
 impl CurrentRuntimeGuard {
     fn enter(runtime_inner: Arc<RuntimeInner>) -> Self {
         CURRENT_RUNTIME.with(|runtime| {
-            let mut runtime = runtime.lock().expect("runtime mutex is poisoned");
+            let mut runtime = runtime.lock();
             if runtime.is_some() {
                 panic!("can't spawn a runtime inside another runtime");
             }
@@ -77,7 +78,7 @@ impl CurrentRuntimeGuard {
 impl Drop for CurrentRuntimeGuard {
     fn drop(&mut self) {
         CURRENT_RUNTIME.with(|runtime| {
-            let mut runtime = runtime.lock().expect("runtime mutex is poisoned");
+            let mut runtime = runtime.lock();
             *runtime = None;
         });
     }
@@ -95,7 +96,7 @@ pub fn new_runtime(driver: AnyDriver) -> Runtime {
 
 pub(crate) fn current_driver() -> Option<Arc<AnyDriver>> {
     CURRENT_RUNTIME.with(|runtime| {
-        let runtime = runtime.lock().expect("runtime mutex is poisoned");
+        let runtime = runtime.lock();
         runtime
             .as_ref()
             .map(|runtime_inner| runtime_inner.driver.clone())
@@ -107,7 +108,7 @@ where
     T: Send + 'static,
 {
     let runtime = CURRENT_RUNTIME.with(|runtime| {
-        let runtime = runtime.lock().expect("runtime mutex is poisoned");
+        let runtime = runtime.lock();
         if let Some(runtime_inner) = &*runtime {
             runtime_inner.clone()
         } else {
@@ -130,7 +131,7 @@ impl RuntimeInner {
         let state_for_task = state.clone();
         let future = async move {
             let output = future.await;
-            let mut state = state_for_task.lock().expect("join state mutex is poisoned");
+            let mut state = state_for_task.lock();
             state.output = Some(output);
             if let Some(waker) = state.waker.take() {
                 waker.wake();
@@ -170,7 +171,7 @@ impl Runtime {
             }
 
             if let Some(task) = self.inner.queue.pop() {
-                let mut future_slot = task.future.lock().expect("future mutex is poisoned");
+                let mut future_slot = task.future.lock();
 
                 if let Some(mut future) = future_slot.take() {
                     let waker = waker_ref(&task);

@@ -16,6 +16,12 @@ use crate::{
     op::Op,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegistrationMode {
+    Poll,
+    Completion,
+}
+
 fn unsupported_completion_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
@@ -38,6 +44,16 @@ pub trait Driver {
         handle: &InnerRawHandle,
         interest: Interest,
     ) -> Result<Token, std::io::Error>;
+
+    /// Registers an I/O source with the requested mode.
+    fn register_handle_with_mode(
+        &self,
+        handle: &InnerRawHandle,
+        interest: Interest,
+        _mode: RegistrationMode,
+    ) -> Result<Token, io::Error> {
+        self.register_handle(handle, interest)
+    }
 
     /// Updates the interest set for a registered I/O source.
     fn reregister_handle(
@@ -124,6 +140,20 @@ impl AnyDriver {
             AnyDriver::Mock(driver) => driver.register_handle(handle, interest),
             #[cfg(target_os = "linux")]
             AnyDriver::IoUring(driver) => driver.register_handle(handle, interest),
+        }
+    }
+
+    pub(crate) fn register_handle_with_mode(
+        &self,
+        handle: &InnerRawHandle,
+        interest: Interest,
+        mode: RegistrationMode,
+    ) -> Result<Token, io::Error> {
+        match self {
+            AnyDriver::Mio(driver) => driver.register_handle_with_mode(handle, interest, mode),
+            AnyDriver::Mock(driver) => driver.register_handle_with_mode(handle, interest, mode),
+            #[cfg(target_os = "linux")]
+            AnyDriver::IoUring(driver) => driver.register_handle_with_mode(handle, interest, mode),
         }
     }
 

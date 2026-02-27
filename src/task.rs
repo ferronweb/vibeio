@@ -1,8 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crossbeam_queue::SegQueue;
 use futures_util::future::BoxFuture;
 use futures_util::task::ArcWake;
+use parking_lot::Mutex;
 
 pub struct Task {
     pub future: Mutex<Option<BoxFuture<'static, ()>>>,

@@ -1,6 +1,6 @@
 use std::future::poll_fn;
 use std::io::{self, IoSlice, Read, Write};
-use std::mem::{self, MaybeUninit};
+use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::net::{Shutdown, SocketAddr};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::pin::Pin;
@@ -10,6 +10,7 @@ use mio::Interest;
 use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
 use crate::{
+    driver::RegistrationMode,
     fd_inner::InnerRawHandle,
     io::{AsyncRead, AsyncWrite},
     op::{CompletionConnectIo, CompletionReadIo, CompletionWriteIo, ConnectOp, ReadOp, WriteOp},
@@ -130,7 +131,7 @@ fn start_nonblocking_connect(
 
 pub struct TcpStream {
     inner: std::net::TcpStream,
-    handle: InnerRawHandle,
+    handle: ManuallyDrop<InnerRawHandle>,
 }
 
 /// A poll-only variant that always uses readiness-based operations.
@@ -143,7 +144,7 @@ impl TcpStream {
         let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
         let mut stream = Self::from_std(inner)?;
 
-        if stream.handle.supports_completion() {
+        if stream.handle.uses_completion() {
             let raw_addr = Box::new(raw_addr);
             poll_fn(|cx| {
                 let raw_addr_ptr =
@@ -180,12 +181,26 @@ impl TcpStream {
     }
 
     pub(crate) fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
+        Self::from_std_with_mode(inner, RegistrationMode::Completion)
+    }
+
+    pub(crate) fn from_std_with_mode(
+        inner: std::net::TcpStream,
+        mode: RegistrationMode,
+    ) -> Result<Self, io::Error> {
         inner.set_nonblocking(true)?;
-        let handle = InnerRawHandle::new(
+        let handle = ManuallyDrop::new(InnerRawHandle::new_with_mode(
             inner.as_raw_fd(),
             Interest::READABLE.add(Interest::WRITABLE),
-        )?;
+            mode,
+        )?);
         Ok(Self { inner, handle })
+    }
+
+    pub fn into_poll(self) -> Result<PollTcpStream, io::Error> {
+        let mut stream = self;
+        stream.handle.rebind_mode(RegistrationMode::Poll)?;
+        Ok(PollTcpStream { stream })
     }
 
     fn poll_connect_poll_io(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
@@ -254,7 +269,7 @@ impl TcpStream {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, io::Error>> {
-        if self.handle.supports_completion() {
+        if self.handle.uses_completion() {
             self.poll_read_completion_io(cx, buf)
         } else {
             self.poll_read_poll_io(cx, buf)
@@ -266,7 +281,7 @@ impl TcpStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        if self.handle.supports_completion() {
+        if self.handle.uses_completion() {
             self.poll_write_completion_io(cx, buf)
         } else {
             self.poll_write_poll_io(cx, buf)
@@ -277,7 +292,7 @@ impl TcpStream {
 impl PollTcpStream {
     pub async fn connect(address: SocketAddr) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
-        let mut stream = TcpStream::from_std(inner)?;
+        let mut stream = TcpStream::from_std_with_mode(inner, RegistrationMode::Poll)?;
         start_nonblocking_connect(stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
         poll_fn(|cx| stream.poll_connect_poll_io(cx)).await?;
         Ok(Self { stream })
@@ -285,12 +300,18 @@ impl PollTcpStream {
 
     pub(crate) fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
         Ok(Self {
-            stream: TcpStream::from_std(inner)?,
+            stream: TcpStream::from_std_with_mode(inner, RegistrationMode::Poll)?,
         })
     }
 
     pub fn into_adaptive(self) -> TcpStream {
         self.stream
+    }
+
+    pub fn into_completion(self) -> Result<TcpStream, io::Error> {
+        let mut stream = self.stream;
+        stream.handle.rebind_mode(RegistrationMode::Completion)?;
+        Ok(stream)
     }
 
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
@@ -436,6 +457,15 @@ impl TokioAsyncWrite for PollTcpStream {
             this.stream.poll_write_poll_io(cx, non_empty)
         } else {
             Poll::Ready(Ok(0))
+        }
+    }
+}
+
+impl Drop for TcpStream {
+    fn drop(&mut self) {
+        // Safety: The struct is dropped after the handle is dropped.
+        unsafe {
+            ManuallyDrop::drop(&mut self.handle);
         }
     }
 }

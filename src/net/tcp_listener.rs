@@ -1,5 +1,6 @@
 use std::future::poll_fn;
 use std::io;
+use std::mem::ManuallyDrop;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::os::fd::{AsRawFd, RawFd};
 use std::task::{Context, Poll};
@@ -14,14 +15,14 @@ use crate::{
 
 pub struct TcpListener {
     inner: StdTcpListener,
-    handle: InnerRawHandle,
+    handle: ManuallyDrop<InnerRawHandle>,
 }
 
 impl TcpListener {
     pub fn bind(address: SocketAddr) -> Result<Self, io::Error> {
         let inner = StdTcpListener::bind(address)?;
         inner.set_nonblocking(true)?;
-        let handle = InnerRawHandle::new(inner.as_raw_fd(), Interest::READABLE)?;
+        let handle = ManuallyDrop::new(InnerRawHandle::new(inner.as_raw_fd(), Interest::READABLE)?);
         Ok(Self { inner, handle })
     }
 
@@ -37,7 +38,7 @@ impl TcpListener {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(TcpStream, SocketAddr), io::Error>> {
-        if self.handle.supports_completion() {
+        if self.handle.uses_completion() {
             return match self.handle.poll_accept_completion(cx) {
                 Poll::Ready(Ok((stream, address))) => match TcpStream::from_std(stream) {
                     Ok(stream) => Poll::Ready(Ok((stream, address))),
@@ -63,5 +64,14 @@ impl TcpListener {
 impl AsRawFd for TcpListener {
     fn as_raw_fd(&self) -> RawFd {
         self.inner.as_raw_fd()
+    }
+}
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        // Safety: The struct is dropped after the handle is dropped.
+        unsafe {
+            ManuallyDrop::drop(&mut self.handle);
+        }
     }
 }
