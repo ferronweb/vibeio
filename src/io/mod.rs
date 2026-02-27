@@ -3,10 +3,8 @@
 use std::io::{self, ErrorKind};
 
 pub trait AsyncRead {
-    #[inline]
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error>;
 
-    #[inline]
     async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), io::Error> {
         while !buf.is_empty() {
             let read = self.read(buf).await?;
@@ -25,15 +23,12 @@ pub trait AsyncRead {
 }
 
 pub trait AsyncWrite {
-    #[inline]
     async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error>;
 
-    #[inline]
     async fn flush(&mut self) -> Result<(), io::Error> {
         Ok(())
     }
 
-    #[inline]
     async fn write_all(&mut self, mut buf: &[u8]) -> Result<(), io::Error> {
         while !buf.is_empty() {
             let written = self.write(buf).await?;
