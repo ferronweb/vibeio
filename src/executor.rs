@@ -1,21 +1,21 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-use crossbeam_queue::SegQueue;
 use futures_util::FutureExt;
-use parking_lot::Mutex;
 
 use crate::driver::AnyDriver;
 use crate::task::Task;
 
 thread_local! {
-    static CURRENT_RUNTIME: Mutex<Option<Rc<RuntimeInner>>> = Mutex::new(None);
+    static CURRENT_RUNTIME: RefCell<Option<Rc<RuntimeInner>>> = RefCell::new(None);
 }
 
 pub struct RuntimeInner {
-    queue: Rc<SegQueue<Rc<Task>>>,
+    queue: Rc<RefCell<VecDeque<Rc<Task>>>>,
     driver: Rc<AnyDriver>,
 }
 
@@ -29,18 +29,18 @@ struct JoinState<T> {
 }
 
 pub struct JoinHandle<T> {
-    state: Rc<Mutex<JoinState<T>>>,
+    state: Rc<RefCell<JoinState<T>>>,
 }
 
 impl<T> JoinHandle<T> {
     #[inline]
-    fn new(state: Rc<Mutex<JoinState<T>>>) -> Self {
+    fn new(state: Rc<RefCell<JoinState<T>>>) -> Self {
         Self { state }
     }
 
     #[inline]
     fn try_take_output(&self) -> Option<T> {
-        let mut state = self.state.lock();
+        let mut state = self.state.borrow_mut();
         state.output.take()
     }
 }
@@ -50,7 +50,7 @@ impl<T> Future for JoinHandle<T> {
 
     #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self.state.lock();
+        let mut state = self.state.borrow_mut();
         if let Some(output) = state.output.take() {
             Poll::Ready(output)
         } else {
@@ -66,7 +66,7 @@ impl CurrentRuntimeGuard {
     #[inline]
     fn enter(runtime_inner: Rc<RuntimeInner>) -> Self {
         CURRENT_RUNTIME.with(|runtime| {
-            let mut runtime = runtime.lock();
+            let mut runtime = runtime.borrow_mut();
             if runtime.is_some() {
                 panic!("can't spawn a runtime inside another runtime");
             }
@@ -82,14 +82,14 @@ impl Drop for CurrentRuntimeGuard {
     #[inline]
     fn drop(&mut self) {
         CURRENT_RUNTIME.with(|runtime| {
-            let mut runtime = runtime.lock();
+            let mut runtime = runtime.borrow_mut();
             *runtime = None;
         });
     }
 }
 
 pub fn new_runtime(driver: AnyDriver) -> Runtime {
-    let ready_queue = Rc::new(SegQueue::new());
+    let ready_queue = Rc::new(RefCell::new(VecDeque::new()));
     Runtime {
         inner: Rc::new(RuntimeInner {
             queue: ready_queue,
@@ -100,7 +100,7 @@ pub fn new_runtime(driver: AnyDriver) -> Runtime {
 
 pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
     CURRENT_RUNTIME.with(|runtime| {
-        let runtime = runtime.lock();
+        let runtime = runtime.borrow();
         runtime
             .as_ref()
             .map(|runtime_inner| runtime_inner.driver.clone())
@@ -112,7 +112,7 @@ where
     T: 'static,
 {
     let runtime = CURRENT_RUNTIME.with(|runtime| {
-        let runtime = runtime.lock();
+        let runtime = runtime.borrow();
         if let Some(runtime_inner) = &*runtime {
             runtime_inner.clone()
         } else {
@@ -129,14 +129,14 @@ impl RuntimeInner {
     where
         T: 'static,
     {
-        let state = Rc::new(Mutex::new(JoinState {
+        let state = Rc::new(RefCell::new(JoinState {
             output: None,
             waker: None,
         }));
         let state_for_task = state.clone();
         let future = async move {
             let output = future.await;
-            let mut state = state_for_task.lock();
+            let mut state = state_for_task.borrow_mut();
             state.output = Some(output);
             if let Some(waker) = state.waker.take() {
                 waker.wake();
@@ -145,11 +145,12 @@ impl RuntimeInner {
         .boxed_local();
 
         let task = Rc::new(Task {
-            future: Mutex::new(Some(future)),
+            future: RefCell::new(Some(future)),
             queue: self.queue.clone(),
+            queued: std::cell::Cell::new(true),
         });
 
-        self.queue.push(task);
+        self.queue.borrow_mut().push_back(task);
         JoinHandle::new(state)
     }
 }
@@ -177,20 +178,33 @@ impl Runtime {
                 return output;
             }
 
-            if let Some(task) = self.inner.queue.pop() {
-                let mut future_slot = task.future.lock();
+            let mut batch = Vec::new();
+            {
+                let mut queue = self.inner.queue.borrow_mut();
+                while let Some(task) = queue.pop_front() {
+                    task.mark_dequeued();
+                    batch.push(task);
+                }
+            }
 
+            if batch.is_empty() {
+                // Wait for I/O
+                self.inner.driver.wait();
+                continue;
+            }
+
+            for task in batch {
+                let mut future_slot = task.future.borrow_mut();
                 if let Some(mut future) = future_slot.take() {
+                    drop(future_slot);
                     let waker = task.waker();
                     let mut context = Context::from_waker(&waker);
 
                     if future.as_mut().poll(&mut context).is_pending() {
+                        let mut future_slot = task.future.borrow_mut();
                         *future_slot = Some(future);
                     }
                 }
-            } else {
-                // Wait for I/O
-                self.inner.driver.wait();
             }
         }
     }

@@ -1,13 +1,14 @@
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::task::{RawWaker, RawWakerVTable, Waker};
 
-use crossbeam_queue::SegQueue;
 use futures_util::future::LocalBoxFuture;
-use parking_lot::Mutex;
 
 pub struct Task {
-    pub future: Mutex<Option<LocalBoxFuture<'static, ()>>>,
-    pub queue: Rc<SegQueue<Rc<Task>>>,
+    pub future: RefCell<Option<LocalBoxFuture<'static, ()>>>,
+    pub queue: Rc<RefCell<VecDeque<Rc<Task>>>>,
+    pub queued: Cell<bool>,
 }
 
 impl Task {
@@ -38,16 +39,28 @@ impl Task {
 
     unsafe fn raw_waker_wake(ptr: *const ()) {
         let task = Rc::<Self>::from_raw(ptr as *const Self);
-        task.queue.push(Rc::clone(&task));
+        Self::enqueue_if_needed(&task);
     }
 
     unsafe fn raw_waker_wake_by_ref(ptr: *const ()) {
         let task = Rc::<Self>::from_raw(ptr as *const Self);
-        task.queue.push(Rc::clone(&task));
+        Self::enqueue_if_needed(&task);
         let _ = Rc::into_raw(task);
     }
 
     unsafe fn raw_waker_drop(ptr: *const ()) {
         drop(Rc::<Self>::from_raw(ptr as *const Self));
+    }
+
+    #[inline]
+    fn enqueue_if_needed(task: &Rc<Self>) {
+        if !task.queued.replace(true) {
+            task.queue.borrow_mut().push_back(Rc::clone(task));
+        }
+    }
+
+    #[inline]
+    pub fn mark_dequeued(&self) {
+        self.queued.set(false);
     }
 }
