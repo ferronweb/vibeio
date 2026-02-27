@@ -1,5 +1,5 @@
 use std::future::poll_fn;
-use std::io::{self, IoSlice, Read, Write};
+use std::io::{self, IoSlice};
 use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, ToSocketAddrs};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
@@ -28,6 +28,16 @@ fn socket_addr_to_raw(
                     s_addr: u32::from_ne_bytes(address.ip().octets()),
                 },
                 sin_zero: [0; 8],
+                // sin_len is required on *BSD and macOS
+                #[cfg(any(
+                    target_os = "macos",
+                    target_os = "ios",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "dragonfly",
+                    target_os = "netbsd"
+                ))]
+                sin_len: 0,
             };
 
             let mut storage = MaybeUninit::<libc::sockaddr_storage>::zeroed();
@@ -52,6 +62,16 @@ fn socket_addr_to_raw(
                     s6_addr: address.ip().octets(),
                 },
                 sin6_scope_id: address.scope_id(),
+                // sin6_len is required on *BSD and macOS
+                #[cfg(any(
+                    target_os = "macos",
+                    target_os = "ios",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "dragonfly",
+                    target_os = "netbsd"
+                ))]
+                sin6_len: 0,
             };
 
             let mut storage = MaybeUninit::<libc::sockaddr_storage>::zeroed();
