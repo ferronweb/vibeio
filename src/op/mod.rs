@@ -22,18 +22,6 @@ pub enum CompletionKind {
     Write = 4,
 }
 
-impl std::fmt::Display for CompletionKind {
-    #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompletionKind::Connect => write!(f, "connect"),
-            CompletionKind::Accept => write!(f, "accept"),
-            CompletionKind::Read => write!(f, "read"),
-            CompletionKind::Write => write!(f, "write"),
-        }
-    }
-}
-
 pub(crate) fn completion_result_to_poll<T>(
     result: Result<T, io::Error>,
 ) -> Poll<Result<T, io::Error>> {

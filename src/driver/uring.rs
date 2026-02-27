@@ -135,14 +135,6 @@ impl UringDriver {
     }
 
     #[inline]
-    fn io_uring_would_block_error(kind: CompletionKind) -> io::Error {
-        io::Error::new(
-            ErrorKind::WouldBlock,
-            format!("{kind} completion is pending"),
-        )
-    }
-
-    #[inline]
     fn interest_to_poll_mask(interest: Interest) -> u32 {
         let mut mask = 0;
         if interest.is_readable() {
@@ -176,28 +168,18 @@ impl UringDriver {
     fn push_entry(&self, entry: squeue::Entry) -> Result<(), io::Error> {
         let mut ring = self.ring.borrow_mut();
 
-        let pushed = {
-            let mut sq = ring.submission();
-            sq.sync();
-            let pushed = unsafe { sq.push(&entry).is_ok() };
-            sq.sync();
-            pushed
-        };
-
-        if !pushed {
+        if ring.submission().is_full() {
             Self::submitter_call_result(ring.submit())?;
-
-            let mut sq = ring.submission();
-            sq.sync();
-            unsafe {
-                sq.push(&entry).map_err(|_| {
-                    io::Error::new(ErrorKind::Other, "io_uring submission queue is full")
-                })?;
-            }
-            sq.sync();
         }
 
-        Self::submitter_call_result(ring.submit())
+        let mut sq = ring.submission();
+        unsafe {
+            sq.push(&entry).map_err(|_| {
+                io::Error::new(ErrorKind::Other, "io_uring submission queue is full")
+            })?;
+        }
+
+        Ok(())
     }
 
     #[inline]
@@ -262,7 +244,10 @@ impl UringDriver {
 
             if kind_state.inflight {
                 Self::push_waiter(&mut kind_state.waiters, waker);
-                return Err(Self::io_uring_would_block_error(kind));
+                return Err(io::Error::new(
+                    ErrorKind::WouldBlock,
+                    "An I/O completion is pending",
+                ));
             }
 
             kind_state.inflight = true;
@@ -283,19 +268,30 @@ impl UringDriver {
             return Err(err);
         }
 
-        Err(Self::io_uring_would_block_error(kind))
+        Err(io::Error::new(
+            ErrorKind::WouldBlock,
+            "An I/O completion is pending",
+        ))
     }
 
     #[inline]
     fn collect_completions(&self, wait_for_one: bool) -> Result<bool, io::Error> {
         {
-            let ring = self.ring.borrow();
-            let submit_result = if wait_for_one {
-                ring.submit_and_wait(1)
+            let mut ring = self.ring.borrow_mut();
+            let should_submit = if wait_for_one {
+                true
             } else {
-                ring.submit()
+                !ring.submission().is_empty()
             };
-            Self::submitter_call_result(submit_result)?;
+
+            if should_submit {
+                let submit_result = if wait_for_one {
+                    ring.submit_and_wait(1)
+                } else {
+                    ring.submit()
+                };
+                Self::submitter_call_result(submit_result)?;
+            }
         }
 
         let mut woke_any = false;
@@ -308,8 +304,7 @@ impl UringDriver {
         {
             let mut ring = self.ring.borrow_mut();
             let mut state = self.state.borrow_mut();
-            let mut cq = ring.completion();
-            cq.sync();
+            let cq = ring.completion();
 
             for cqe in cq {
                 let key = cqe.user_data();
