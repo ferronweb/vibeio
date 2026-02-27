@@ -18,6 +18,7 @@ pub trait CompletionAcceptIo {
 }
 
 impl CompletionAcceptIo for InnerRawHandle {
+    #[inline]
     fn poll_accept_completion(
         &self,
         cx: &mut Context<'_>,
@@ -31,6 +32,7 @@ pub struct AcceptOp<'a> {
 }
 
 impl<'a> AcceptOp<'a> {
+    #[inline]
     pub fn new(handle: &'a InnerRawHandle) -> Self {
         Self { handle }
     }
@@ -39,10 +41,12 @@ impl<'a> AcceptOp<'a> {
 impl Op for AcceptOp<'_> {
     type Output = (TcpStream, SocketAddr);
 
+    #[inline]
     fn token(&self) -> Token {
         self.handle.token()
     }
 
+    #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         let accepted_fd = unsafe {
             libc::accept(
@@ -61,11 +65,13 @@ impl Op for AcceptOp<'_> {
         Ok((stream, address))
     }
 
+    #[inline]
     fn completion_kind(&self) -> Option<CompletionKind> {
         Some(CompletionKind::Accept)
     }
 
     #[cfg(target_os = "linux")]
+    #[inline]
     fn build_completion_entry(
         &mut self,
         user_data: u64,
@@ -82,6 +88,7 @@ impl Op for AcceptOp<'_> {
         .user_data(user_data))
     }
 
+    #[inline]
     fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
         if result < 0 {
             return Err(io::Error::from_raw_os_error(-result));

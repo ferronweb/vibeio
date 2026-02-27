@@ -19,6 +19,7 @@ pub struct TcpListener {
 }
 
 impl TcpListener {
+    #[inline]
     pub fn bind(address: SocketAddr) -> Result<Self, io::Error> {
         let inner = StdTcpListener::bind(address)?;
         inner.set_nonblocking(true)?;
@@ -26,14 +27,17 @@ impl TcpListener {
         Ok(Self { inner, handle })
     }
 
+    #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.local_addr()
     }
 
+    #[inline]
     pub async fn accept(&mut self) -> Result<(TcpStream, SocketAddr), io::Error> {
         poll_fn(|cx| self.poll_accept(cx)).await
     }
 
+    #[inline]
     pub fn poll_accept(
         &mut self,
         cx: &mut Context<'_>,
@@ -62,12 +66,14 @@ impl TcpListener {
 }
 
 impl AsRawFd for TcpListener {
+    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.inner.as_raw_fd()
     }
 }
 
 impl Drop for TcpListener {
+    #[inline]
     fn drop(&mut self) {
         // Safety: The struct is dropped after the handle is dropped.
         unsafe {

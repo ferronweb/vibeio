@@ -66,11 +66,13 @@ pub trait Driver {
     fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), std::io::Error>;
 
     /// Returns whether the driver supports completion-based I/O operations.
+    #[inline]
     fn supports_completion(&self) -> bool {
         false
     }
 
     /// Submits a completion-based I/O operation.
+    #[inline]
     fn submit_completion<O, R>(&self, _op: O, _waker: Waker) -> Result<R, io::Error>
     where
         O: Op<Output = R>,
@@ -87,19 +89,23 @@ pub enum AnyDriver {
 }
 
 impl AnyDriver {
+    #[inline]
     pub(crate) fn new_mio() -> Result<Self, std::io::Error> {
         Ok(AnyDriver::Mio(MioDriver::new()?))
     }
 
+    #[inline]
     pub(crate) fn new_mock() -> Self {
         AnyDriver::Mock(MockDriver::new())
     }
 
     #[cfg(target_os = "linux")]
+    #[inline]
     pub(crate) fn new_uring(entries: u32) -> Result<Self, io::Error> {
         Ok(AnyDriver::IoUring(UringDriver::new(entries)?))
     }
 
+    #[inline]
     pub(crate) fn new_best() -> Result<Self, io::Error> {
         #[cfg(target_os = "linux")]
         if let Ok(driver) = UringDriver::new(256) {
@@ -109,6 +115,7 @@ impl AnyDriver {
         Self::new_mio()
     }
 
+    #[inline]
     pub(crate) fn wait(&self) {
         match self {
             AnyDriver::Mio(driver) => driver.wait(),
@@ -118,6 +125,7 @@ impl AnyDriver {
         }
     }
 
+    #[inline]
     pub(crate) fn submit<O, R>(&self, op: O, waker: Waker) -> Result<R, std::io::Error>
     where
         O: Op<Output = R>,
@@ -130,6 +138,7 @@ impl AnyDriver {
         }
     }
 
+    #[inline]
     pub(crate) fn register_handle(
         &self,
         handle: &InnerRawHandle,
@@ -143,6 +152,7 @@ impl AnyDriver {
         }
     }
 
+    #[inline]
     pub(crate) fn register_handle_with_mode(
         &self,
         handle: &InnerRawHandle,
@@ -157,6 +167,7 @@ impl AnyDriver {
         }
     }
 
+    #[inline]
     pub(crate) fn reregister_handle(
         &self,
         handle: &InnerRawHandle,
@@ -170,6 +181,7 @@ impl AnyDriver {
         }
     }
 
+    #[inline]
     pub(crate) fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), std::io::Error> {
         match self {
             AnyDriver::Mio(driver) => driver.deregister_handle(handle),
@@ -179,6 +191,7 @@ impl AnyDriver {
         }
     }
 
+    #[inline]
     pub(crate) fn supports_completion(&self) -> bool {
         match self {
             AnyDriver::Mio(driver) => driver.supports_completion(),
@@ -188,6 +201,7 @@ impl AnyDriver {
         }
     }
 
+    #[inline]
     pub(crate) fn submit_completion<O, R>(&self, op: O, waker: Waker) -> Result<R, io::Error>
     where
         O: Op<Output = R>,

@@ -22,6 +22,7 @@ pub struct InnerRawHandle {
 }
 
 impl InnerRawHandle {
+    #[inline]
     pub(crate) fn new(handle: RawFd, interest: Interest) -> Result<Self, io::Error> {
         let default_mode = if current_driver()
             .as_ref()
@@ -35,6 +36,7 @@ impl InnerRawHandle {
         Self::new_with_mode(handle, interest, default_mode)
     }
 
+    #[inline]
     pub(crate) fn new_with_mode(
         handle: RawFd,
         interest: Interest,
@@ -64,14 +66,17 @@ impl InnerRawHandle {
         Ok(inner)
     }
 
+    #[inline]
     pub(crate) fn token(&self) -> Token {
         self.token
     }
 
+    #[inline]
     pub(crate) fn reregister(&self, interest: Interest) -> Result<(), io::Error> {
         self.driver.reregister_handle(self, interest)
     }
 
+    #[inline]
     pub(crate) fn submit<O, R>(&self, op: O, waker: Waker) -> Result<R, io::Error>
     where
         O: Op<Output = R>,
@@ -79,18 +84,22 @@ impl InnerRawHandle {
         self.driver.submit(op, waker)
     }
 
+    #[inline]
     pub(crate) fn supports_completion(&self) -> bool {
         self.driver.supports_completion()
     }
 
+    #[inline]
     pub(crate) fn uses_completion(&self) -> bool {
         self.supports_completion() && matches!(self.mode, RegistrationMode::Completion)
     }
 
+    #[inline]
     pub(crate) fn mode(&self) -> RegistrationMode {
         self.mode
     }
 
+    #[inline]
     pub(crate) fn rebind_mode(
         &mut self,
         requested_mode: RegistrationMode,
@@ -115,6 +124,7 @@ impl InnerRawHandle {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn submit_completion<O, R>(&self, op: O, waker: Waker) -> Result<R, io::Error>
     where
         O: Op<Output = R>,
@@ -124,6 +134,7 @@ impl InnerRawHandle {
 }
 
 impl Drop for InnerRawHandle {
+    #[inline]
     fn drop(&mut self) {
         let _ = self.driver.deregister_handle(self);
     }

@@ -23,6 +23,7 @@ pub enum CompletionKind {
 }
 
 impl std::fmt::Display for CompletionKind {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CompletionKind::Connect => write!(f, "connect"),
@@ -54,12 +55,14 @@ pub trait Op {
     fn execute(&mut self) -> Result<Self::Output, io::Error>;
 
     /// Completion operation kind for drivers that support completion I/O.
+    #[inline]
     fn completion_kind(&self) -> Option<CompletionKind> {
         None
     }
 
     /// Builds an io_uring submission entry for this operation.
     #[cfg(target_os = "linux")]
+    #[inline]
     fn build_completion_entry(
         &mut self,
         _user_data: u64,
@@ -71,6 +74,7 @@ pub trait Op {
     }
 
     /// Converts a completion result into the operation output.
+    #[inline]
     fn complete(&mut self, _result: i32) -> Result<Self::Output, io::Error> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

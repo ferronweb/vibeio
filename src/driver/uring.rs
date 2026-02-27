@@ -46,6 +46,7 @@ pub struct UringDriver {
 }
 
 impl UringDriver {
+    #[inline]
     pub(crate) fn new(entries: u32) -> Result<Self, io::Error> {
         Ok(Self {
             ring: Mutex::new(IoUring::new(entries)?),
@@ -58,22 +59,27 @@ impl UringDriver {
         })
     }
 
+    #[inline]
     fn encode_completion_key(token: Token, kind: CompletionKind) -> u64 {
         ((token.0 as u64) << KEY_KIND_BITS) | (kind as u8 as u64)
     }
 
+    #[inline]
     fn encode_poll_key(token: Token) -> u64 {
         ((token.0 as u64) << KEY_KIND_BITS) | POLL_KEY_KIND as u64
     }
 
+    #[inline]
     fn decode_token(key: u64) -> Token {
         Token((key >> KEY_KIND_BITS) as usize)
     }
 
+    #[inline]
     fn decode_key_kind(key: u64) -> u8 {
         (key & KEY_KIND_MASK) as u8
     }
 
+    #[inline]
     fn io_uring_would_block_error(kind: CompletionKind) -> io::Error {
         io::Error::new(
             ErrorKind::WouldBlock,
@@ -81,6 +87,7 @@ impl UringDriver {
         )
     }
 
+    #[inline]
     fn interest_to_poll_mask(interest: Interest) -> u32 {
         let mut mask = 0;
         if interest.is_readable() {
@@ -92,6 +99,7 @@ impl UringDriver {
         mask
     }
 
+    #[inline]
     fn operation_poll_mask(kind: Option<CompletionKind>, fallback_mask: u32) -> u32 {
         match kind {
             Some(CompletionKind::Accept) | Some(CompletionKind::Read) => libc::POLLIN as u32,
@@ -100,6 +108,7 @@ impl UringDriver {
         }
     }
 
+    #[inline]
     fn submitter_call_result(result: Result<usize, io::Error>) -> Result<(), io::Error> {
         match result {
             Ok(_) => Ok(()),
@@ -108,6 +117,7 @@ impl UringDriver {
         }
     }
 
+    #[inline]
     fn push_entry(&self, entry: squeue::Entry) -> Result<(), io::Error> {
         let mut ring = self.ring.lock();
 
@@ -135,6 +145,7 @@ impl UringDriver {
         Self::submitter_call_result(ring.submit())
     }
 
+    #[inline]
     fn push_poll_add(&self, token: Token, fd: RawFd, poll_mask: u32) -> Result<(), io::Error> {
         let entry = opcode::PollAdd::new(types::Fd(fd), poll_mask)
             .build()
@@ -142,6 +153,7 @@ impl UringDriver {
         self.push_entry(entry)
     }
 
+    #[inline]
     fn submit_completion_entry<O>(&self, op: &mut O, waker: Waker) -> Result<O::Output, io::Error>
     where
         O: Op,
@@ -203,6 +215,7 @@ impl UringDriver {
         Err(Self::io_uring_would_block_error(kind))
     }
 
+    #[inline]
     fn collect_completions(&self, wait_for_one: bool) -> Result<Vec<Waker>, io::Error> {
         {
             let ring = self.ring.lock();
@@ -261,6 +274,7 @@ impl UringDriver {
         Ok(to_wake)
     }
 
+    #[inline]
     fn clear_handle_operations(state: &mut DriverState, token: Token) {
         state
             .pending
@@ -270,6 +284,7 @@ impl UringDriver {
             .retain(|key, _| Self::decode_token(*key) != token);
     }
 
+    #[inline]
     fn has_inflight_io(state: &DriverState) -> bool {
         if !state.pending.is_empty() {
             return true;
@@ -286,6 +301,7 @@ impl UringDriver {
         })
     }
 
+    #[inline]
     fn allocate_token(state: &mut DriverState) -> Result<Token, io::Error> {
         for _ in 0..usize::MAX {
             let token = Token(state.next_token);
@@ -303,6 +319,7 @@ impl UringDriver {
 }
 
 impl Driver for UringDriver {
+    #[inline]
     fn wait(&self) {
         let mut woke_any = false;
         match self.collect_completions(false) {
@@ -338,6 +355,7 @@ impl Driver for UringDriver {
         }
     }
 
+    #[inline]
     fn submit<O, R>(&self, mut op: O, waker: Waker) -> Result<R, io::Error>
     where
         O: Op<Output = R>,
@@ -420,6 +438,7 @@ impl Driver for UringDriver {
         }
     }
 
+    #[inline]
     fn register_handle(
         &self,
         handle: &InnerRawHandle,
@@ -428,6 +447,7 @@ impl Driver for UringDriver {
         self.register_handle_with_mode(handle, interest, RegistrationMode::Completion)
     }
 
+    #[inline]
     fn register_handle_with_mode(
         &self,
         handle: &InnerRawHandle,
@@ -459,6 +479,7 @@ impl Driver for UringDriver {
         Ok(token)
     }
 
+    #[inline]
     fn reregister_handle(
         &self,
         handle: &InnerRawHandle,
@@ -481,6 +502,7 @@ impl Driver for UringDriver {
         }
     }
 
+    #[inline]
     fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), io::Error> {
         let mut state = self.state.lock();
         if state.registrations.remove(&handle.token).is_none() {
@@ -497,10 +519,12 @@ impl Driver for UringDriver {
         Ok(())
     }
 
+    #[inline]
     fn supports_completion(&self) -> bool {
         true
     }
 
+    #[inline]
     fn submit_completion<O, R>(&self, mut op: O, waker: Waker) -> Result<R, io::Error>
     where
         O: Op<Output = R>,

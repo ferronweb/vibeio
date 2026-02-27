@@ -17,6 +17,7 @@ pub trait CompletionWriteIo {
 }
 
 impl CompletionWriteIo for InnerRawHandle {
+    #[inline]
     fn poll_write_completion(
         &self,
         cx: &mut Context<'_>,
@@ -34,6 +35,7 @@ pub struct WriteOp<'a> {
 }
 
 impl<'a> WriteOp<'a> {
+    #[inline]
     pub fn new(handle: &'a InnerRawHandle, buf: &'a [u8]) -> Self {
         Self { handle, buf }
     }
@@ -42,10 +44,12 @@ impl<'a> WriteOp<'a> {
 impl Op for WriteOp<'_> {
     type Output = usize;
 
+    #[inline]
     fn token(&self) -> Token {
         self.handle.token()
     }
 
+    #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         let written = unsafe {
             libc::write(
@@ -62,11 +66,13 @@ impl Op for WriteOp<'_> {
         Ok(written as usize)
     }
 
+    #[inline]
     fn completion_kind(&self) -> Option<CompletionKind> {
         Some(CompletionKind::Write)
     }
 
     #[cfg(target_os = "linux")]
+    #[inline]
     fn build_completion_entry(
         &mut self,
         user_data: u64,
@@ -82,6 +88,7 @@ impl Op for WriteOp<'_> {
         .user_data(user_data))
     }
 
+    #[inline]
     fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
         if result < 0 {
             return Err(io::Error::from_raw_os_error(-result));

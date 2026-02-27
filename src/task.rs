@@ -11,6 +11,7 @@ pub struct Task {
 }
 
 impl ArcWake for Task {
+    #[inline]
     fn wake_by_ref(arc_self: &Arc<Self>) {
         // Re-enqueue the task when it gets woken.
         let cloned = Arc::clone(arc_self);

@@ -45,6 +45,7 @@ dependencies = [
  "libc",
  "mio",
  "parking_lot",
+ "slab",
  "tokio",
 ]
 

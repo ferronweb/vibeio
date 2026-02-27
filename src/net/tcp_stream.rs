@@ -140,6 +140,7 @@ pub struct PollTcpStream {
 }
 
 impl TcpStream {
+    #[inline]
     pub async fn connect(address: SocketAddr) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
         let mut stream = Self::from_std(inner)?;
@@ -160,30 +161,37 @@ impl TcpStream {
         Ok(stream)
     }
 
+    #[inline]
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         poll_fn(|cx| self.poll_read_io(cx, buf)).await
     }
 
+    #[inline]
     pub async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
         poll_fn(|cx| self.poll_write_io(cx, buf)).await
     }
 
+    #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.local_addr()
     }
 
+    #[inline]
     pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.peer_addr()
     }
 
+    #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.inner.shutdown(how)
     }
 
+    #[inline]
     pub(crate) fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
         Self::from_std_with_mode(inner, RegistrationMode::Completion)
     }
 
+    #[inline]
     pub(crate) fn from_std_with_mode(
         inner: std::net::TcpStream,
         mode: RegistrationMode,
@@ -197,12 +205,14 @@ impl TcpStream {
         Ok(Self { inner, handle })
     }
 
+    #[inline]
     pub fn into_poll(self) -> Result<PollTcpStream, io::Error> {
         let mut stream = self;
         stream.handle.rebind_mode(RegistrationMode::Poll)?;
         Ok(PollTcpStream { stream })
     }
 
+    #[inline]
     fn poll_connect_poll_io(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         let op = ConnectOp::new(&self.handle);
         match self.handle.submit(op, cx.waker().clone()) {
@@ -212,6 +222,7 @@ impl TcpStream {
         }
     }
 
+    #[inline]
     fn poll_connect_completion_io(
         &mut self,
         cx: &mut Context<'_>,
@@ -222,6 +233,7 @@ impl TcpStream {
             .poll_connect_completion(cx, raw_addr, raw_addr_len)
     }
 
+    #[inline]
     fn poll_read_poll_io(
         &mut self,
         cx: &mut Context<'_>,
@@ -235,6 +247,7 @@ impl TcpStream {
         }
     }
 
+    #[inline]
     fn poll_read_completion_io(
         &mut self,
         cx: &mut Context<'_>,
@@ -243,6 +256,7 @@ impl TcpStream {
         self.handle.poll_read_completion(cx, buf)
     }
 
+    #[inline]
     fn poll_write_poll_io(
         &mut self,
         cx: &mut Context<'_>,
@@ -256,6 +270,7 @@ impl TcpStream {
         }
     }
 
+    #[inline]
     fn poll_write_completion_io(
         &mut self,
         cx: &mut Context<'_>,
@@ -264,6 +279,7 @@ impl TcpStream {
         self.handle.poll_write_completion(cx, buf)
     }
 
+    #[inline]
     fn poll_read_io(
         &mut self,
         cx: &mut Context<'_>,
@@ -276,6 +292,7 @@ impl TcpStream {
         }
     }
 
+    #[inline]
     fn poll_write_io(
         &mut self,
         cx: &mut Context<'_>,
@@ -290,6 +307,7 @@ impl TcpStream {
 }
 
 impl PollTcpStream {
+    #[inline]
     pub async fn connect(address: SocketAddr) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
         let mut stream = TcpStream::from_std_with_mode(inner, RegistrationMode::Poll)?;
@@ -298,102 +316,122 @@ impl PollTcpStream {
         Ok(Self { stream })
     }
 
+    #[inline]
     pub(crate) fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
         Ok(Self {
             stream: TcpStream::from_std_with_mode(inner, RegistrationMode::Poll)?,
         })
     }
 
+    #[inline]
     pub fn into_adaptive(self) -> TcpStream {
         self.stream
     }
 
+    #[inline]
     pub fn into_completion(self) -> Result<TcpStream, io::Error> {
         let mut stream = self.stream;
         stream.handle.rebind_mode(RegistrationMode::Completion)?;
         Ok(stream)
     }
 
+    #[inline]
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         poll_fn(|cx| self.stream.poll_read_poll_io(cx, buf)).await
     }
 
+    #[inline]
     pub async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
         poll_fn(|cx| self.stream.poll_write_poll_io(cx, buf)).await
     }
 
+    #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.stream.local_addr()
     }
 
+    #[inline]
     pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
         self.stream.peer_addr()
     }
 
+    #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.stream.shutdown(how)
     }
 }
 
 impl Read for TcpStream {
+    #[inline]
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         self.inner.read(buf)
     }
 }
 
 impl Read for PollTcpStream {
+    #[inline]
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         self.stream.inner.read(buf)
     }
 }
 
 impl Write for TcpStream {
+    #[inline]
     fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
         self.inner.write(buf)
     }
 
+    #[inline]
     fn flush(&mut self) -> Result<(), io::Error> {
         self.inner.flush()
     }
 
+    #[inline]
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
         self.inner.write_vectored(bufs)
     }
 }
 
 impl Write for PollTcpStream {
+    #[inline]
     fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
         self.stream.inner.write(buf)
     }
 
+    #[inline]
     fn flush(&mut self) -> Result<(), io::Error> {
         self.stream.inner.flush()
     }
 
+    #[inline]
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
         self.stream.inner.write_vectored(bufs)
     }
 }
 
 impl AsRawFd for TcpStream {
+    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.inner.as_raw_fd()
     }
 }
 
 impl AsRawFd for PollTcpStream {
+    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.stream.inner.as_raw_fd()
     }
 }
 
 impl AsyncRead for TcpStream {
+    #[inline]
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         TcpStream::read(self, buf).await
     }
 }
 
 impl TokioAsyncRead for PollTcpStream {
+    #[inline]
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -417,16 +455,19 @@ impl TokioAsyncRead for PollTcpStream {
 }
 
 impl AsyncWrite for TcpStream {
+    #[inline]
     async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
         TcpStream::write(self, buf).await
     }
 
+    #[inline]
     async fn flush(&mut self) -> Result<(), io::Error> {
         Ok(())
     }
 }
 
 impl TokioAsyncWrite for PollTcpStream {
+    #[inline]
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -435,18 +476,22 @@ impl TokioAsyncWrite for PollTcpStream {
         self.get_mut().stream.poll_write_poll_io(cx, buf)
     }
 
+    #[inline]
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 
+    #[inline]
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(self.get_mut().shutdown(Shutdown::Write))
     }
 
+    #[inline]
     fn is_write_vectored(&self) -> bool {
         true
     }
 
+    #[inline]
     fn poll_write_vectored(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -462,6 +507,7 @@ impl TokioAsyncWrite for PollTcpStream {
 }
 
 impl Drop for TcpStream {
+    #[inline]
     fn drop(&mut self) {
         // Safety: The struct is dropped after the handle is dropped.
         unsafe {

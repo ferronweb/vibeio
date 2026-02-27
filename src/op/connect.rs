@@ -16,6 +16,7 @@ pub struct ConnectOp<'a> {
 }
 
 impl<'a> ConnectOp<'a> {
+    #[inline]
     pub fn new(handle: &'a InnerRawHandle) -> Self {
         Self {
             handle,
@@ -23,6 +24,7 @@ impl<'a> ConnectOp<'a> {
         }
     }
 
+    #[inline]
     pub fn new_completion(
         handle: &'a InnerRawHandle,
         addr: *const libc::sockaddr,
@@ -45,6 +47,7 @@ pub trait CompletionConnectIo {
 }
 
 impl CompletionConnectIo for InnerRawHandle {
+    #[inline]
     fn poll_connect_completion(
         &self,
         cx: &mut Context<'_>,
@@ -61,10 +64,12 @@ impl CompletionConnectIo for InnerRawHandle {
 impl Op for ConnectOp<'_> {
     type Output = ();
 
+    #[inline]
     fn token(&self) -> Token {
         self.handle.token()
     }
 
+    #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         let mut socket_error: libc::c_int = 0;
         let mut socket_error_len = mem::size_of::<libc::c_int>() as libc::socklen_t;
@@ -125,11 +130,13 @@ impl Op for ConnectOp<'_> {
         Ok(())
     }
 
+    #[inline]
     fn completion_kind(&self) -> Option<CompletionKind> {
         Some(CompletionKind::Connect)
     }
 
     #[cfg(target_os = "linux")]
+    #[inline]
     fn build_completion_entry(
         &mut self,
         user_data: u64,
@@ -150,6 +157,7 @@ impl Op for ConnectOp<'_> {
         )
     }
 
+    #[inline]
     fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
         if result < 0 {
             return Err(io::Error::from_raw_os_error(-result));

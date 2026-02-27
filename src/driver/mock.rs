@@ -4,16 +4,19 @@ use mio::{Interest, Token};
 pub struct MockDriver {}
 
 impl MockDriver {
+    #[inline]
     pub(crate) fn new() -> Self {
         MockDriver {}
     }
 }
 
 impl Driver for MockDriver {
+    #[inline]
     fn wait(&self) {
         panic!("runtime stalled: main task is pending but no tasks are ready");
     }
 
+    #[inline]
     fn submit<O, R>(&self, _op: O, _waker: std::task::Waker) -> Result<R, std::io::Error>
     where
         O: crate::op::Op<Output = R>,
@@ -24,6 +27,7 @@ impl Driver for MockDriver {
         ))
     }
 
+    #[inline]
     fn register_handle(
         &self,
         _handle: &crate::fd_inner::InnerRawHandle,
@@ -35,6 +39,7 @@ impl Driver for MockDriver {
         ))
     }
 
+    #[inline]
     fn reregister_handle(
         &self,
         _handle: &crate::fd_inner::InnerRawHandle,
@@ -46,6 +51,7 @@ impl Driver for MockDriver {
         ))
     }
 
+    #[inline]
     fn deregister_handle(
         &self,
         _handle: &crate::fd_inner::InnerRawHandle,

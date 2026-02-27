@@ -19,6 +19,7 @@ mod tests {
 
     use super::{PollTcpStream, TcpListener, TcpStream};
 
+    #[inline]
     fn try_bind_listener(address: SocketAddr) -> Option<TcpListener> {
         match TcpListener::bind(address) {
             Ok(listener) => Some(listener),

@@ -3,8 +3,10 @@
 use std::io::{self, ErrorKind};
 
 pub trait AsyncRead {
+    #[inline]
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error>;
 
+    #[inline]
     async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), io::Error> {
         while !buf.is_empty() {
             let read = self.read(buf).await?;
@@ -23,12 +25,15 @@ pub trait AsyncRead {
 }
 
 pub trait AsyncWrite {
+    #[inline]
     async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error>;
 
+    #[inline]
     async fn flush(&mut self) -> Result<(), io::Error> {
         Ok(())
     }
 
+    #[inline]
     async fn write_all(&mut self, mut buf: &[u8]) -> Result<(), io::Error> {
         while !buf.is_empty() {
             let written = self.write(buf).await?;
@@ -84,6 +89,7 @@ mod tests {
     }
 
     impl SliceReader {
+        #[inline]
         fn new(data: &[u8], chunk_size: usize) -> Self {
             Self {
                 data: data.to_vec(),
@@ -94,6 +100,7 @@ mod tests {
     }
 
     impl AsyncRead for SliceReader {
+        #[inline]
         async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
             if self.offset >= self.data.len() {
                 return Ok(0);
@@ -114,6 +121,7 @@ mod tests {
     }
 
     impl VecWriter {
+        #[inline]
         fn new(chunk_size: usize) -> Self {
             Self {
                 data: Vec::new(),
@@ -124,6 +132,7 @@ mod tests {
     }
 
     impl AsyncWrite for VecWriter {
+        #[inline]
         async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
             if buf.is_empty() {
                 return Ok(0);
@@ -133,6 +142,7 @@ mod tests {
             Ok(write_len)
         }
 
+        #[inline]
         async fn flush(&mut self) -> Result<(), io::Error> {
             self.flushed = true;
             Ok(())

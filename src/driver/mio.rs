@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 use std::task::Waker;
 use std::time::Duration;
 
 use mio::{Events, Interest, Poll, Token};
 use parking_lot::Mutex;
+use slab::Slab;
 
 use crate::{driver::Driver, fd_inner::InnerRawHandle, op::Op};
 
@@ -13,8 +13,7 @@ struct Registration {
 }
 
 struct DriverState {
-    registrations: HashMap<Token, Registration>,
-    next_token: usize,
+    registrations: Slab<Registration>,
 }
 
 pub struct MioDriver {
@@ -24,6 +23,7 @@ pub struct MioDriver {
 }
 
 impl MioDriver {
+    #[inline]
     pub(crate) fn new() -> Result<Self, io::Error> {
         let poll = Poll::new()?;
 
@@ -31,28 +31,12 @@ impl MioDriver {
             poll: Mutex::new(poll),
             events: Mutex::new(Events::with_capacity(1024)),
             state: Mutex::new(DriverState {
-                registrations: HashMap::new(),
-                next_token: 0,
+                registrations: Slab::new(),
             }),
         })
     }
 
-    fn allocate_token(state: &mut DriverState) -> Result<Token, io::Error> {
-        for _ in 0..usize::MAX {
-            let token = Token(state.next_token);
-            state.next_token = state.next_token.wrapping_add(1);
-
-            if !state.registrations.contains_key(&token) {
-                return Ok(token);
-            }
-        }
-
-        Err(io::Error::new(
-            ErrorKind::Other,
-            "mio token space exhausted for I/O registrations",
-        ))
-    }
-
+    #[inline]
     pub(crate) fn wait_timeout(&self, timeout: Option<Duration>) {
         let mut poll = self.poll.lock();
         let mut events = self.events.lock();
@@ -64,7 +48,7 @@ impl MioDriver {
         {
             let mut state = self.state.lock();
             for event in events.iter() {
-                if let Some(registration) = state.registrations.get_mut(&event.token()) {
+                if let Some(registration) = state.registrations.get_mut(event.token().0) {
                     if let Some(task) = registration.waiter.take() {
                         to_wake.push(task);
                     }
@@ -80,10 +64,12 @@ impl MioDriver {
 }
 
 impl Driver for MioDriver {
+    #[inline]
     fn wait(&self) {
         self.wait_timeout(None);
     }
 
+    #[inline]
     fn submit<O, R>(&self, mut op: O, waker: Waker) -> Result<R, io::Error>
     where
         O: Op<Output = R>,
@@ -95,7 +81,7 @@ impl Driver for MioDriver {
             Ok(output) => Ok(output),
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
                 let mut state = self.state.lock();
-                let registration = state.registrations.get_mut(&token).ok_or_else(|| {
+                let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
                     io::Error::new(
                         ErrorKind::NotFound,
                         format!("I/O token {} is not registered with this driver", token.0),
@@ -108,6 +94,7 @@ impl Driver for MioDriver {
         }
     }
 
+    #[inline]
     fn register_handle(
         &self,
         handle: &InnerRawHandle,
@@ -115,10 +102,9 @@ impl Driver for MioDriver {
     ) -> Result<Token, io::Error> {
         let token = {
             let mut state = self.state.lock();
-            let token = Self::allocate_token(&mut state)?;
-            state
-                .registrations
-                .insert(token, Registration { waiter: None });
+            let entry = state.registrations.vacant_entry();
+            let token = Token(entry.key());
+            entry.insert(Registration { waiter: None });
             token
         };
 
@@ -126,13 +112,14 @@ impl Driver for MioDriver {
         let mut source = mio::unix::SourceFd(&handle.handle);
         if let Err(err) = poll.registry().register(&mut source, token, interest) {
             let mut state = self.state.lock();
-            state.registrations.remove(&token);
+            let _ = state.registrations.try_remove(token.0);
             return Err(err);
         }
 
         Ok(token)
     }
 
+    #[inline]
     fn reregister_handle(
         &self,
         handle: &InnerRawHandle,
@@ -140,7 +127,7 @@ impl Driver for MioDriver {
     ) -> Result<(), io::Error> {
         {
             let state = self.state.lock();
-            if !state.registrations.contains_key(&handle.token) {
+            if !state.registrations.contains(handle.token.0) {
                 return Err(io::Error::new(
                     ErrorKind::NotFound,
                     format!(
@@ -157,13 +144,14 @@ impl Driver for MioDriver {
             .reregister(&mut source, handle.token, interest)
     }
 
+    #[inline]
     fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), io::Error> {
         let poll = self.poll.lock();
         let mut source = mio::unix::SourceFd(&handle.handle);
         poll.registry().deregister(&mut source)?;
 
         let mut state = self.state.lock();
-        state.registrations.remove(&handle.token);
+        let _ = state.registrations.try_remove(handle.token.0);
         Ok(())
     }
 }
@@ -184,22 +172,26 @@ mod tests {
     }
 
     impl TestWake {
+        #[inline]
         fn new() -> Self {
             Self {
                 count: AtomicUsize::new(0),
             }
         }
 
+        #[inline]
         fn wake_count(&self) -> usize {
             self.count.load(Ordering::SeqCst)
         }
     }
 
     impl std::task::Wake for TestWake {
+        #[inline]
         fn wake(self: Arc<Self>) {
             self.count.fetch_add(1, Ordering::SeqCst);
         }
 
+        #[inline]
         fn wake_by_ref(self: &Arc<Self>) {
             self.count.fetch_add(1, Ordering::SeqCst);
         }
@@ -213,10 +205,12 @@ mod tests {
     impl Op for SuccessOp {
         type Output = usize;
 
+        #[inline]
         fn token(&self) -> Token {
             self.token
         }
 
+        #[inline]
         fn execute(&mut self) -> Result<Self::Output, io::Error> {
             Ok(self.value)
         }
@@ -229,10 +223,12 @@ mod tests {
     impl Op for PendingOp {
         type Output = ();
 
+        #[inline]
         fn token(&self) -> Token {
             self.token
         }
 
+        #[inline]
         fn execute(&mut self) -> Result<Self::Output, io::Error> {
             Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -267,12 +263,13 @@ mod tests {
         let wake = Arc::new(TestWake::new());
         let waker = std::task::Waker::from(wake.clone());
 
-        let token = Token(7);
-        {
+        let token = {
             let mut state = driver.state.lock();
-            state
-                .registrations
-                .insert(token, Registration { waiter: None });
+            Token(state.registrations.insert(Registration { waiter: None }))
+        };
+        {
+            let state = driver.state.lock();
+            assert!(state.registrations.contains(token.0));
         }
 
         let err = driver
@@ -284,7 +281,7 @@ mod tests {
         let state = driver.state.lock();
         let registration = state
             .registrations
-            .get(&token)
+            .get(token.0)
             .expect("token should still be registered");
         assert!(registration.waiter.is_some());
     }
@@ -295,15 +292,15 @@ mod tests {
         let wake = Arc::new(TestWake::new());
         let waker = std::task::Waker::from(wake.clone());
 
-        let token = Token(9);
-        {
+        let token = {
             let mut state = driver.state.lock();
-            state.registrations.insert(
-                token,
-                Registration {
-                    waiter: Some(waker),
-                },
-            );
+            Token(state.registrations.insert(Registration {
+                waiter: Some(waker),
+            }))
+        };
+        {
+            let state = driver.state.lock();
+            assert!(state.registrations.contains(token.0));
         }
 
         let poll = driver.poll.lock();

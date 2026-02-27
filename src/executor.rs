@@ -34,10 +34,12 @@ pub struct JoinHandle<T> {
 }
 
 impl<T> JoinHandle<T> {
+    #[inline]
     fn new(state: Arc<Mutex<JoinState<T>>>) -> Self {
         Self { state }
     }
 
+    #[inline]
     fn try_take_output(&self) -> Option<T> {
         let mut state = self.state.lock();
         state.output.take()
@@ -47,6 +49,7 @@ impl<T> JoinHandle<T> {
 impl<T> Future for JoinHandle<T> {
     type Output = T;
 
+    #[inline]
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut state = self.state.lock();
         if let Some(output) = state.output.take() {
@@ -61,6 +64,7 @@ impl<T> Future for JoinHandle<T> {
 struct CurrentRuntimeGuard;
 
 impl CurrentRuntimeGuard {
+    #[inline]
     fn enter(runtime_inner: Arc<RuntimeInner>) -> Self {
         CURRENT_RUNTIME.with(|runtime| {
             let mut runtime = runtime.lock();
@@ -76,6 +80,7 @@ impl CurrentRuntimeGuard {
 }
 
 impl Drop for CurrentRuntimeGuard {
+    #[inline]
     fn drop(&mut self) {
         CURRENT_RUNTIME.with(|runtime| {
             let mut runtime = runtime.lock();
@@ -120,6 +125,7 @@ where
 }
 
 impl RuntimeInner {
+    #[inline]
     pub fn spawn<T>(&self, future: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>
     where
         T: Send + 'static,
@@ -150,6 +156,7 @@ impl RuntimeInner {
 }
 
 impl Runtime {
+    #[inline]
     pub fn spawn<T>(&self, future: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>
     where
         T: Send + 'static,
@@ -157,6 +164,7 @@ impl Runtime {
         self.inner.spawn(future)
     }
 
+    #[inline]
     pub fn block_on<T>(&self, future: impl Future<Output = T> + Send + 'static) -> T
     where
         T: Send + 'static,
@@ -198,6 +206,7 @@ pub fn yield_now() -> YieldNow {
 impl Future for YieldNow {
     type Output = ();
 
+    #[inline]
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.0 {
             Poll::Ready(())
