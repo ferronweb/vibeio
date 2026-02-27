@@ -1,14 +1,16 @@
 use std::cell::RefCell;
 use std::io::{self, ErrorKind};
+use std::os::fd::RawFd;
 use std::task::Waker;
 use std::time::Duration;
 
-use mio::{Events, Interest, Poll, Token};
+use mio::{Events, Interest, Poll, Registry, Token};
 use slab::Slab;
 
 use crate::{driver::Driver, fd_inner::InnerRawHandle, op::Op};
 
 struct Registration {
+    fd: RawFd,
     waiter: Option<Waker>,
 }
 
@@ -18,6 +20,7 @@ struct DriverState {
 
 pub struct MioDriver {
     poll: RefCell<Poll>,
+    registry: Registry,
     events: RefCell<Events>,
     state: RefCell<DriverState>,
     to_wake: RefCell<Vec<Waker>>,
@@ -27,9 +30,11 @@ impl MioDriver {
     #[inline]
     pub(crate) fn new() -> Result<Self, io::Error> {
         let poll = Poll::new()?;
+        let registry = poll.registry().try_clone()?;
 
         Ok(Self {
             poll: RefCell::new(poll),
+            registry,
             events: RefCell::new(Events::with_capacity(1024)),
             state: RefCell::new(DriverState {
                 registrations: Slab::new(),
@@ -50,38 +55,38 @@ impl MioDriver {
 
     #[inline]
     pub(crate) fn wait_timeout(&self, timeout: Option<Duration>) {
+        let mut poll = self.poll.borrow_mut();
+        let mut events = self.events.borrow_mut();
+        poll.poll(&mut events, timeout)
+            .expect("mio poll failed while waiting for I/O events");
+
+        let mut to_wake = Vec::new();
         {
-            let mut poll = self.poll.borrow_mut();
-            let mut events = self.events.borrow_mut();
-            poll.poll(&mut events, timeout)
-                .expect("mio poll failed while waiting for I/O events");
+            let mut reusable = self.to_wake.borrow_mut();
+            std::mem::swap(&mut to_wake, &mut *reusable);
         }
+        to_wake.clear();
 
-        let mut to_wake = {
-            let mut to_wake = self.to_wake.borrow_mut();
-            to_wake.clear();
-
-            {
-                let mut state = self.state.borrow_mut();
-                let mut events = self.events.borrow_mut();
-                for event in events.iter() {
-                    if let Some(registration) = state.registrations.get_mut(event.token().0) {
-                        if let Some(task) = registration.waiter.take() {
-                            to_wake.push(task);
-                        }
+        {
+            let mut state = self.state.borrow_mut();
+            for event in events.iter() {
+                if let Some(registration) = state.registrations.get_mut(event.token().0) {
+                    if let Some(task) = registration.waiter.take() {
+                        to_wake.push(task);
                     }
                 }
-                events.clear();
             }
+        }
 
-            std::mem::take(&mut *to_wake)
-        };
+        drop(events);
+        drop(poll);
 
         for waker in to_wake.drain(..) {
             waker.wake();
         }
 
-        *self.to_wake.borrow_mut() = to_wake;
+        let mut reusable = self.to_wake.borrow_mut();
+        std::mem::swap(&mut to_wake, &mut *reusable);
     }
 }
 
@@ -126,13 +131,15 @@ impl Driver for MioDriver {
             let mut state = self.state.borrow_mut();
             let entry = state.registrations.vacant_entry();
             let token = Token(entry.key());
-            entry.insert(Registration { waiter: None });
+            entry.insert(Registration {
+                fd: handle.handle,
+                waiter: None,
+            });
             token
         };
 
-        let poll = self.poll.borrow();
         let mut source = mio::unix::SourceFd(&handle.handle);
-        if let Err(err) = poll.registry().register(&mut source, token, interest) {
+        if let Err(err) = self.registry.register(&mut source, token, interest) {
             let mut state = self.state.borrow_mut();
             let _ = state.registrations.try_remove(token.0);
             return Err(err);
@@ -147,30 +154,43 @@ impl Driver for MioDriver {
         handle: &InnerRawHandle,
         interest: Interest,
     ) -> Result<(), io::Error> {
-        {
+        let fd = {
             let state = self.state.borrow();
-            if !state.registrations.contains(handle.token.0) {
-                return Err(io::Error::new(
+            let registration = state.registrations.get(handle.token.0).ok_or_else(|| {
+                io::Error::new(
                     ErrorKind::NotFound,
                     format!(
                         "I/O token {} is not registered with this driver",
                         handle.token.0
                     ),
-                ));
-            }
-        }
+                )
+            })?;
+            registration.fd
+        };
 
-        let poll = self.poll.borrow();
-        let mut source = mio::unix::SourceFd(&handle.handle);
-        poll.registry()
+        let mut source = mio::unix::SourceFd(&fd);
+        self.registry
             .reregister(&mut source, handle.token, interest)
     }
 
     #[inline]
     fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), io::Error> {
-        let poll = self.poll.borrow();
-        let mut source = mio::unix::SourceFd(&handle.handle);
-        poll.registry().deregister(&mut source)?;
+        let fd = {
+            let state = self.state.borrow();
+            let registration = state.registrations.get(handle.token.0).ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::NotFound,
+                    format!(
+                        "I/O token {} is not registered with this driver",
+                        handle.token.0
+                    ),
+                )
+            })?;
+            registration.fd
+        };
+
+        let mut source = mio::unix::SourceFd(&fd);
+        self.registry.deregister(&mut source)?;
 
         let mut state = self.state.borrow_mut();
         let _ = state.registrations.try_remove(handle.token.0);
@@ -287,7 +307,10 @@ mod tests {
 
         let token = {
             let mut state = driver.state.borrow_mut();
-            Token(state.registrations.insert(Registration { waiter: None }))
+            Token(state.registrations.insert(Registration {
+                fd: 0,
+                waiter: None,
+            }))
         };
         {
             let state = driver.state.borrow();
@@ -317,6 +340,7 @@ mod tests {
         let token = {
             let mut state = driver.state.borrow_mut();
             Token(state.registrations.insert(Registration {
+                fd: 0,
                 waiter: Some(waker),
             }))
         };

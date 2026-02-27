@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -15,7 +15,7 @@ thread_local! {
 }
 
 pub struct RuntimeInner {
-    queue: Rc<RefCell<VecDeque<Rc<Task>>>>,
+    queue: Rc<UnsafeCell<VecDeque<Rc<Task>>>>,
     driver: Rc<AnyDriver>,
 }
 
@@ -89,7 +89,7 @@ impl Drop for CurrentRuntimeGuard {
 }
 
 pub fn new_runtime(driver: AnyDriver) -> Runtime {
-    let ready_queue = Rc::new(RefCell::new(VecDeque::new()));
+    let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(64)));
     Runtime {
         inner: Some(Rc::new(RuntimeInner {
             queue: ready_queue,
@@ -146,12 +146,32 @@ impl RuntimeInner {
 
         let task = Rc::new(Task {
             future: RefCell::new(Some(future)),
-            queue: self.queue.clone(),
+            queue: Rc::downgrade(&self.queue),
             queued: std::cell::Cell::new(true),
         });
 
-        self.queue.borrow_mut().push_back(task);
+        self.enqueue(task);
         JoinHandle::new(state)
+    }
+
+    #[inline]
+    fn enqueue(&self, task: Rc<Task>) {
+        // SAFETY: this runtime is single-threaded. All ready-queue mutation goes
+        // through runtime/task wake paths on the same thread.
+        unsafe {
+            (&mut *self.queue.get()).push_back(task);
+        }
+    }
+
+    #[inline]
+    fn drain_ready(&self, batch: &mut Vec<Rc<Task>>) {
+        // SAFETY: this runtime is single-threaded and we only hold this mutable
+        // access while draining the queue before polling any task futures.
+        let queue = unsafe { &mut *self.queue.get() };
+        while let Some(task) = queue.pop_front() {
+            task.mark_dequeued();
+            batch.push(task);
+        }
     }
 }
 
@@ -176,20 +196,15 @@ impl Runtime {
         let _runtime_guard = CurrentRuntimeGuard::enter(inner.clone());
 
         let spawned_task = inner.spawn(future);
+        let mut batch = Vec::with_capacity(64);
 
         loop {
             if let Some(output) = spawned_task.try_take_output() {
                 return output;
             }
 
-            let mut batch = Vec::new();
-            {
-                let mut queue = inner.queue.borrow_mut();
-                while let Some(task) = queue.pop_front() {
-                    task.mark_dequeued();
-                    batch.push(task);
-                }
-            }
+            batch.clear();
+            inner.drain_ready(&mut batch);
 
             if batch.is_empty() {
                 // Wait for I/O
@@ -197,7 +212,7 @@ impl Runtime {
                 continue;
             }
 
-            for task in batch {
+            for task in batch.drain(..) {
                 let mut future_slot = task.future.borrow_mut();
                 if let Some(mut future) = future_slot.take() {
                     drop(future_slot);

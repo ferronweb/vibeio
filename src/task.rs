@@ -1,13 +1,13 @@
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::VecDeque;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::task::{RawWaker, RawWakerVTable, Waker};
 
 use futures_util::future::LocalBoxFuture;
 
 pub struct Task {
     pub future: RefCell<Option<LocalBoxFuture<'static, ()>>>,
-    pub queue: Rc<RefCell<VecDeque<Rc<Task>>>>,
+    pub queue: Weak<UnsafeCell<VecDeque<Rc<Task>>>>,
     pub queued: Cell<bool>,
 }
 
@@ -55,7 +55,14 @@ impl Task {
     #[inline]
     fn enqueue_if_needed(task: &Rc<Self>) {
         if !task.queued.replace(true) {
-            task.queue.borrow_mut().push_back(Rc::clone(task));
+            if let Some(queue) = task.queue.upgrade() {
+                // SAFETY: the runtime is single-threaded and only mutates the ready
+                // queue from that thread. We also never hold a mutable queue borrow
+                // while polling task futures, so re-entrant wakes do not alias.
+                unsafe {
+                    (&mut *queue.get()).push_back(Rc::clone(task));
+                }
+            }
         }
     }
 
