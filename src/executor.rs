@@ -1,10 +1,9 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use crossbeam_queue::SegQueue;
-use futures_util::task::waker_ref;
 use futures_util::FutureExt;
 use parking_lot::Mutex;
 
@@ -12,16 +11,16 @@ use crate::driver::AnyDriver;
 use crate::task::Task;
 
 thread_local! {
-    static CURRENT_RUNTIME: Mutex<Option<Arc<RuntimeInner>>> = Mutex::new(None);
+    static CURRENT_RUNTIME: Mutex<Option<Rc<RuntimeInner>>> = Mutex::new(None);
 }
 
 pub struct RuntimeInner {
-    queue: Arc<SegQueue<Arc<Task>>>,
-    driver: Arc<AnyDriver>,
+    queue: Rc<SegQueue<Rc<Task>>>,
+    driver: Rc<AnyDriver>,
 }
 
 pub struct Runtime {
-    inner: Arc<RuntimeInner>,
+    inner: Rc<RuntimeInner>,
 }
 
 struct JoinState<T> {
@@ -30,12 +29,12 @@ struct JoinState<T> {
 }
 
 pub struct JoinHandle<T> {
-    state: Arc<Mutex<JoinState<T>>>,
+    state: Rc<Mutex<JoinState<T>>>,
 }
 
 impl<T> JoinHandle<T> {
     #[inline]
-    fn new(state: Arc<Mutex<JoinState<T>>>) -> Self {
+    fn new(state: Rc<Mutex<JoinState<T>>>) -> Self {
         Self { state }
     }
 
@@ -65,7 +64,7 @@ struct CurrentRuntimeGuard;
 
 impl CurrentRuntimeGuard {
     #[inline]
-    fn enter(runtime_inner: Arc<RuntimeInner>) -> Self {
+    fn enter(runtime_inner: Rc<RuntimeInner>) -> Self {
         CURRENT_RUNTIME.with(|runtime| {
             let mut runtime = runtime.lock();
             if runtime.is_some() {
@@ -90,16 +89,16 @@ impl Drop for CurrentRuntimeGuard {
 }
 
 pub fn new_runtime(driver: AnyDriver) -> Runtime {
-    let ready_queue = Arc::new(SegQueue::new());
+    let ready_queue = Rc::new(SegQueue::new());
     Runtime {
-        inner: Arc::new(RuntimeInner {
+        inner: Rc::new(RuntimeInner {
             queue: ready_queue,
-            driver: Arc::new(driver),
+            driver: Rc::new(driver),
         }),
     }
 }
 
-pub(crate) fn current_driver() -> Option<Arc<AnyDriver>> {
+pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
     CURRENT_RUNTIME.with(|runtime| {
         let runtime = runtime.lock();
         runtime
@@ -108,9 +107,9 @@ pub(crate) fn current_driver() -> Option<Arc<AnyDriver>> {
     })
 }
 
-pub fn spawn<T>(future: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>
+pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T>
 where
-    T: Send + 'static,
+    T: 'static,
 {
     let runtime = CURRENT_RUNTIME.with(|runtime| {
         let runtime = runtime.lock();
@@ -126,11 +125,11 @@ where
 
 impl RuntimeInner {
     #[inline]
-    pub fn spawn<T>(&self, future: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>
+    pub fn spawn<T>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T>
     where
-        T: Send + 'static,
+        T: 'static,
     {
-        let state = Arc::new(Mutex::new(JoinState {
+        let state = Rc::new(Mutex::new(JoinState {
             output: None,
             waker: None,
         }));
@@ -143,9 +142,9 @@ impl RuntimeInner {
                 waker.wake();
             }
         }
-        .boxed();
+        .boxed_local();
 
-        let task = Arc::new(Task {
+        let task = Rc::new(Task {
             future: Mutex::new(Some(future)),
             queue: self.queue.clone(),
         });
@@ -157,17 +156,17 @@ impl RuntimeInner {
 
 impl Runtime {
     #[inline]
-    pub fn spawn<T>(&self, future: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>
+    pub fn spawn<T>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T>
     where
-        T: Send + 'static,
+        T: 'static,
     {
         self.inner.spawn(future)
     }
 
     #[inline]
-    pub fn block_on<T>(&self, future: impl Future<Output = T> + Send + 'static) -> T
+    pub fn block_on<T>(&self, future: impl Future<Output = T> + 'static) -> T
     where
-        T: Send + 'static,
+        T: 'static,
     {
         let _runtime_guard = CurrentRuntimeGuard::enter(self.inner.clone());
 
@@ -182,7 +181,7 @@ impl Runtime {
                 let mut future_slot = task.future.lock();
 
                 if let Some(mut future) = future_slot.take() {
-                    let waker = waker_ref(&task);
+                    let waker = task.waker();
                     let mut context = Context::from_waker(&waker);
 
                     if future.as_mut().poll(&mut context).is_pending() {

@@ -2,7 +2,7 @@
 
 use std::io;
 use std::os::fd::RawFd;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::task::Waker;
 
 use mio::{Interest, Token};
@@ -18,7 +18,7 @@ pub struct InnerRawHandle {
     pub(crate) token: Token,
     interest: Interest,
     mode: RegistrationMode,
-    driver: Arc<AnyDriver>,
+    driver: Rc<AnyDriver>,
 }
 
 impl InnerRawHandle {
