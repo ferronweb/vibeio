@@ -20,7 +20,7 @@ pub struct RuntimeInner {
 }
 
 pub struct Runtime {
-    inner: Rc<RuntimeInner>,
+    inner: Option<Rc<RuntimeInner>>,
 }
 
 struct JoinState<T> {
@@ -91,10 +91,10 @@ impl Drop for CurrentRuntimeGuard {
 pub fn new_runtime(driver: AnyDriver) -> Runtime {
     let ready_queue = Rc::new(RefCell::new(VecDeque::new()));
     Runtime {
-        inner: Rc::new(RuntimeInner {
+        inner: Some(Rc::new(RuntimeInner {
             queue: ready_queue,
             driver: Rc::new(driver),
-        }),
+        })),
     }
 }
 
@@ -161,7 +161,10 @@ impl Runtime {
     where
         T: 'static,
     {
-        self.inner.spawn(future)
+        self.inner
+            .as_ref()
+            .expect("runtime has been dropped")
+            .spawn(future)
     }
 
     #[inline]
@@ -169,9 +172,10 @@ impl Runtime {
     where
         T: 'static,
     {
-        let _runtime_guard = CurrentRuntimeGuard::enter(self.inner.clone());
+        let inner = self.inner.as_ref().expect("runtime has been dropped");
+        let _runtime_guard = CurrentRuntimeGuard::enter(inner.clone());
 
-        let spawned_task = self.inner.spawn(future);
+        let spawned_task = inner.spawn(future);
 
         loop {
             if let Some(output) = spawned_task.try_take_output() {
@@ -180,7 +184,7 @@ impl Runtime {
 
             let mut batch = Vec::new();
             {
-                let mut queue = self.inner.queue.borrow_mut();
+                let mut queue = inner.queue.borrow_mut();
                 while let Some(task) = queue.pop_front() {
                     task.mark_dequeued();
                     batch.push(task);
@@ -189,7 +193,7 @@ impl Runtime {
 
             if batch.is_empty() {
                 // Wait for I/O
-                self.inner.driver.wait();
+                inner.driver.wait();
                 continue;
             }
 
@@ -207,6 +211,16 @@ impl Runtime {
                 }
             }
         }
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Drop all tasks with current runtime entered
+        let inner = self.inner.take().expect("runtime has been dropped");
+        let _runtime_guard = CurrentRuntimeGuard::enter(inner.clone());
+        drop(inner);
+        drop(_runtime_guard);
     }
 }
 
