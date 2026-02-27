@@ -28,14 +28,15 @@ fn socket_addr_to_raw(
                     s_addr: u32::from_ne_bytes(address.ip().octets()),
                 },
                 sin_zero: [0; 8],
-                // sin_len is required on *BSD and macOS
                 #[cfg(any(
                     target_os = "macos",
                     target_os = "ios",
                     target_os = "freebsd",
                     target_os = "openbsd",
                     target_os = "dragonfly",
-                    target_os = "netbsd"
+                    target_os = "netbsd",
+                    target_os = "haiku",
+                    target_os = "aix",
                 ))]
                 sin_len: 0,
             };
@@ -62,14 +63,15 @@ fn socket_addr_to_raw(
                     s6_addr: address.ip().octets(),
                 },
                 sin6_scope_id: address.scope_id(),
-                // sin6_len is required on *BSD and macOS
                 #[cfg(any(
                     target_os = "macos",
                     target_os = "ios",
                     target_os = "freebsd",
                     target_os = "openbsd",
                     target_os = "dragonfly",
-                    target_os = "netbsd"
+                    target_os = "netbsd",
+                    target_os = "haiku",
+                    target_os = "aix",
                 ))]
                 sin6_len: 0,
             };
