@@ -1,7 +1,7 @@
 use std::future::poll_fn;
 use std::io;
 use std::mem::ManuallyDrop;
-use std::net::{SocketAddr, TcpListener as StdTcpListener};
+use std::net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs};
 use std::os::fd::{AsRawFd, RawFd};
 use std::task::{Context, Poll};
 
@@ -20,7 +20,7 @@ pub struct TcpListener {
 
 impl TcpListener {
     #[inline]
-    pub fn bind(address: SocketAddr) -> Result<Self, io::Error> {
+    pub fn bind(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let inner = StdTcpListener::bind(address)?;
         inner.set_nonblocking(true)?;
         let handle = ManuallyDrop::new(InnerRawHandle::new(inner.as_raw_fd(), Interest::READABLE)?);

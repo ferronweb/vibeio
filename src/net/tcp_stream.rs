@@ -1,7 +1,7 @@
 use std::future::poll_fn;
 use std::io::{self, IoSlice, Read, Write};
 use std::mem::{self, ManuallyDrop, MaybeUninit};
-use std::net::{Shutdown, SocketAddr};
+use std::net::{Shutdown, SocketAddr, ToSocketAddrs};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -140,8 +140,21 @@ pub struct PollTcpStream {
 }
 
 impl TcpStream {
+    pub async fn connect(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
+        let mut addresses = address.to_socket_addrs()?;
+        let mut last_error = None;
+        while let Some(address) = addresses.next() {
+            match Self::connect_one(address).await {
+                Ok(stream) => return Ok(stream),
+                Err(err) => last_error = Some(err),
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses")))
+    }
+
     #[inline]
-    pub async fn connect(address: SocketAddr) -> Result<Self, io::Error> {
+    async fn connect_one(address: SocketAddr) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
         let mut stream = Self::from_std(inner)?;
 
@@ -361,54 +374,6 @@ impl PollTcpStream {
     }
 }
 
-impl Read for TcpStream {
-    #[inline]
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        self.inner.read(buf)
-    }
-}
-
-impl Read for PollTcpStream {
-    #[inline]
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        self.stream.inner.read(buf)
-    }
-}
-
-impl Write for TcpStream {
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-        self.inner.write(buf)
-    }
-
-    #[inline]
-    fn flush(&mut self) -> Result<(), io::Error> {
-        self.inner.flush()
-    }
-
-    #[inline]
-    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
-        self.inner.write_vectored(bufs)
-    }
-}
-
-impl Write for PollTcpStream {
-    #[inline]
-    fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-        self.stream.inner.write(buf)
-    }
-
-    #[inline]
-    fn flush(&mut self) -> Result<(), io::Error> {
-        self.stream.inner.flush()
-    }
-
-    #[inline]
-    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
-        self.stream.inner.write_vectored(bufs)
-    }
-}
-
 impl AsRawFd for TcpStream {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
@@ -420,6 +385,27 @@ impl AsRawFd for PollTcpStream {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.stream.inner.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for TcpStream {
+    #[inline]
+    fn into_raw_fd(self) -> RawFd {
+        let mut this = ManuallyDrop::new(self);
+
+        // Safety: `this` will not be dropped, so we must drop the registration handle manually.
+        // We then move out the inner std stream and transfer its fd ownership to the caller.
+        unsafe {
+            ManuallyDrop::drop(&mut this.handle);
+            std::ptr::read(&this.inner).into_raw_fd()
+        }
+    }
+}
+
+impl IntoRawFd for PollTcpStream {
+    #[inline]
+    fn into_raw_fd(self) -> RawFd {
+        self.stream.into_raw_fd()
     }
 }
 
