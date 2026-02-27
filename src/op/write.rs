@@ -1,8 +1,32 @@
 use std::io;
+use std::task::{Context, Poll};
 
 use mio::Token;
 
-use crate::{fd_inner::InnerRawHandle, op::Op};
+use crate::{
+    fd_inner::InnerRawHandle,
+    op::{completion_result_to_poll, CompletionKind, Op},
+};
+
+pub trait CompletionWriteIo {
+    fn poll_write_completion(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>>;
+}
+
+impl CompletionWriteIo for InnerRawHandle {
+    fn poll_write_completion(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        completion_result_to_poll(
+            self.submit_completion(WriteOp::new(self, buf), cx.waker().clone()),
+        )
+    }
+}
 
 pub struct WriteOp<'a> {
     handle: &'a InnerRawHandle,
@@ -36,5 +60,32 @@ impl Op for WriteOp<'_> {
         }
 
         Ok(written as usize)
+    }
+
+    fn completion_kind(&self) -> Option<CompletionKind> {
+        Some(CompletionKind::Write)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn build_completion_entry(
+        &mut self,
+        user_data: u64,
+    ) -> Result<io_uring::squeue::Entry, io::Error> {
+        use io_uring::{opcode, types};
+
+        Ok(opcode::Send::new(
+            types::Fd(self.handle.handle),
+            self.buf.as_ptr(),
+            self.buf.len() as _,
+        )
+        .build()
+        .user_data(user_data))
+    }
+
+    fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
+        if result < 0 {
+            return Err(io::Error::from_raw_os_error(-result));
+        }
+        Ok(result as usize)
     }
 }

@@ -7,11 +7,12 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use mio::Interest;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
 use crate::{
     fd_inner::InnerRawHandle,
-    op::{ConnectOp, ReadOp, WriteOp},
+    io::{AsyncRead, AsyncWrite},
+    op::{CompletionConnectIo, CompletionReadIo, CompletionWriteIo, ConnectOp, ReadOp, WriteOp},
 };
 
 fn socket_addr_to_raw(
@@ -84,7 +85,9 @@ fn set_nonblocking(fd: RawFd) -> Result<(), io::Error> {
     Ok(())
 }
 
-fn connect_nonblocking(address: SocketAddr) -> Result<std::net::TcpStream, io::Error> {
+fn new_nonblocking_socket(
+    address: SocketAddr,
+) -> Result<(std::net::TcpStream, libc::sockaddr_storage, libc::socklen_t), io::Error> {
     let (domain, raw_addr, raw_addr_len) = socket_addr_to_raw(address);
     let socket_fd = unsafe { libc::socket(domain, libc::SOCK_STREAM, 0) };
     if socket_fd == -1 {
@@ -94,10 +97,20 @@ fn connect_nonblocking(address: SocketAddr) -> Result<std::net::TcpStream, io::E
     let socket_fd = unsafe { OwnedFd::from_raw_fd(socket_fd) };
     set_nonblocking(socket_fd.as_raw_fd())?;
 
+    let stream = unsafe { std::net::TcpStream::from_raw_fd(socket_fd.into_raw_fd()) };
+    stream.set_nonblocking(true)?;
+    Ok((stream, raw_addr, raw_addr_len))
+}
+
+fn start_nonblocking_connect(
+    fd: RawFd,
+    raw_addr: &libc::sockaddr_storage,
+    raw_addr_len: libc::socklen_t,
+) -> Result<(), io::Error> {
     let connect_result = unsafe {
         libc::connect(
-            socket_fd.as_raw_fd(),
-            (&raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>(),
+            fd,
+            (raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>(),
             raw_addr_len,
         )
     };
@@ -106,15 +119,13 @@ fn connect_nonblocking(address: SocketAddr) -> Result<std::net::TcpStream, io::E
         let err = io::Error::last_os_error();
         if !matches!(
             err.raw_os_error(),
-            Some(libc::EINPROGRESS) | Some(libc::EWOULDBLOCK)
+            Some(libc::EINPROGRESS) | Some(libc::EWOULDBLOCK) | Some(libc::EALREADY)
         ) {
             return Err(err);
         }
     }
 
-    let stream = unsafe { std::net::TcpStream::from_raw_fd(socket_fd.into_raw_fd()) };
-    stream.set_nonblocking(true)?;
-    Ok(stream)
+    Ok(())
 }
 
 pub struct TcpStream {
@@ -122,11 +133,29 @@ pub struct TcpStream {
     handle: InnerRawHandle,
 }
 
+/// A poll-only variant that always uses readiness-based operations.
+pub struct PollTcpStream {
+    stream: TcpStream,
+}
+
 impl TcpStream {
     pub async fn connect(address: SocketAddr) -> Result<Self, io::Error> {
-        let inner = connect_nonblocking(address)?;
+        let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
         let mut stream = Self::from_std(inner)?;
-        poll_fn(|cx| stream.poll_connect(cx)).await?;
+
+        if stream.handle.supports_completion() {
+            let raw_addr = Box::new(raw_addr);
+            poll_fn(|cx| {
+                let raw_addr_ptr =
+                    (&*raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>();
+                stream.poll_connect_completion_io(cx, raw_addr_ptr, raw_addr_len)
+            })
+            .await?;
+        } else {
+            start_nonblocking_connect(stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
+            poll_fn(|cx| stream.poll_connect_poll_io(cx)).await?;
+        }
+
         Ok(stream)
     }
 
@@ -159,7 +188,7 @@ impl TcpStream {
         Ok(Self { inner, handle })
     }
 
-    pub(crate) fn poll_connect(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_connect_poll_io(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         let op = ConnectOp::new(&self.handle);
         match self.handle.submit(op, cx.waker().clone()) {
             Ok(()) => Poll::Ready(Ok(())),
@@ -168,7 +197,17 @@ impl TcpStream {
         }
     }
 
-    fn poll_read_io(
+    fn poll_connect_completion_io(
+        &mut self,
+        cx: &mut Context<'_>,
+        raw_addr: *const libc::sockaddr,
+        raw_addr_len: libc::socklen_t,
+    ) -> Poll<Result<(), io::Error>> {
+        self.handle
+            .poll_connect_completion(cx, raw_addr, raw_addr_len)
+    }
+
+    fn poll_read_poll_io(
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut [u8],
@@ -181,7 +220,15 @@ impl TcpStream {
         }
     }
 
-    fn poll_write_io(
+    fn poll_read_completion_io(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        self.handle.poll_read_completion(cx, buf)
+    }
+
+    fn poll_write_poll_io(
         &mut self,
         cx: &mut Context<'_>,
         buf: &[u8],
@@ -193,11 +240,89 @@ impl TcpStream {
             Err(err) => Poll::Ready(Err(err)),
         }
     }
+
+    fn poll_write_completion_io(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        self.handle.poll_write_completion(cx, buf)
+    }
+
+    fn poll_read_io(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        if self.handle.supports_completion() {
+            self.poll_read_completion_io(cx, buf)
+        } else {
+            self.poll_read_poll_io(cx, buf)
+        }
+    }
+
+    fn poll_write_io(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        if self.handle.supports_completion() {
+            self.poll_write_completion_io(cx, buf)
+        } else {
+            self.poll_write_poll_io(cx, buf)
+        }
+    }
+}
+
+impl PollTcpStream {
+    pub async fn connect(address: SocketAddr) -> Result<Self, io::Error> {
+        let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
+        let mut stream = TcpStream::from_std(inner)?;
+        start_nonblocking_connect(stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
+        poll_fn(|cx| stream.poll_connect_poll_io(cx)).await?;
+        Ok(Self { stream })
+    }
+
+    pub(crate) fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
+        Ok(Self {
+            stream: TcpStream::from_std(inner)?,
+        })
+    }
+
+    pub fn into_adaptive(self) -> TcpStream {
+        self.stream
+    }
+
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        poll_fn(|cx| self.stream.poll_read_poll_io(cx, buf)).await
+    }
+
+    pub async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+        poll_fn(|cx| self.stream.poll_write_poll_io(cx, buf)).await
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
+        self.stream.local_addr()
+    }
+
+    pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
+        self.stream.peer_addr()
+    }
+
+    pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
+        self.stream.shutdown(how)
+    }
 }
 
 impl Read for TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         self.inner.read(buf)
+    }
+}
+
+impl Read for PollTcpStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        self.stream.inner.read(buf)
     }
 }
 
@@ -215,13 +340,39 @@ impl Write for TcpStream {
     }
 }
 
+impl Write for PollTcpStream {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+        self.stream.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> Result<(), io::Error> {
+        self.stream.inner.flush()
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
+        self.stream.inner.write_vectored(bufs)
+    }
+}
+
 impl AsRawFd for TcpStream {
     fn as_raw_fd(&self) -> RawFd {
         self.inner.as_raw_fd()
     }
 }
 
+impl AsRawFd for PollTcpStream {
+    fn as_raw_fd(&self) -> RawFd {
+        self.stream.inner.as_raw_fd()
+    }
+}
+
 impl AsyncRead for TcpStream {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        TcpStream::read(self, buf).await
+    }
+}
+
+impl TokioAsyncRead for PollTcpStream {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -233,7 +384,7 @@ impl AsyncRead for TcpStream {
 
         let this = self.get_mut();
         let unfilled = buf.initialize_unfilled();
-        match this.poll_read_io(cx, unfilled) {
+        match this.stream.poll_read_poll_io(cx, unfilled) {
             Poll::Ready(Ok(read)) => {
                 buf.advance(read);
                 Poll::Ready(Ok(()))
@@ -245,12 +396,22 @@ impl AsyncRead for TcpStream {
 }
 
 impl AsyncWrite for TcpStream {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+        TcpStream::write(self, buf).await
+    }
+
+    async fn flush(&mut self) -> Result<(), io::Error> {
+        Ok(())
+    }
+}
+
+impl TokioAsyncWrite for PollTcpStream {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.get_mut().poll_write_io(cx, buf)
+        self.get_mut().stream.poll_write_poll_io(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
@@ -272,7 +433,7 @@ impl AsyncWrite for TcpStream {
     ) -> Poll<Result<usize, io::Error>> {
         let this = self.get_mut();
         if let Some(non_empty) = bufs.iter().find(|buf| !buf.is_empty()) {
-            this.poll_write_io(cx, non_empty)
+            this.stream.poll_write_poll_io(cx, non_empty)
         } else {
             Poll::Ready(Ok(0))
         }

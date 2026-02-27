@@ -1,18 +1,60 @@
 use std::io::{self, ErrorKind};
 use std::mem;
 use std::mem::MaybeUninit;
+use std::task::{Context, Poll};
 
 use mio::Token;
 
-use crate::{fd_inner::InnerRawHandle, op::Op};
+use crate::{
+    fd_inner::InnerRawHandle,
+    op::{completion_result_to_poll, CompletionKind, Op},
+};
 
 pub struct ConnectOp<'a> {
     handle: &'a InnerRawHandle,
+    completion_addr: Option<(*const libc::sockaddr, libc::socklen_t)>,
 }
 
 impl<'a> ConnectOp<'a> {
     pub fn new(handle: &'a InnerRawHandle) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            completion_addr: None,
+        }
+    }
+
+    pub fn new_completion(
+        handle: &'a InnerRawHandle,
+        addr: *const libc::sockaddr,
+        addrlen: libc::socklen_t,
+    ) -> Self {
+        Self {
+            handle,
+            completion_addr: Some((addr, addrlen)),
+        }
+    }
+}
+
+pub trait CompletionConnectIo {
+    fn poll_connect_completion(
+        &self,
+        cx: &mut Context<'_>,
+        addr: *const libc::sockaddr,
+        addrlen: libc::socklen_t,
+    ) -> Poll<Result<(), io::Error>>;
+}
+
+impl CompletionConnectIo for InnerRawHandle {
+    fn poll_connect_completion(
+        &self,
+        cx: &mut Context<'_>,
+        addr: *const libc::sockaddr,
+        addrlen: libc::socklen_t,
+    ) -> Poll<Result<(), io::Error>> {
+        completion_result_to_poll(self.submit_completion(
+            ConnectOp::new_completion(self, addr, addrlen),
+            cx.waker().clone(),
+        ))
     }
 }
 
@@ -80,6 +122,38 @@ impl Op for ConnectOp<'_> {
             return Err(err);
         }
 
+        Ok(())
+    }
+
+    fn completion_kind(&self) -> Option<CompletionKind> {
+        Some(CompletionKind::Connect)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn build_completion_entry(
+        &mut self,
+        user_data: u64,
+    ) -> Result<io_uring::squeue::Entry, io::Error> {
+        use io_uring::{opcode, types};
+
+        let (addr, addrlen) = self.completion_addr.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "missing socket address for completion-based connect",
+            )
+        })?;
+
+        Ok(
+            opcode::Connect::new(types::Fd(self.handle.handle), addr, addrlen)
+                .build()
+                .user_data(user_data),
+        )
+    }
+
+    fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
+        if result < 0 {
+            return Err(io::Error::from_raw_os_error(-result));
+        }
         Ok(())
     }
 }

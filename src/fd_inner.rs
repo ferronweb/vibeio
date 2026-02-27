@@ -47,6 +47,17 @@ impl InnerRawHandle {
     {
         self.driver.submit(op, waker)
     }
+
+    pub(crate) fn supports_completion(&self) -> bool {
+        self.driver.supports_completion()
+    }
+
+    pub(crate) fn submit_completion<O, R>(&self, op: O, waker: Waker) -> Result<R, io::Error>
+    where
+        O: Op<Output = R>,
+    {
+        self.driver.submit_completion(op, waker)
+    }
 }
 
 impl Drop for InnerRawHandle {

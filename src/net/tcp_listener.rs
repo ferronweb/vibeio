@@ -6,7 +6,11 @@ use std::task::{Context, Poll};
 
 use mio::Interest;
 
-use crate::{fd_inner::InnerRawHandle, net::TcpStream, op::AcceptOp};
+use crate::{
+    fd_inner::InnerRawHandle,
+    net::TcpStream,
+    op::{AcceptOp, CompletionAcceptIo},
+};
 
 pub struct TcpListener {
     inner: StdTcpListener,
@@ -33,6 +37,17 @@ impl TcpListener {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(TcpStream, SocketAddr), io::Error>> {
+        if self.handle.supports_completion() {
+            return match self.handle.poll_accept_completion(cx) {
+                Poll::Ready(Ok((stream, address))) => match TcpStream::from_std(stream) {
+                    Ok(stream) => Poll::Ready(Ok((stream, address))),
+                    Err(err) => Poll::Ready(Err(err)),
+                },
+                Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+                Poll::Pending => Poll::Pending,
+            };
+        }
+
         let op = AcceptOp::new(&self.handle);
         match self.handle.submit(op, cx.waker().clone()) {
             Ok((stream, address)) => match TcpStream::from_std(stream) {
