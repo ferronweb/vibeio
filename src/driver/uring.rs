@@ -5,7 +5,7 @@ use std::sync::Arc as StdArc;
 use std::task::Waker;
 use std::time::Duration;
 
-use io_uring::types::SubmitArgs;
+use io_uring::types::{SubmitArgs, Timespec};
 use io_uring::{opcode, squeue, types, IoUring};
 use libc;
 use mio::{Interest, Token};
@@ -54,7 +54,9 @@ pub struct UringDriver {
     state: RefCell<DriverState>,
     to_wake: RefCell<Vec<Waker>>,
     interrupt: StdArc<InterruptState>,
-    interrupt_buffer: RefCell<[u8; 1]>,
+    interrupt_buffer: RefCell<[u8; 8]>,
+    ext_arg: bool,
+    timespec: RefCell<Option<Timespec>>,
 }
 
 impl Drop for UringDriver {
@@ -78,8 +80,10 @@ impl UringDriver {
             return Err(io::Error::last_os_error());
         }
 
+        let ring = IoUring::new(entries)?;
+        let ext_arg = ring.params().is_feature_ext_arg();
         let driver = Self {
-            ring: RefCell::new(IoUring::new(entries)?),
+            ring: RefCell::new(ring),
             state: RefCell::new(DriverState {
                 registrations: Slab::new(),
             }),
@@ -87,7 +91,9 @@ impl UringDriver {
             interrupt: StdArc::new(InterruptState {
                 eventfd: Some(eventfd),
             }),
-            interrupt_buffer: RefCell::new([0; 1]),
+            interrupt_buffer: RefCell::new([0; 8]),
+            ext_arg,
+            timespec: RefCell::new(None),
         };
 
         driver.submit_interrupt();
@@ -152,6 +158,7 @@ impl UringDriver {
         match result {
             Ok(_) => Ok(()),
             Err(err) if err.raw_os_error() == Some(libc::EBUSY) => Ok(()),
+            Err(err) if err.raw_os_error() == Some(libc::ETIME) => Ok(()), // io_uring Timeout
             Err(err) => Err(err),
         }
     }
@@ -246,36 +253,39 @@ impl UringDriver {
     }
 
     #[inline]
-    fn collect_completions(
-        &self,
-        wait_for_one: bool,
-        timeout: Option<Duration>,
-    ) -> Result<bool, io::Error> {
+    fn collect_completions(&self, timeout: Option<Duration>) -> Result<bool, io::Error> {
         {
             let mut ring = self.ring.borrow_mut();
-            let should_submit = if wait_for_one {
-                true
-            } else {
-                !ring.submission().is_empty()
-            };
-
-            if should_submit {
-                let submit_result = if wait_for_one {
-                    if let Some(timeout) = timeout {
-                        ring.submitter()
-                            .submit_with_args(1, &SubmitArgs::new().timespec(&timeout.into()))
-                    } else {
-                        ring.submit_and_wait(1)
-                    }
+            let submit_result = if let Some(timeout) = timeout {
+                if self.ext_arg {
+                    // Linux 5.11+
+                    ring.submitter()
+                        .submit_with_args(1, &SubmitArgs::new().timespec(&timeout.into()))
                 } else {
-                    ring.submit()
-                };
-                Self::submitter_call_result(submit_result)?;
-            }
+                    // Linux 5.4+
+                    let timespec = timeout.into();
+                    let timespec_ptr = &timespec as *const Timespec;
+                    self.timespec.borrow_mut().replace(timespec);
+                    let entry = opcode::Timeout::new(timespec_ptr)
+                        .build()
+                        .user_data(u64::MAX - 1);
+
+                    let mut sq = ring.submission();
+                    // Safety: timespec would be saved into the I/O driver itself
+                    let _ = unsafe { sq.push(&entry) };
+                    drop(sq);
+
+                    ring.submit_and_wait(1)
+                }
+            } else {
+                ring.submit_and_wait(1)
+            };
+            Self::submitter_call_result(submit_result)?;
         }
 
         let mut woke_any = false;
         let mut interrupt = false;
+        let mut timeout = false;
         let mut wake_buffer = {
             let mut to_wake = self.to_wake.borrow_mut();
             to_wake.clear();
@@ -294,6 +304,10 @@ impl UringDriver {
                 if key == u64::MAX {
                     // Task interrupted
                     interrupt = true;
+                    continue;
+                } else if key == u64::MAX - 1 {
+                    // Timeout (Linux <5.10)
+                    timeout = true;
                     continue;
                 }
 
@@ -322,12 +336,15 @@ impl UringDriver {
             }
         }
 
-        if !wake_buffer.is_empty() {
+        if interrupt {
+            self.submit_interrupt();
+        }
+
+        if interrupt || timeout || !wake_buffer.is_empty() {
             woke_any = true;
         }
 
-        if interrupt {
-            self.submit_interrupt();
+        if timeout {
             woke_any = true;
         }
 
@@ -368,20 +385,7 @@ impl UringDriver {
 impl Driver for UringDriver {
     #[inline]
     fn wait(&self, timeout: Option<Duration>) {
-        match self.collect_completions(false, timeout) {
-            Ok(woke_any) if woke_any => return,
-            Ok(_) => {}
-            Err(err) => panic!("io_uring submit failed while processing I/O completions: {err}"),
-        }
-
-        {
-            let state = self.state.borrow();
-            if !Self::has_inflight_io(&state) {
-                return;
-            }
-        }
-
-        match self.collect_completions(true, timeout) {
+        match self.collect_completions(timeout) {
             Ok(_) => {}
             Err(err) => panic!("io_uring submit_and_wait failed while waiting for I/O: {err}"),
         }
