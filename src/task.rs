@@ -1,14 +1,20 @@
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{RawWaker, RawWakerVTable, Waker};
 
 use futures_util::future::LocalBoxFuture;
 
+use crate::driver::AnyDriver;
+
 pub struct Task {
     pub future: RefCell<Option<LocalBoxFuture<'static, ()>>>,
     pub queue: Weak<UnsafeCell<VecDeque<Rc<Task>>>>,
+    pub driver: Weak<AnyDriver>,
     pub queued: Cell<bool>,
+    pub thread_id: std::thread::ThreadId,
+    pub waiting: Weak<AtomicBool>,
 }
 
 impl Task {
@@ -61,6 +67,20 @@ impl Task {
                 // while polling task futures, so re-entrant wakes do not alias.
                 unsafe {
                     (&mut *queue.get()).push_back(Rc::clone(task));
+                }
+            }
+        }
+
+        if std::thread::current().id() != task.thread_id {
+            // Interrupt the driver if it's waiting
+            if task
+                .waiting
+                .upgrade()
+                .map_or(false, |waiting| waiting.load(Ordering::Relaxed))
+            {
+                // Interrupt the driver if the waker is not on the same thread as the runtime
+                if let Some(driver) = task.driver.upgrade() {
+                    driver.interrupt();
                 }
             }
         }

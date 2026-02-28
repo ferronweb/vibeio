@@ -4,7 +4,7 @@ use std::os::fd::RawFd;
 use std::task::Waker;
 use std::time::Duration;
 
-use mio::{Events, Interest, Poll, Registry, Token};
+use mio::{Events, Interest, Poll, Registry, Token, Waker as MioWaker};
 use slab::Slab;
 
 use crate::{driver::Driver, fd_inner::InnerRawHandle, op::Op};
@@ -24,6 +24,7 @@ pub struct MioDriver {
     events: RefCell<Events>,
     state: RefCell<DriverState>,
     to_wake: RefCell<Vec<Waker>>,
+    waker: RefCell<MioWaker>,
 }
 
 impl MioDriver {
@@ -31,6 +32,7 @@ impl MioDriver {
     pub(crate) fn new() -> Result<Self, io::Error> {
         let poll = Poll::new()?;
         let registry = poll.registry().try_clone()?;
+        let waker = MioWaker::new(&registry, Token(usize::MAX))?;
 
         Ok(Self {
             poll: RefCell::new(poll),
@@ -40,6 +42,7 @@ impl MioDriver {
                 registrations: Slab::new(),
             }),
             to_wake: RefCell::new(Vec::with_capacity(1024)),
+            waker: RefCell::new(waker),
         })
     }
 
@@ -70,6 +73,11 @@ impl MioDriver {
         {
             let mut state = self.state.borrow_mut();
             for event in events.iter() {
+                // Check if this is an interrupt event
+                if event.token().0 == usize::MAX {
+                    continue;
+                }
+
                 if let Some(registration) = state.registrations.get_mut(event.token().0) {
                     if let Some(task) = registration.waiter.take() {
                         to_wake.push(task);
@@ -94,6 +102,12 @@ impl Driver for MioDriver {
     #[inline]
     fn wait(&self) {
         self.wait_timeout(None);
+    }
+
+    #[inline]
+    fn interrupt(&self) {
+        // Write a byte to the interrupt pipe to wake up the poll
+        let _ = self.waker.borrow().wake();
     }
 
     #[inline]

@@ -1,9 +1,11 @@
 use std::cell::RefCell;
 use std::io::{self, ErrorKind};
 use std::os::fd::RawFd;
+use std::sync::Arc as StdArc;
 use std::task::Waker;
 
 use io_uring::{opcode, squeue, types, IoUring};
+use libc;
 use mio::{Interest, Token};
 use slab::Slab;
 
@@ -71,22 +73,54 @@ struct DriverState {
     registrations: Slab<HandleRegistration>,
 }
 
+struct InterruptState {
+    eventfd: Option<RawFd>,
+}
+
 pub struct UringDriver {
     ring: RefCell<IoUring>,
     state: RefCell<DriverState>,
     to_wake: RefCell<Vec<Waker>>,
+    interrupt: StdArc<InterruptState>,
+    interrupt_buffer: RefCell<[u8; 1]>,
+}
+
+impl Drop for UringDriver {
+    fn drop(&mut self) {
+        // Unregister eventfd if present
+        if let Some(eventfd) = self.interrupt.eventfd {
+            // Unregister eventfd from io_uring
+            let _ = self.ring.get_mut().submitter().unregister_eventfd();
+            // Close eventfd
+            unsafe { libc::close(eventfd) };
+        }
+    }
 }
 
 impl UringDriver {
     #[inline]
     pub(crate) fn new(entries: u32) -> Result<Self, io::Error> {
-        Ok(Self {
+        // Create eventfd for interruption
+        let eventfd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if eventfd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let driver = Self {
             ring: RefCell::new(IoUring::new(entries)?),
             state: RefCell::new(DriverState {
                 registrations: Slab::new(),
             }),
             to_wake: RefCell::new(Vec::with_capacity(entries as usize)),
-        })
+            interrupt: StdArc::new(InterruptState {
+                eventfd: Some(eventfd),
+            }),
+            interrupt_buffer: RefCell::new([0; 1]),
+        };
+
+        driver.submit_interrupt();
+
+        Ok(driver)
     }
 
     #[inline]
@@ -295,6 +329,7 @@ impl UringDriver {
         }
 
         let mut woke_any = false;
+        let mut interrupt = false;
         let mut wake_buffer = {
             let mut to_wake = self.to_wake.borrow_mut();
             to_wake.clear();
@@ -309,6 +344,13 @@ impl UringDriver {
             for cqe in cq {
                 let key = cqe.user_data();
                 let result = cqe.result();
+
+                if key == u64::MAX {
+                    // Task interrupted
+                    interrupt = true;
+                    continue;
+                }
+
                 let token = Self::decode_token(key);
                 let key_kind = Self::decode_key_kind(key);
 
@@ -340,6 +382,11 @@ impl UringDriver {
             woke_any = true;
         }
 
+        if interrupt {
+            self.submit_interrupt();
+            woke_any = true;
+        }
+
         for waker in wake_buffer.drain(..) {
             waker.wake();
         }
@@ -357,6 +404,20 @@ impl UringDriver {
                 HandleRegistration::Completion(registration) => registration.has_inflight_io(),
                 HandleRegistration::Poll(registration) => registration.poll_armed,
             })
+    }
+
+    #[inline]
+    fn submit_interrupt(&self) {
+        use io_uring::{opcode, types};
+        // Submit a read operation to the eventfd to wake up the driver
+        if let Some(eventfd) = self.interrupt.eventfd {
+            let mut buffer = self.interrupt_buffer.borrow_mut();
+            let _ = self.push_entry(
+                opcode::Read::new(types::Fd(eventfd), buffer.as_mut_ptr(), buffer.len() as u32)
+                    .build()
+                    .user_data(u64::MAX),
+            );
+        }
     }
 }
 
@@ -379,6 +440,21 @@ impl Driver for UringDriver {
         match self.collect_completions(true) {
             Ok(_) => {}
             Err(err) => panic!("io_uring submit_and_wait failed while waiting for I/O: {err}"),
+        }
+    }
+
+    #[inline]
+    fn interrupt(&self) {
+        // Write to the eventfd to wake up the driver
+        if let Some(eventfd) = self.interrupt.eventfd {
+            let value: u64 = 1;
+            let _ = unsafe {
+                libc::write(
+                    eventfd,
+                    &value as *const u64 as *const std::ffi::c_void,
+                    std::mem::size_of::<u64>(),
+                )
+            };
         }
     }
 

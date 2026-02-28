@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Waker};
 
 use futures_util::FutureExt;
@@ -17,6 +18,7 @@ thread_local! {
 pub struct RuntimeInner {
     queue: Rc<UnsafeCell<VecDeque<Rc<Task>>>>,
     driver: Rc<AnyDriver>,
+    waiting: Rc<AtomicBool>,
 }
 
 pub struct Runtime {
@@ -94,6 +96,7 @@ pub fn new_runtime(driver: AnyDriver) -> Runtime {
         inner: Some(Rc::new(RuntimeInner {
             queue: ready_queue,
             driver: Rc::new(driver),
+            waiting: Rc::new(AtomicBool::new(false)),
         })),
     }
 }
@@ -148,6 +151,9 @@ impl RuntimeInner {
             future: RefCell::new(Some(future)),
             queue: Rc::downgrade(&self.queue),
             queued: std::cell::Cell::new(true),
+            thread_id: std::thread::current().id(),
+            driver: Rc::downgrade(&self.driver),
+            waiting: Rc::downgrade(&self.waiting),
         });
 
         self.enqueue(task);
@@ -208,7 +214,9 @@ impl Runtime {
 
             if batch.is_empty() {
                 // Wait for I/O
+                inner.waiting.store(true, Ordering::Relaxed);
                 inner.driver.wait();
+                inner.waiting.store(false, Ordering::Relaxed);
                 continue;
             }
 

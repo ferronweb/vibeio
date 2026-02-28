@@ -79,6 +79,12 @@ pub trait Driver {
     {
         Err(unsupported_completion_error())
     }
+
+    /// Interrupts a waiting I/O operation.
+    #[inline]
+    fn interrupt(&self) {
+        // Default implementation does nothing
+    }
 }
 
 pub enum AnyDriver {
@@ -211,6 +217,106 @@ impl AnyDriver {
             AnyDriver::Mock(driver) => driver.submit_completion(op, waker),
             #[cfg(target_os = "linux")]
             AnyDriver::IoUring(driver) => driver.submit_completion(op, waker),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn interrupt(&self) {
+        match self {
+            AnyDriver::Mio(driver) => driver.interrupt(),
+            AnyDriver::Mock(driver) => driver.interrupt(),
+            #[cfg(target_os = "linux")]
+            AnyDriver::IoUring(driver) => driver.interrupt(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AnyDriver;
+    use std::{
+        future::poll_fn,
+        task::{Poll, Waker},
+    };
+
+    #[test]
+    fn test_mio_driver_interrupt_basic() {
+        let driver = AnyDriver::new_mio().expect("Failed to create MioDriver");
+
+        // Test that interrupt doesn't panic and can be called multiple times
+        driver.interrupt();
+        driver.interrupt();
+        driver.interrupt();
+    }
+
+    #[test]
+    fn test_uring_driver_interrupt_basic() {
+        #[cfg(target_os = "linux")]
+        {
+            let driver = AnyDriver::new_uring(1024).expect("Failed to create UringDriver");
+
+            // Test that interrupt doesn't panic and can be called multiple times
+            driver.interrupt();
+            driver.interrupt();
+            driver.interrupt();
+        }
+    }
+
+    #[test]
+    fn test_mock_driver_interrupt_basic() {
+        let driver = AnyDriver::new_mock();
+
+        // Test that interrupt doesn't panic and can be called multiple times
+        driver.interrupt();
+        driver.interrupt();
+        driver.interrupt();
+    }
+
+    #[test]
+    fn test_interrupt_mio() {
+        let runtime =
+            crate::executor::new_runtime(AnyDriver::new_mio().expect("Failed to create MioDriver"));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let waker: Waker = rx.recv().unwrap();
+            drop(rx); // Drop the receiver before waking the task
+            waker.wake();
+        });
+
+        runtime.block_on(poll_fn(move |cx| {
+            if tx.send(cx.waker().clone()).is_ok() {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        }));
+    }
+
+    #[test]
+    fn test_interruptor_uring() {
+        #[cfg(target_os = "linux")]
+        {
+            let runtime = crate::executor::new_runtime(
+                AnyDriver::new_uring(1024).expect("Failed to create UringDriver"),
+            );
+
+            let (tx, rx) = std::sync::mpsc::channel();
+
+            std::thread::spawn(move || {
+                let waker: Waker = rx.recv().unwrap();
+                drop(rx); // Drop the receiver before waking the task
+                waker.wake();
+            });
+
+            runtime.block_on(poll_fn(move |cx| {
+                if tx.send(cx.waker().clone()).is_ok() {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            }));
         }
     }
 }

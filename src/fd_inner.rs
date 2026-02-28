@@ -48,6 +48,16 @@ impl InnerRawHandle {
                 "can't register I/O handle outside runtime",
             )
         })?;
+        Self::new_with_driver_and_mode(&driver, handle, interest, mode)
+    }
+
+    #[inline]
+    pub(crate) fn new_with_driver_and_mode(
+        driver: &Rc<AnyDriver>,
+        handle: RawFd,
+        interest: Interest,
+        mode: RegistrationMode,
+    ) -> Result<Self, io::Error> {
         let mode = if matches!(mode, RegistrationMode::Completion) && !driver.supports_completion()
         {
             RegistrationMode::Poll

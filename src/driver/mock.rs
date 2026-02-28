@@ -17,6 +17,11 @@ impl Driver for MockDriver {
     }
 
     #[inline]
+    fn interrupt(&self) {
+        // Mock driver doesn't actually wait, so interrupt is a no-op
+    }
+
+    #[inline]
     fn submit<O, R>(&self, _op: O, _waker: std::task::Waker) -> Result<R, std::io::Error>
     where
         O: crate::op::Op<Output = R>,
