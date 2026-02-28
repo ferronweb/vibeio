@@ -382,25 +382,7 @@ impl TokioAsyncWrite for PollTcpStream {
         Poll::Ready(self.get_mut().shutdown(Shutdown::Write))
     }
 
-    #[inline]
-    fn is_write_vectored(&self) -> bool {
-        true
-    }
-
-    #[inline]
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>> {
-        // TODO: maybe implement vectored write operation on Unix-like systems?
-        let this = self.get_mut();
-        if let Some(non_empty) = bufs.iter().find(|buf| !buf.is_empty()) {
-            this.stream.handle.poll_write_poll(cx, non_empty)
-        } else {
-            Poll::Ready(Ok(0))
-        }
-    }
+    // TODO: maybe implement vectored write operation on Unix-like systems?
 }
 
 impl Drop for TcpStream {
