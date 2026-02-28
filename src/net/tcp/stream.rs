@@ -187,6 +187,16 @@ impl TcpStream {
     }
 
     #[inline]
+    pub fn nodelay(&self) -> Result<bool, io::Error> {
+        self.inner.nodelay()
+    }
+
+    #[inline]
+    pub fn set_nodelay(&self, nodelay: bool) -> Result<(), io::Error> {
+        self.inner.set_nodelay(nodelay)
+    }
+
+    #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.inner.shutdown(how)
     }
@@ -276,6 +286,16 @@ impl PollTcpStream {
     #[inline]
     pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
         self.stream.peer_addr()
+    }
+
+    #[inline]
+    pub fn nodelay(&self) -> Result<bool, io::Error> {
+        self.stream.nodelay()
+    }
+
+    #[inline]
+    pub fn set_nodelay(&self, nodelay: bool) -> Result<(), io::Error> {
+        self.stream.set_nodelay(nodelay)
     }
 
     #[inline]
