@@ -1,52 +1,27 @@
-#![allow(async_fn_in_trait)]
+use std::io;
 
-mod util;
+use super::{AsyncRead, AsyncWrite};
 
-use self::util::*;
+pub async fn copy<R, W>(reader: &mut R, writer: &mut W) -> Result<u64, io::Error>
+where
+    R: AsyncRead + ?Sized,
+    W: AsyncWrite + ?Sized,
+{
+    let mut buffer = [0u8; 8192];
+    let mut copied = 0u64;
 
-use std::io::{self, ErrorKind};
-
-pub trait AsyncRead {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error>;
-
-    async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), io::Error> {
-        while !buf.is_empty() {
-            let read = self.read(buf).await?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "failed to fill whole buffer",
-                ));
-            }
-            let (_, rest) = buf.split_at_mut(read);
-            buf = rest;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
         }
 
-        Ok(())
-    }
-}
-
-pub trait AsyncWrite {
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error>;
-
-    async fn flush(&mut self) -> Result<(), io::Error> {
-        Ok(())
+        writer.write_all(&buffer[..read]).await?;
+        copied = copied.saturating_add(read as u64);
     }
 
-    async fn write_all(&mut self, mut buf: &[u8]) -> Result<(), io::Error> {
-        while !buf.is_empty() {
-            let written = self.write(buf).await?;
-            if written == 0 {
-                return Err(io::Error::new(
-                    ErrorKind::WriteZero,
-                    "failed to write whole buffer",
-                ));
-            }
-            buf = &buf[written..];
-        }
-
-        Ok(())
-    }
+    writer.flush().await?;
+    Ok(copied)
 }
 
 #[cfg(test)]
@@ -127,23 +102,18 @@ mod tests {
     }
 
     #[test]
-    fn read_exact_and_write_all_work_for_partial_io() {
+    fn copy_copies_all_bytes_and_flushes_writer() {
         let runtime = new_runtime(AnyDriver::new_mock());
         runtime.block_on(async {
-            let mut reader = SliceReader::new(b"abcdef", 2);
-            let mut out = [0u8; 6];
-            reader
-                .read_exact(&mut out)
-                .await
-                .expect("read_exact should read full buffer");
-            assert_eq!(&out, b"abcdef");
-
+            let mut reader = SliceReader::new(b"hello world", 3);
             let mut writer = VecWriter::new(2);
-            writer
-                .write_all(b"xyz123")
+
+            let copied = copy(&mut reader, &mut writer)
                 .await
-                .expect("write_all should write full buffer");
-            assert_eq!(writer.data, b"xyz123");
+                .expect("copy should succeed");
+            assert_eq!(copied, 11);
+            assert_eq!(writer.data, b"hello world");
+            assert!(writer.flushed);
         });
     }
 }
