@@ -18,8 +18,8 @@ impl TcpListener {
     #[inline]
     pub fn bind(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let inner = StdTcpListener::bind(address)?;
-        inner.set_nonblocking(true)?;
         let handle = ManuallyDrop::new(InnerRawHandle::new(inner.as_raw_fd(), Interest::READABLE)?);
+        inner.set_nonblocking(!handle.uses_completion())?;
         Ok(Self { inner, handle })
     }
 

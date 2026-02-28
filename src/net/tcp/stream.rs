@@ -92,23 +92,7 @@ fn socket_addr_to_raw(
     }
 }
 
-fn set_nonblocking(fd: RawFd) -> Result<(), io::Error> {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags == -1 {
-        return Err(io::Error::last_os_error());
-    }
-
-    if flags & libc::O_NONBLOCK == 0 {
-        let result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-        if result == -1 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-
-    Ok(())
-}
-
-fn new_nonblocking_socket(
+fn new_socket(
     address: SocketAddr,
 ) -> Result<(std::net::TcpStream, libc::sockaddr_storage, libc::socklen_t), io::Error> {
     let (domain, raw_addr, raw_addr_len) = socket_addr_to_raw(address);
@@ -116,12 +100,7 @@ fn new_nonblocking_socket(
     if socket_fd == -1 {
         return Err(io::Error::last_os_error());
     }
-
-    let socket_fd = unsafe { OwnedFd::from_raw_fd(socket_fd) };
-    set_nonblocking(socket_fd.as_raw_fd())?;
-
     let stream = unsafe { std::net::TcpStream::from_raw_fd(socket_fd.into_raw_fd()) };
-    stream.set_nonblocking(true)?;
     Ok((stream, raw_addr, raw_addr_len))
 }
 
@@ -177,8 +156,8 @@ impl TcpStream {
 
     #[inline]
     async fn connect_one(address: SocketAddr) -> Result<Self, io::Error> {
-        let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
-        let mut stream = Self::from_std(inner)?;
+        let (inner, raw_addr, raw_addr_len) = new_socket(address)?;
+        let stream = Self::from_std(inner)?;
 
         if stream.handle.uses_completion() {
             let raw_addr = Box::new(raw_addr);
@@ -222,12 +201,12 @@ impl TcpStream {
         inner: std::net::TcpStream,
         mode: RegistrationMode,
     ) -> Result<Self, io::Error> {
-        inner.set_nonblocking(true)?;
         let handle = ManuallyDrop::new(InnerRawHandle::new_with_mode(
             inner.as_raw_fd(),
             Interest::READABLE | Interest::WRITABLE,
             mode,
         )?);
+        inner.set_nonblocking(!handle.uses_completion())?;
         Ok(Self { inner, handle })
     }
 
@@ -240,13 +219,28 @@ impl TcpStream {
 }
 
 impl PollTcpStream {
+    pub async fn connect(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
+        let mut addresses = address.to_socket_addrs()?;
+        let mut last_error = None;
+        while let Some(address) = addresses.next() {
+            match Self::connect_one(address).await {
+                Ok(stream) => return Ok(stream),
+                Err(err) => last_error = Some(err),
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses")))
+    }
+
     #[inline]
-    pub async fn connect(address: SocketAddr) -> Result<Self, io::Error> {
-        let (inner, raw_addr, raw_addr_len) = new_nonblocking_socket(address)?;
-        let stream = TcpStream::from_std_with_mode(inner, RegistrationMode::Poll)?;
-        start_nonblocking_connect(stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
-        poll_fn(|cx| stream.handle.poll_connect_poll(cx)).await?;
-        Ok(Self { stream })
+    async fn connect_one(address: SocketAddr) -> Result<Self, io::Error> {
+        let (inner, raw_addr, raw_addr_len) = new_socket(address)?;
+        let stream = Self::from_std(inner)?;
+
+        start_nonblocking_connect(stream.stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
+        poll_fn(|cx| stream.stream.handle.poll_connect_poll(cx)).await?;
+
+        Ok(stream)
     }
 
     #[inline]
