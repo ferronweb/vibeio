@@ -13,6 +13,7 @@ pub use connect::ConnectIo;
 pub use read::ReadIo;
 pub use write::WriteIo;
 
+#[inline]
 pub(crate) fn completion_result_to_poll<T>(
     result: Result<T, io::Error>,
 ) -> Poll<Result<T, io::Error>> {
