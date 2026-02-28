@@ -79,7 +79,7 @@ impl Op for ReadOp<'_> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        Ok(opcode::Recv::new(
+        Ok(opcode::Read::new(
             types::Fd(self.handle.handle),
             self.buf.as_mut_ptr(),
             self.buf.len() as _,

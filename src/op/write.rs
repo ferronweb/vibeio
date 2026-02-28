@@ -79,7 +79,7 @@ impl Op for WriteOp<'_> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        Ok(opcode::Send::new(
+        Ok(opcode::Write::new(
             types::Fd(self.handle.handle),
             self.buf.as_ptr(),
             self.buf.len() as _,
