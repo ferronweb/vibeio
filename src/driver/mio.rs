@@ -12,6 +12,7 @@ use crate::{driver::Driver, fd_inner::InnerRawHandle, op::Op};
 struct Registration {
     fd: RawFd,
     waiter: Option<Waker>,
+    interest: Interest,
 }
 
 struct DriverState {
@@ -128,6 +129,18 @@ impl Driver for MioDriver {
                         format!("I/O token {} is not registered with this driver", token.0),
                     )
                 })?;
+
+                let new_interest = op.interest();
+                if registration.interest != new_interest {
+                    // Re-register, but only if the interest has change
+                    self.registry.reregister(
+                        &mut mio::unix::SourceFd(&registration.fd),
+                        token,
+                        op.interest(),
+                    )?;
+                    registration.interest = new_interest;
+                }
+
                 Self::update_waiter(&mut registration.waiter, waker);
                 Err(err)
             }
@@ -148,6 +161,7 @@ impl Driver for MioDriver {
             entry.insert(Registration {
                 fd: handle.handle,
                 waiter: None,
+                interest,
             });
             token
         };
@@ -168,23 +182,22 @@ impl Driver for MioDriver {
         handle: &InnerRawHandle,
         interest: Interest,
     ) -> Result<(), io::Error> {
-        let fd = {
-            let state = self.state.borrow();
-            let registration = state.registrations.get(handle.token.0).ok_or_else(|| {
-                io::Error::new(
-                    ErrorKind::NotFound,
-                    format!(
-                        "I/O token {} is not registered with this driver",
-                        handle.token.0
-                    ),
-                )
-            })?;
-            registration.fd
-        };
+        let mut state = self.state.borrow_mut();
+        let registration = state.registrations.get_mut(handle.token.0).ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::NotFound,
+                format!(
+                    "I/O token {} is not registered with this driver",
+                    handle.token.0
+                ),
+            )
+        })?;
 
-        let mut source = mio::unix::SourceFd(&fd);
+        let mut source = mio::unix::SourceFd(&registration.fd);
         self.registry
-            .reregister(&mut source, handle.token, interest)
+            .reregister(&mut source, handle.token, interest)?;
+        registration.interest = interest;
+        Ok(())
     }
 
     #[inline]
@@ -218,7 +231,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use mio::{Token, Waker};
+    use mio::{Interest, Token, Waker};
 
     use super::{MioDriver, Registration};
     use crate::{driver::Driver, op::Op};
@@ -324,6 +337,7 @@ mod tests {
             Token(state.registrations.insert(Registration {
                 fd: 0,
                 waiter: None,
+                interest: Interest::READABLE | Interest::WRITABLE,
             }))
         };
         {

@@ -3,11 +3,11 @@ use std::mem;
 use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
-use mio::Token;
+use mio::{Interest, Token};
 
 use crate::{
     fd_inner::InnerRawHandle,
-    op::{completion_result_to_poll, CompletionKind, Op},
+    op::{completion_result_to_poll, Op},
 };
 
 pub struct ConnectOp<'a> {
@@ -131,8 +131,8 @@ impl Op for ConnectOp<'_> {
     }
 
     #[inline]
-    fn completion_kind(&self) -> Option<CompletionKind> {
-        Some(CompletionKind::Connect)
+    fn interest(&self) -> Interest {
+        Interest::WRITABLE
     }
 
     #[cfg(target_os = "linux")]

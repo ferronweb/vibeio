@@ -16,7 +16,7 @@ use crate::{
 
 fn main() {
     let runtime =
-        new_runtime(AnyDriver::new_mio().expect("failed to initialize runtime I/O driver"));
+        new_runtime(AnyDriver::new_best().expect("failed to initialize runtime I/O driver"));
 
     // A basic TCP echo server example
     runtime.block_on(async {

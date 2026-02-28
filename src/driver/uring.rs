@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, ErrorKind};
 use std::os::fd::RawFd;
 use std::sync::Arc as StdArc;
@@ -14,49 +15,19 @@ use slab::Slab;
 use crate::{
     driver::{Driver, RegistrationMode},
     fd_inner::InnerRawHandle,
-    op::{CompletionKind, Op},
+    op::Op,
 };
 
-const KEY_KIND_BITS: u64 = 8;
+const KEY_KIND_BITS: u64 = 1;
 const KEY_KIND_MASK: u64 = (1u64 << KEY_KIND_BITS) - 1;
 const POLL_KEY_KIND: u8 = 0;
-const MAX_COMPLETION_KIND_CODE: usize = CompletionKind::Write as usize;
-const COMPLETION_KIND_SLOTS: usize = MAX_COMPLETION_KIND_CODE + 1;
+const COMPLETION_KEY_KIND: u8 = 1;
 
 #[derive(Default)]
-struct CompletionKindState {
+struct CompletionRegistration {
     inflight: bool,
     waiters: Vec<Waker>,
     completed: Option<i32>,
-}
-
-struct CompletionRegistration {
-    by_kind: [CompletionKindState; COMPLETION_KIND_SLOTS],
-}
-
-impl CompletionRegistration {
-    #[inline]
-    fn new() -> Self {
-        Self {
-            by_kind: std::array::from_fn(|_| CompletionKindState::default()),
-        }
-    }
-
-    #[inline]
-    fn kind_state_mut(&mut self, kind_code: u8) -> &mut CompletionKindState {
-        debug_assert!((kind_code as usize) < COMPLETION_KIND_SLOTS);
-        &mut self.by_kind[kind_code as usize]
-    }
-
-    #[inline]
-    fn kind_state_mut_if_present(&mut self, kind_code: u8) -> Option<&mut CompletionKindState> {
-        self.by_kind.get_mut(kind_code as usize)
-    }
-
-    #[inline]
-    fn has_inflight_io(&self) -> bool {
-        self.by_kind.iter().any(|kind_state| kind_state.inflight)
-    }
 }
 
 struct PollRegistration {
@@ -146,8 +117,8 @@ impl UringDriver {
     }
 
     #[inline]
-    fn encode_completion_key(token: Token, kind: CompletionKind) -> u64 {
-        ((token.0 as u64) << KEY_KIND_BITS) | (kind as u8 as u64)
+    fn encode_completion_key(token: Token) -> u64 {
+        ((token.0 as u64) << KEY_KIND_BITS) | COMPLETION_KEY_KIND as u64
     }
 
     #[inline]
@@ -166,11 +137,6 @@ impl UringDriver {
     }
 
     #[inline]
-    fn completion_kind_code(kind: CompletionKind) -> u8 {
-        kind as u8
-    }
-
-    #[inline]
     fn interest_to_poll_mask(interest: Interest) -> u32 {
         let mut mask = 0;
         if interest.is_readable() {
@@ -180,15 +146,6 @@ impl UringDriver {
             mask |= libc::POLLOUT as u32;
         }
         mask
-    }
-
-    #[inline]
-    fn operation_poll_mask(kind: Option<CompletionKind>, fallback_mask: u32) -> u32 {
-        match kind {
-            Some(CompletionKind::Accept) | Some(CompletionKind::Read) => libc::POLLIN as u32,
-            Some(CompletionKind::Connect) | Some(CompletionKind::Write) => libc::POLLOUT as u32,
-            None => fallback_mask,
-        }
     }
 
     #[inline]
@@ -231,27 +188,10 @@ impl UringDriver {
     where
         O: Op,
     {
-        let kind = op.completion_kind().ok_or_else(|| {
-            io::Error::new(
-                ErrorKind::Unsupported,
-                "operation does not support completion-based submission",
-            )
-        })?;
         let token = op.token();
-        let kind_code = Self::completion_kind_code(kind);
-        if kind_code == POLL_KEY_KIND {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "completion kind 0 is reserved for poll notifications",
-            ));
-        }
-        if kind_code as usize >= COMPLETION_KIND_SLOTS {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "completion kind is outside the configured kind range",
-            ));
-        }
-        let key = Self::encode_completion_key(token, kind);
+        // No fixed upper bound on completion kind codes anymore — registration stores
+        // completion state dynamically per-kind.
+        let key = Self::encode_completion_key(token);
 
         {
             let mut state = self.state.borrow_mut();
@@ -272,22 +212,20 @@ impl UringDriver {
                 ));
             };
 
-            let kind_state = registration.kind_state_mut(kind_code);
-
-            if let Some(result) = kind_state.completed.take() {
+            if let Some(result) = registration.completed.take() {
                 return op.complete(result);
             }
 
-            if kind_state.inflight {
-                Self::push_waiter(&mut kind_state.waiters, waker);
+            if registration.inflight {
+                Self::push_waiter(&mut registration.waiters, waker);
                 return Err(io::Error::new(
                     ErrorKind::WouldBlock,
                     "An I/O completion is pending",
                 ));
             }
 
-            kind_state.inflight = true;
-            Self::push_waiter(&mut kind_state.waiters, waker);
+            registration.inflight = true;
+            Self::push_waiter(&mut registration.waiters, waker);
         }
 
         let entry = op.build_completion_entry(key)?;
@@ -296,10 +234,8 @@ impl UringDriver {
             if let Some(HandleRegistration::Completion(registration)) =
                 state.registrations.get_mut(token.0)
             {
-                if let Some(kind_state) = registration.kind_state_mut_if_present(kind_code) {
-                    kind_state.inflight = false;
-                    kind_state.waiters.clear();
-                }
+                registration.inflight = false;
+                registration.waiters.clear();
             }
             return Err(err);
         }
@@ -380,11 +316,9 @@ impl UringDriver {
                 if let Some(HandleRegistration::Completion(registration)) =
                     state.registrations.get_mut(token.0)
                 {
-                    if let Some(kind_state) = registration.kind_state_mut_if_present(key_kind) {
-                        kind_state.completed = Some(result);
-                        kind_state.inflight = false;
-                        wake_buffer.append(&mut kind_state.waiters);
-                    }
+                    registration.completed = Some(result);
+                    registration.inflight = false;
+                    wake_buffer.append(&mut registration.waiters);
                 }
             }
         }
@@ -412,7 +346,7 @@ impl UringDriver {
             .registrations
             .iter()
             .any(|(_, registration)| match registration {
-                HandleRegistration::Completion(registration) => registration.has_inflight_io(),
+                HandleRegistration::Completion(registration) => registration.inflight,
                 HandleRegistration::Poll(registration) => registration.poll_armed,
             })
     }
@@ -500,7 +434,6 @@ impl Driver for UringDriver {
         match op.execute() {
             Ok(output) => Ok(output),
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                let desired_kind = op.completion_kind();
                 let poll_spec = {
                     let mut state = self.state.borrow_mut();
                     let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
@@ -521,8 +454,7 @@ impl Driver for UringDriver {
                     };
 
                     Self::update_waiter(&mut registration.waiter, waker);
-                    let desired_mask =
-                        Self::operation_poll_mask(desired_kind, registration.poll_mask);
+                    let desired_mask = Self::interest_to_poll_mask(op.interest());
                     registration.poll_mask = desired_mask;
 
                     if registration.poll_armed {
@@ -574,7 +506,9 @@ impl Driver for UringDriver {
 
         match mode {
             RegistrationMode::Completion => {
-                entry.insert(HandleRegistration::Completion(CompletionRegistration::new()));
+                entry.insert(HandleRegistration::Completion(
+                    CompletionRegistration::default(),
+                ));
             }
             RegistrationMode::Poll => {
                 entry.insert(HandleRegistration::Poll(PollRegistration {

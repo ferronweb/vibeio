@@ -1,11 +1,11 @@
 use std::io;
 use std::task::{Context, Poll};
 
-use mio::Token;
+use mio::{Interest, Token};
 
 use crate::{
     fd_inner::InnerRawHandle,
-    op::{completion_result_to_poll, CompletionKind, Op},
+    op::{completion_result_to_poll, Op},
 };
 
 pub trait CompletionReadIo {
@@ -67,8 +67,8 @@ impl Op for ReadOp<'_> {
     }
 
     #[inline]
-    fn completion_kind(&self) -> Option<CompletionKind> {
-        Some(CompletionKind::Read)
+    fn interest(&self) -> Interest {
+        Interest::READABLE
     }
 
     #[cfg(target_os = "linux")]

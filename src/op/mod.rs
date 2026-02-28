@@ -6,21 +6,12 @@ mod write;
 use std::io;
 use std::task::Poll;
 
-use mio::Token;
+use mio::{Interest, Token};
 
 pub use accept::{AcceptOp, CompletionAcceptIo};
 pub use connect::{CompletionConnectIo, ConnectOp};
 pub use read::{CompletionReadIo, ReadOp};
 pub use write::{CompletionWriteIo, WriteOp};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum CompletionKind {
-    Connect = 1,
-    Accept = 2,
-    Read = 3,
-    Write = 4,
-}
 
 pub(crate) fn completion_result_to_poll<T>(
     result: Result<T, io::Error>,
@@ -42,10 +33,10 @@ pub trait Op {
     /// Executes the I/O operation (poll/readiness path).
     fn execute(&mut self) -> Result<Self::Output, io::Error>;
 
-    /// Completion operation kind for drivers that support completion I/O.
+    /// Returns a poll interest for the I/O source this operation targets.
     #[inline]
-    fn completion_kind(&self) -> Option<CompletionKind> {
-        None
+    fn interest(&self) -> Interest {
+        Interest::READABLE | Interest::WRITABLE
     }
 
     /// Builds an io_uring submission entry for this operation.
