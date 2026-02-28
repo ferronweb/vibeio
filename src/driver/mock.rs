@@ -14,8 +14,11 @@ impl MockDriver {
 
 impl Driver for MockDriver {
     #[inline]
-    fn wait(&self, _timeout: Option<Duration>) {
-        panic!("runtime stalled: main task is pending but no tasks are ready");
+    fn wait(&self, timeout: Option<Duration>) {
+        if let Some(timeout) = timeout {
+            std::thread::sleep(timeout);
+        }
+        // Don't do anything then, as the mock driver doesn't actually wait for I/O operations
     }
 
     #[inline]

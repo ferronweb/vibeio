@@ -347,28 +347,47 @@ mod tests {
 
     #[test]
     fn wait_wakes_task_for_ready_token() {
-        let driver = MioDriver::new().expect("mio driver should initialize");
-        let wake = Arc::new(TestWake::new());
-        let waker = std::task::Waker::from(wake.clone());
-
-        let token = {
-            let mut state = driver.state.borrow_mut();
-            Token(state.registrations.insert(Registration {
-                fd: 0,
-                waiter: Some(waker),
-            }))
-        };
+        // TODO: support Windows
+        #[cfg(unix)]
         {
-            let state = driver.state.borrow();
-            assert!(state.registrations.contains(token.0));
+            use std::{io::Write, os::fd::AsRawFd, rc::Rc, time::Duration};
+
+            use crate::{driver::AnyDriver, fd_inner::InnerRawHandle};
+
+            let driver = Rc::new(AnyDriver::Mio(
+                MioDriver::new().expect("mio driver should initialize"),
+            ));
+            let wake = Arc::new(TestWake::new());
+            let waker = std::task::Waker::from(wake.clone());
+
+            // Since the driver already has a waker, let's use an Unix pipe instead
+            // TODO: support Windows
+            let (side1, mut side2) =
+                std::os::unix::net::UnixStream::pair().expect("failed to create pipe");
+            let mut buffer = [0u8; 1];
+            side1
+                .set_nonblocking(true)
+                .expect("failed to set non-blocking");
+            let inner_raw_handle = InnerRawHandle::new_with_driver_and_mode(
+                &driver,
+                side1.as_raw_fd(),
+                mio::Interest::READABLE,
+                crate::driver::RegistrationMode::Poll,
+            )
+            .expect("failed to register pipe");
+            match driver.submit(
+                crate::op::ReadOp::new(&inner_raw_handle, &mut buffer),
+                waker,
+            ) {
+                Ok(_) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("failed to submit operation: {}", e),
+            };
+
+            side2.write_all(b"!").expect("failed to write to pipe"); // Exact data written doesn't matter...
+
+            driver.wait(Some(Duration::from_millis(100)));
+            assert_eq!(wake.wake_count(), 1);
         }
-
-        let poll = driver.poll.borrow();
-        let waker = Waker::new(poll.registry(), token).expect("test waker should register");
-        drop(poll);
-        waker.wake().expect("test waker should wake poll");
-
-        driver.wait(None);
-        assert_eq!(wake.wake_count(), 1);
     }
 }
