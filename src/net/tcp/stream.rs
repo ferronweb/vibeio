@@ -214,6 +214,9 @@ impl TcpStream {
     pub fn into_poll(self) -> Result<PollTcpStream, io::Error> {
         let mut stream = self;
         stream.handle.rebind_mode(RegistrationMode::Poll)?;
+        stream
+            .inner
+            .set_nonblocking(!stream.handle.uses_completion())?;
         Ok(PollTcpStream { stream })
     }
 }
@@ -259,6 +262,9 @@ impl PollTcpStream {
     pub fn into_completion(self) -> Result<TcpStream, io::Error> {
         let mut stream = self.stream;
         stream.handle.rebind_mode(RegistrationMode::Completion)?;
+        stream
+            .inner
+            .set_nonblocking(!stream.handle.uses_completion())?;
         Ok(stream)
     }
 
