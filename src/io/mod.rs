@@ -56,7 +56,7 @@ mod tests {
     use crate::{
         driver::AnyDriver,
         executor::new_runtime,
-        io::{copy, AsyncRead, AsyncWrite},
+        io::{AsyncRead, AsyncWrite},
     };
 
     struct SliceReader {
