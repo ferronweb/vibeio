@@ -93,7 +93,7 @@ impl Drop for CurrentRuntimeGuard {
 }
 
 pub fn new_runtime(driver: AnyDriver) -> Runtime {
-    let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(64)));
+    let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(4096)));
     Runtime {
         inner: Some(Rc::new(RuntimeInner {
             queue: ready_queue,
@@ -214,7 +214,7 @@ impl Runtime {
         let _runtime_guard = CurrentRuntimeGuard::enter(inner.clone());
 
         let spawned_task = inner.spawn(future);
-        let mut batch = Vec::with_capacity(64);
+        let mut batch = Vec::with_capacity(4096);
 
         loop {
             if let Some(output) = spawned_task.try_take_output() {
