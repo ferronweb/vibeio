@@ -30,6 +30,10 @@ fn unsupported_completion_error() -> io::Error {
 }
 
 pub trait Driver {
+    /// Flushes the driver's I/O.
+    #[inline]
+    fn flush(&self) {}
+
     /// Waits for the I/O.
     fn wait(&self, timeout: Option<Duration>);
 
@@ -119,6 +123,16 @@ impl AnyDriver {
         }
 
         Self::new_mio()
+    }
+
+    #[inline]
+    pub(crate) fn flush(&self) {
+        match self {
+            AnyDriver::Mio(driver) => driver.flush(),
+            AnyDriver::Mock(driver) => driver.flush(),
+            #[cfg(target_os = "linux")]
+            AnyDriver::IoUring(driver) => driver.flush(),
+        }
     }
 
     #[inline]

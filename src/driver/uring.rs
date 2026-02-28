@@ -253,34 +253,50 @@ impl UringDriver {
     }
 
     #[inline]
-    fn collect_completions(&self, timeout: Option<Duration>) -> Result<bool, io::Error> {
+    fn collect_completions(
+        &self,
+        wait_for_one: bool,
+        timeout: Option<Duration>,
+    ) -> Result<bool, io::Error> {
         {
             let mut ring = self.ring.borrow_mut();
-            let submit_result = if let Some(timeout) = timeout {
-                if self.ext_arg {
-                    // Linux 5.11+
-                    ring.submitter()
-                        .submit_with_args(1, &SubmitArgs::new().timespec(&timeout.into()))
-                } else {
-                    // Linux 5.4+
-                    let timespec = timeout.into();
-                    let timespec_ptr = &timespec as *const Timespec;
-                    self.timespec.borrow_mut().replace(timespec);
-                    let entry = opcode::Timeout::new(timespec_ptr)
-                        .build()
-                        .user_data(u64::MAX - 1);
-
-                    let mut sq = ring.submission();
-                    // Safety: timespec would be saved into the I/O driver itself
-                    let _ = unsafe { sq.push(&entry) };
-                    drop(sq);
-
-                    ring.submit_and_wait(1)
-                }
+            let should_submit = if wait_for_one {
+                true
             } else {
-                ring.submit_and_wait(1)
+                !ring.submission().is_empty()
             };
-            Self::submitter_call_result(submit_result)?;
+
+            if should_submit {
+                let submit_result = if wait_for_one {
+                    if let Some(timeout) = timeout {
+                        if self.ext_arg {
+                            // Linux 5.11+
+                            ring.submitter()
+                                .submit_with_args(1, &SubmitArgs::new().timespec(&timeout.into()))
+                        } else {
+                            // Linux 5.4+
+                            let timespec = timeout.into();
+                            let timespec_ptr = &timespec as *const Timespec;
+                            self.timespec.borrow_mut().replace(timespec);
+                            let entry = opcode::Timeout::new(timespec_ptr)
+                                .build()
+                                .user_data(u64::MAX - 1);
+
+                            let mut sq = ring.submission();
+                            // Safety: timespec would be saved into the I/O driver itself
+                            let _ = unsafe { sq.push(&entry) };
+                            drop(sq);
+
+                            ring.submit_and_wait(1)
+                        }
+                    } else {
+                        ring.submit_and_wait(1)
+                    }
+                } else {
+                    ring.submit()
+                };
+                Self::submitter_call_result(submit_result)?;
+            }
         }
 
         let mut woke_any = false;
@@ -384,8 +400,16 @@ impl UringDriver {
 
 impl Driver for UringDriver {
     #[inline]
+    fn flush(&self) {
+        match self.collect_completions(false, None) {
+            Ok(_) => {}
+            Err(err) => panic!("io_uring submit_and_wait failed while waiting for I/O: {err}"),
+        }
+    }
+
+    #[inline]
     fn wait(&self, timeout: Option<Duration>) {
-        match self.collect_completions(timeout) {
+        match self.collect_completions(true, timeout) {
             Ok(_) => {}
             Err(err) => panic!("io_uring submit_and_wait failed while waiting for I/O: {err}"),
         }

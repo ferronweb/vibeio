@@ -261,6 +261,8 @@ impl Runtime {
                     }
                 }
             }
+
+            inner.driver.flush();
         }
     }
 }

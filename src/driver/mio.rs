@@ -101,6 +101,11 @@ impl MioDriver {
 
 impl Driver for MioDriver {
     #[inline]
+    fn flush(&self) {
+        self.wait_timeout(Some(Duration::ZERO));
+    }
+
+    #[inline]
     fn wait(&self, timeout: Option<Duration>) {
         self.wait_timeout(timeout);
     }
