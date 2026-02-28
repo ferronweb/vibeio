@@ -113,6 +113,15 @@ pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
     })
 }
 
+pub(crate) fn current_timer() -> Option<Rc<Timer>> {
+    CURRENT_RUNTIME.with(|runtime| {
+        let runtime = runtime.borrow();
+        runtime
+            .as_ref()
+            .map(|runtime_inner| runtime_inner.timer.clone())
+    })
+}
+
 pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T>
 where
     T: 'static,
