@@ -379,7 +379,7 @@ impl Driver for UringDriver {
     fn flush(&self) {
         match self.collect_completions(false, None) {
             Ok(_) => {}
-            Err(err) => panic!("io_uring submit_and_wait failed while waiting for I/O: {err}"),
+            Err(err) => panic!("io_uring submit failed while processing I/O completions: {err}"),
         }
     }
 
