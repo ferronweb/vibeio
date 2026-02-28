@@ -234,9 +234,16 @@ impl Runtime {
             };
 
             if batch.is_empty() {
-                // Wait for I/O, if still no pending tasks
+                // Double-check pattern: set waiting flag before checking queue again
+                // This prevents a race condition where a waker enqueues a task between
+                // our drain and the wait, then checks waiting before we set it to true.
                 inner.waiting.store(true, Ordering::Relaxed);
-                inner.driver.wait(deadline);
+                inner.drain_ready(&mut batch);
+
+                if batch.is_empty() {
+                    // Queue is still empty after setting waiting flag, safe to wait
+                    inner.driver.wait(deadline);
+                }
                 inner.waiting.store(false, Ordering::Relaxed);
                 continue;
             }
