@@ -9,6 +9,7 @@ libc = "0.2.176"
 mio = { version = "1.1.1", features = ["os-poll", "os-ext"] }
 parking_lot = "0.12.5"
 slab = "0.4.12"
+tm-wheel = "0.1.1"
 tokio = { version = "1.49.0", features = ["io-util"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

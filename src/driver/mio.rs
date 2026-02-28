@@ -100,8 +100,8 @@ impl MioDriver {
 
 impl Driver for MioDriver {
     #[inline]
-    fn wait(&self) {
-        self.wait_timeout(None);
+    fn wait(&self, timeout: Option<Duration>) {
+        self.wait_timeout(timeout);
     }
 
     #[inline]
@@ -368,7 +368,7 @@ mod tests {
         drop(poll);
         waker.wake().expect("test waker should wake poll");
 
-        driver.wait();
+        driver.wait(None);
         assert_eq!(wake.wake_count(), 1);
     }
 }

@@ -3,8 +3,8 @@ mod mock;
 #[cfg(target_os = "linux")]
 mod uring;
 
-use std::io;
 use std::task::Waker;
+use std::{io, time::Duration};
 
 use ::mio::{Interest, Token};
 
@@ -31,7 +31,7 @@ fn unsupported_completion_error() -> io::Error {
 
 pub trait Driver {
     /// Waits for the I/O.
-    fn wait(&self);
+    fn wait(&self, timeout: Option<Duration>);
 
     /// Submits an I/O operation.
     fn submit<O, R>(&self, op: O, waker: Waker) -> Result<R, std::io::Error>
@@ -122,12 +122,12 @@ impl AnyDriver {
     }
 
     #[inline]
-    pub(crate) fn wait(&self) {
+    pub(crate) fn wait(&self, timeout: Option<Duration>) {
         match self {
-            AnyDriver::Mio(driver) => driver.wait(),
-            AnyDriver::Mock(driver) => driver.wait(),
+            AnyDriver::Mio(driver) => driver.wait(timeout),
+            AnyDriver::Mock(driver) => driver.wait(timeout),
             #[cfg(target_os = "linux")]
-            AnyDriver::IoUring(driver) => driver.wait(),
+            AnyDriver::IoUring(driver) => driver.wait(timeout),
         }
     }
 

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::driver::Driver;
 use mio::{Interest, Token};
 
@@ -12,7 +14,7 @@ impl MockDriver {
 
 impl Driver for MockDriver {
     #[inline]
-    fn wait(&self) {
+    fn wait(&self, _timeout: Option<Duration>) {
         panic!("runtime stalled: main task is pending but no tasks are ready");
     }
 

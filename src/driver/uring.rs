@@ -3,7 +3,9 @@ use std::io::{self, ErrorKind};
 use std::os::fd::RawFd;
 use std::sync::Arc as StdArc;
 use std::task::Waker;
+use std::time::Duration;
 
+use io_uring::types::SubmitArgs;
 use io_uring::{opcode, squeue, types, IoUring};
 use libc;
 use mio::{Interest, Token};
@@ -309,7 +311,11 @@ impl UringDriver {
     }
 
     #[inline]
-    fn collect_completions(&self, wait_for_one: bool) -> Result<bool, io::Error> {
+    fn collect_completions(
+        &self,
+        wait_for_one: bool,
+        timeout: Option<Duration>,
+    ) -> Result<bool, io::Error> {
         {
             let mut ring = self.ring.borrow_mut();
             let should_submit = if wait_for_one {
@@ -320,7 +326,12 @@ impl UringDriver {
 
             if should_submit {
                 let submit_result = if wait_for_one {
-                    ring.submit_and_wait(1)
+                    if let Some(timeout) = timeout {
+                        ring.submitter()
+                            .submit_with_args(1, &SubmitArgs::new().timespec(&timeout.into()))
+                    } else {
+                        ring.submit_and_wait(1)
+                    }
                 } else {
                     ring.submit()
                 };
@@ -423,8 +434,8 @@ impl UringDriver {
 
 impl Driver for UringDriver {
     #[inline]
-    fn wait(&self) {
-        match self.collect_completions(false) {
+    fn wait(&self, timeout: Option<Duration>) {
+        match self.collect_completions(false, timeout) {
             Ok(woke_any) if woke_any => return,
             Ok(_) => {}
             Err(err) => panic!("io_uring submit failed while processing I/O completions: {err}"),
@@ -437,7 +448,7 @@ impl Driver for UringDriver {
             }
         }
 
-        match self.collect_completions(true) {
+        match self.collect_completions(true, timeout) {
             Ok(_) => {}
             Err(err) => panic!("io_uring submit_and_wait failed while waiting for I/O: {err}"),
         }

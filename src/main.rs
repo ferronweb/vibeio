@@ -5,6 +5,7 @@ mod io;
 mod net;
 mod op;
 mod task;
+mod timer;
 
 use crate::{
     driver::AnyDriver,

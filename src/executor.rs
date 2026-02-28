@@ -10,6 +10,7 @@ use futures_util::FutureExt;
 
 use crate::driver::AnyDriver;
 use crate::task::Task;
+use crate::timer::Timer;
 
 thread_local! {
     static CURRENT_RUNTIME: RefCell<Option<Rc<RuntimeInner>>> = RefCell::new(None);
@@ -18,6 +19,7 @@ thread_local! {
 pub struct RuntimeInner {
     queue: Rc<UnsafeCell<VecDeque<Rc<Task>>>>,
     driver: Rc<AnyDriver>,
+    timer: Rc<Timer>,
     waiting: Rc<AtomicBool>,
 }
 
@@ -97,6 +99,7 @@ pub fn new_runtime(driver: AnyDriver) -> Runtime {
             queue: ready_queue,
             driver: Rc::new(driver),
             waiting: Rc::new(AtomicBool::new(false)),
+            timer: Rc::new(Timer::new()),
         })),
     }
 }
@@ -213,9 +216,12 @@ impl Runtime {
             inner.drain_ready(&mut batch);
 
             if batch.is_empty() {
+                // Spin timing wheel
+                let deadline = inner.timer.spin_and_get_deadline();
+
                 // Wait for I/O
                 inner.waiting.store(true, Ordering::Relaxed);
-                inner.driver.wait();
+                inner.driver.wait(deadline);
                 inner.waiting.store(false, Ordering::Relaxed);
                 continue;
             }
