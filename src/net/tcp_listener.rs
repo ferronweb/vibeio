@@ -2,7 +2,7 @@ use std::future::poll_fn;
 use std::io;
 use std::mem::ManuallyDrop;
 use std::net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::task::{Context, Poll};
 
 use mio::Interest;
@@ -44,10 +44,15 @@ impl TcpListener {
     ) -> Poll<Result<(TcpStream, SocketAddr), io::Error>> {
         if self.handle.uses_completion() {
             return match self.handle.poll_accept_completion(cx) {
-                Poll::Ready(Ok((stream, address))) => match TcpStream::from_std(stream) {
-                    Ok(stream) => Poll::Ready(Ok((stream, address))),
-                    Err(err) => Poll::Ready(Err(err)),
-                },
+                Poll::Ready(Ok((raw, address))) => {
+                    // Recreate a std TcpStream from the raw fd and convert it into our async TcpStream.
+                    // If conversion fails, the std TcpStream will be dropped and the fd closed.
+                    let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw) };
+                    match TcpStream::from_std(std_stream) {
+                        Ok(stream) => Poll::Ready(Ok((stream, address))),
+                        Err(err) => Poll::Ready(Err(err)),
+                    }
+                }
                 Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
                 Poll::Pending => Poll::Pending,
             };
@@ -55,10 +60,15 @@ impl TcpListener {
 
         let op = AcceptOp::new(&self.handle);
         match self.handle.submit(op, cx.waker().clone()) {
-            Ok((stream, address)) => match TcpStream::from_std(stream) {
-                Ok(stream) => Poll::Ready(Ok((stream, address))),
-                Err(err) => Poll::Ready(Err(err)),
-            },
+            Ok((raw, address)) => {
+                // Recreate a std TcpStream from the raw fd and convert it into our async TcpStream.
+                // If conversion fails, the std TcpStream will be dropped and the fd closed.
+                let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw) };
+                match TcpStream::from_std(std_stream) {
+                    Ok(stream) => Poll::Ready(Ok((stream, address))),
+                    Err(err) => Poll::Ready(Err(err)),
+                }
+            }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
             Err(err) => Poll::Ready(Err(err)),
         }

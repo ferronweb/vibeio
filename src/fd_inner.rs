@@ -13,8 +13,10 @@ use crate::{
     op::Op,
 };
 
+pub type RawOsHandle = RawFd;
+
 pub struct InnerRawHandle {
-    pub(crate) handle: RawFd,
+    pub(crate) handle: RawOsHandle,
     pub(crate) token: Token,
     interest: Interest,
     mode: RegistrationMode,
@@ -23,7 +25,7 @@ pub struct InnerRawHandle {
 
 impl InnerRawHandle {
     #[inline]
-    pub(crate) fn new(handle: RawFd, interest: Interest) -> Result<Self, io::Error> {
+    pub(crate) fn new(handle: RawOsHandle, interest: Interest) -> Result<Self, io::Error> {
         let default_mode = if current_driver()
             .as_ref()
             .is_some_and(|driver| driver.supports_completion())
@@ -38,7 +40,7 @@ impl InnerRawHandle {
 
     #[inline]
     pub(crate) fn new_with_mode(
-        handle: RawFd,
+        handle: RawOsHandle,
         interest: Interest,
         mode: RegistrationMode,
     ) -> Result<Self, io::Error> {
@@ -54,7 +56,7 @@ impl InnerRawHandle {
     #[inline]
     pub(crate) fn new_with_driver_and_mode(
         driver: &Rc<AnyDriver>,
-        handle: RawFd,
+        handle: RawOsHandle,
         interest: Interest,
         mode: RegistrationMode,
     ) -> Result<Self, io::Error> {
