@@ -24,12 +24,19 @@ impl TcpListener {
     }
 
     #[inline]
+    pub fn from_std(inner: std::net::TcpListener) -> Result<Self, io::Error> {
+        let handle = ManuallyDrop::new(InnerRawHandle::new(inner.as_raw_fd(), Interest::READABLE)?);
+        inner.set_nonblocking(!handle.uses_completion())?;
+        Ok(Self { inner, handle })
+    }
+
+    #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.local_addr()
     }
 
     #[inline]
-    pub async fn accept(&mut self) -> Result<(TcpStream, SocketAddr), io::Error> {
+    pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), io::Error> {
         poll_fn(|cx| match self.handle.poll_accept(cx) {
             Poll::Ready(Ok((raw, address))) => {
                 // Recreate a std TcpStream from the raw fd and convert it into our async TcpStream.
