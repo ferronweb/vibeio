@@ -24,7 +24,6 @@ pub struct MioDriver {
     registry: Registry,
     events: RefCell<Events>,
     state: RefCell<DriverState>,
-    to_wake: RefCell<Vec<Waker>>,
     waker: RefCell<MioWaker>,
 }
 
@@ -42,7 +41,6 @@ impl MioDriver {
             state: RefCell::new(DriverState {
                 registrations: Slab::new(),
             }),
-            to_wake: RefCell::new(Vec::with_capacity(1024)),
             waker: RefCell::new(waker),
         })
     }
@@ -64,13 +62,6 @@ impl MioDriver {
         poll.poll(&mut events, timeout)
             .expect("mio poll failed while waiting for I/O events");
 
-        let mut to_wake = Vec::new();
-        {
-            let mut reusable = self.to_wake.borrow_mut();
-            std::mem::swap(&mut to_wake, &mut *reusable);
-        }
-        to_wake.clear();
-
         {
             let mut state = self.state.borrow_mut();
             for event in events.iter() {
@@ -81,21 +72,11 @@ impl MioDriver {
 
                 if let Some(registration) = state.registrations.get_mut(event.token().0) {
                     if let Some(task) = registration.waiter.take() {
-                        to_wake.push(task);
+                        task.wake();
                     }
                 }
             }
         }
-
-        drop(events);
-        drop(poll);
-
-        for waker in to_wake.drain(..) {
-            waker.wake();
-        }
-
-        let mut reusable = self.to_wake.borrow_mut();
-        std::mem::swap(&mut to_wake, &mut *reusable);
     }
 }
 

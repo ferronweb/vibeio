@@ -52,7 +52,6 @@ struct InterruptState {
 pub struct UringDriver {
     ring: RefCell<IoUring>,
     state: RefCell<DriverState>,
-    to_wake: RefCell<Vec<Waker>>,
     interrupt: StdArc<InterruptState>,
     interrupt_buffer: RefCell<[u8; 8]>,
     ext_arg: bool,
@@ -63,8 +62,6 @@ impl Drop for UringDriver {
     fn drop(&mut self) {
         // Unregister eventfd if present
         if let Some(eventfd) = self.interrupt.eventfd {
-            // Unregister eventfd from io_uring
-            let _ = self.ring.get_mut().submitter().unregister_eventfd();
             // Close eventfd
             unsafe { libc::close(eventfd) };
         }
@@ -87,7 +84,6 @@ impl UringDriver {
             state: RefCell::new(DriverState {
                 registrations: Slab::new(),
             }),
-            to_wake: RefCell::new(Vec::with_capacity(entries as usize)),
             interrupt: StdArc::new(InterruptState {
                 eventfd: Some(eventfd),
             }),
@@ -302,11 +298,6 @@ impl UringDriver {
         let mut woke_any = false;
         let mut interrupt = false;
         let mut timeout = false;
-        let mut wake_buffer = {
-            let mut to_wake = self.to_wake.borrow_mut();
-            to_wake.clear();
-            std::mem::take(&mut *to_wake)
-        };
 
         {
             let mut ring = self.ring.borrow_mut();
@@ -336,7 +327,7 @@ impl UringDriver {
                     {
                         registration.poll_armed = false;
                         if let Some(waiter) = registration.waiter.take() {
-                            wake_buffer.push(waiter);
+                            waiter.wake();
                         }
                     }
                     continue;
@@ -347,7 +338,12 @@ impl UringDriver {
                 {
                     registration.completed = Some(result);
                     registration.inflight = false;
-                    wake_buffer.append(&mut registration.waiters);
+                    if !registration.waiters.is_empty() {
+                        woke_any = true;
+                    }
+                    for waiter in registration.waiters.drain(..) {
+                        waiter.wake();
+                    }
                 }
             }
         }
@@ -356,31 +352,11 @@ impl UringDriver {
             self.submit_interrupt();
         }
 
-        if interrupt || timeout || !wake_buffer.is_empty() {
+        if interrupt || timeout {
             woke_any = true;
         }
 
-        if timeout {
-            woke_any = true;
-        }
-
-        for waker in wake_buffer.drain(..) {
-            waker.wake();
-        }
-
-        *self.to_wake.borrow_mut() = wake_buffer;
         Ok(woke_any)
-    }
-
-    #[inline]
-    fn has_inflight_io(state: &DriverState) -> bool {
-        state
-            .registrations
-            .iter()
-            .any(|(_, registration)| match registration {
-                HandleRegistration::Completion(registration) => registration.inflight,
-                HandleRegistration::Poll(registration) => registration.poll_armed,
-            })
     }
 
     #[inline]
