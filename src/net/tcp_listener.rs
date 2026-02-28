@@ -2,16 +2,12 @@ use std::future::poll_fn;
 use std::io;
 use std::mem::ManuallyDrop;
 use std::net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-use std::task::{Context, Poll};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::task::Poll;
 
 use mio::Interest;
 
-use crate::{
-    fd_inner::InnerRawHandle,
-    net::TcpStream,
-    op::{AcceptOp, CompletionAcceptIo},
-};
+use crate::{fd_inner::InnerRawHandle, net::TcpStream, op::AcceptIo};
 
 pub struct TcpListener {
     inner: StdTcpListener,
@@ -34,33 +30,8 @@ impl TcpListener {
 
     #[inline]
     pub async fn accept(&mut self) -> Result<(TcpStream, SocketAddr), io::Error> {
-        poll_fn(|cx| self.poll_accept(cx)).await
-    }
-
-    #[inline]
-    pub fn poll_accept(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(TcpStream, SocketAddr), io::Error>> {
-        if self.handle.uses_completion() {
-            return match self.handle.poll_accept_completion(cx) {
-                Poll::Ready(Ok((raw, address))) => {
-                    // Recreate a std TcpStream from the raw fd and convert it into our async TcpStream.
-                    // If conversion fails, the std TcpStream will be dropped and the fd closed.
-                    let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw) };
-                    match TcpStream::from_std(std_stream) {
-                        Ok(stream) => Poll::Ready(Ok((stream, address))),
-                        Err(err) => Poll::Ready(Err(err)),
-                    }
-                }
-                Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-                Poll::Pending => Poll::Pending,
-            };
-        }
-
-        let op = AcceptOp::new(&self.handle);
-        match self.handle.submit(op, cx.waker().clone()) {
-            Ok((raw, address)) => {
+        poll_fn(|cx| match self.handle.poll_accept(cx) {
+            Poll::Ready(Ok((raw, address))) => {
                 // Recreate a std TcpStream from the raw fd and convert it into our async TcpStream.
                 // If conversion fails, the std TcpStream will be dropped and the fd closed.
                 let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw) };
@@ -69,9 +40,10 @@ impl TcpListener {
                     Err(err) => Poll::Ready(Err(err)),
                 }
             }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
-            Err(err) => Poll::Ready(Err(err)),
-        }
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => Poll::Pending,
+        })
+        .await
     }
 }
 
@@ -79,6 +51,20 @@ impl AsRawFd for TcpListener {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.inner.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for TcpListener {
+    #[inline]
+    fn into_raw_fd(self) -> RawFd {
+        let mut this = ManuallyDrop::new(self);
+
+        // Safety: `this` will not be dropped, so we must drop the registration handle manually.
+        // We then move out the inner std stream and transfer its fd ownership to the caller.
+        unsafe {
+            ManuallyDrop::drop(&mut this.handle);
+            std::ptr::read(&this.inner).into_raw_fd()
+        }
     }
 }
 

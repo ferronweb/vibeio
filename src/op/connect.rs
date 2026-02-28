@@ -37,8 +37,26 @@ impl<'a> ConnectOp<'a> {
     }
 }
 
-pub trait CompletionConnectIo {
+/// Unified connect helper trait implemented on `InnerRawHandle`.
+///
+/// Exposes:
+/// - `poll_connect_poll`  -> poll/readiness submission path
+/// - `poll_connect_completion` -> completion submission path
+/// - `poll_connect` -> high-level helper that picks the appropriate path based on mode
+pub trait ConnectIo {
+    /// Poll/readiness submission path (ignores address parameters).
+    fn poll_connect_poll(&self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>>;
+
+    /// Completion submission path (requires address pointer and length).
     fn poll_connect_completion(
+        &self,
+        cx: &mut Context<'_>,
+        addr: *const libc::sockaddr,
+        addrlen: libc::socklen_t,
+    ) -> Poll<Result<(), io::Error>>;
+
+    /// High-level connect that chooses completion vs poll based on registration mode.
+    fn poll_connect(
         &self,
         cx: &mut Context<'_>,
         addr: *const libc::sockaddr,
@@ -46,7 +64,16 @@ pub trait CompletionConnectIo {
     ) -> Poll<Result<(), io::Error>>;
 }
 
-impl CompletionConnectIo for InnerRawHandle {
+impl ConnectIo for InnerRawHandle {
+    #[inline]
+    fn poll_connect_poll(&self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        match self.submit(ConnectOp::new(self), cx.waker().clone()) {
+            Ok(()) => Poll::Ready(Ok(())),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
     #[inline]
     fn poll_connect_completion(
         &self,
@@ -59,7 +86,30 @@ impl CompletionConnectIo for InnerRawHandle {
             cx.waker().clone(),
         ))
     }
+
+    #[inline]
+    fn poll_connect(
+        &self,
+        cx: &mut Context<'_>,
+        addr: *const libc::sockaddr,
+        addrlen: libc::socklen_t,
+    ) -> Poll<Result<(), io::Error>> {
+        if self.uses_completion() {
+            self.poll_connect_completion(cx, addr, addrlen)
+        } else {
+            self.poll_connect_poll(cx)
+        }
+    }
 }
+
+/* Backwards-compatibility helpers removed.
+
+   Old small traits `CompletionConnectIo` and `PollConnectIo` and their forwarding
+   impls were removed in favor of the single unified `ConnectIo` trait implemented
+   on `InnerRawHandle` (methods: `poll_connect_poll`, `poll_connect_completion`, `poll_connect`).
+
+   Consumers should import and use `ConnectIo` from `crate::op`.
+*/
 
 impl Op for ConnectOp<'_> {
     type Output = ();

@@ -11,7 +11,7 @@ mod timer;
 use crate::{
     driver::AnyDriver,
     executor::{new_runtime, spawn},
-    io::AsyncWrite,
+    io::{AsyncRead, AsyncWrite},
 };
 
 fn main() {

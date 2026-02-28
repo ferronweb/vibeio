@@ -8,10 +8,10 @@ use std::task::Poll;
 
 use mio::{Interest, Token};
 
-pub use accept::{AcceptOp, CompletionAcceptIo};
-pub use connect::{CompletionConnectIo, ConnectOp};
-pub use read::{CompletionReadIo, ReadOp};
-pub use write::{CompletionWriteIo, WriteOp};
+pub use accept::AcceptIo;
+pub use connect::ConnectIo;
+pub use read::ReadIo;
+pub use write::WriteIo;
 
 pub(crate) fn completion_result_to_poll<T>(
     result: Result<T, io::Error>,

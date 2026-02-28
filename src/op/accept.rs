@@ -72,14 +72,55 @@ fn sockaddr_storage_to_socketaddr(
     }
 }
 
-pub trait CompletionAcceptIo {
+/// Poll-based accept helper trait. Submits the operation via the poll/readiness pathway.
+/// Unified accept helper trait implemented on `InnerRawHandle`.
+///
+/// This single trait exposes:
+/// - `poll_accept` (high-level, picks completion vs poll based on registration mode)
+/// - `poll_accept_poll` (poll/readiness pathway)
+/// - `poll_accept_completion` (completion/pathway)
+pub trait AcceptIo {
+    fn poll_accept(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>>;
+
+    fn poll_accept_poll(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>>;
+
     fn poll_accept_completion(
         &self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>>;
 }
 
-impl CompletionAcceptIo for InnerRawHandle {
+impl AcceptIo for InnerRawHandle {
+    #[inline]
+    fn poll_accept(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>> {
+        if self.uses_completion() {
+            self.poll_accept_completion(cx)
+        } else {
+            self.poll_accept_poll(cx)
+        }
+    }
+
+    #[inline]
+    fn poll_accept_poll(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>> {
+        match self.submit(AcceptOp::new(self), cx.waker().clone()) {
+            Ok((raw, address)) => Poll::Ready(Ok((raw, address))),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
     #[inline]
     fn poll_accept_completion(
         &self,
@@ -88,6 +129,10 @@ impl CompletionAcceptIo for InnerRawHandle {
         completion_result_to_poll(self.submit_completion(AcceptOp::new(self), cx.waker().clone()))
     }
 }
+
+/* Compatibility traits and forwarding impls removed.
+Use the unified `AcceptIo` trait implemented on `InnerRawHandle`
+(methods: `poll_accept_poll`, `poll_accept_completion`, `poll_accept`). */
 
 pub struct AcceptOp<'a> {
     handle: &'a InnerRawHandle,

@@ -8,15 +8,41 @@ use crate::{
     op::{completion_result_to_poll, Op},
 };
 
-pub trait CompletionReadIo {
+/// Unified read helper trait implemented on `InnerRawHandle`.
+/// Exposes poll-based, completion-based and unified (default) helpers.
+pub trait ReadIo {
+    /// Submit the read operation via the poll/readiness pathway.
+    fn poll_read_poll(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, io::Error>>;
+
+    /// Submit the read operation via the completion pathway.
     fn poll_read_completion(
         &self,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, io::Error>>;
+
+    /// High-level read helper that chooses between completion and poll pathways.
+    fn poll_read(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, io::Error>>;
 }
 
-impl CompletionReadIo for InnerRawHandle {
+impl ReadIo for InnerRawHandle {
+    #[inline]
+    fn poll_read_poll(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        match self.submit(ReadOp::new(self, buf), cx.waker().clone()) {
+            Ok(read) => Poll::Ready(Ok(read)),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
     #[inline]
     fn poll_read_completion(
         &self,
@@ -26,6 +52,15 @@ impl CompletionReadIo for InnerRawHandle {
         completion_result_to_poll(
             self.submit_completion(ReadOp::new(self, buf), cx.waker().clone()),
         )
+    }
+
+    #[inline]
+    fn poll_read(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
+        if self.uses_completion() {
+            self.poll_read_completion(cx, buf)
+        } else {
+            self.poll_read_poll(cx, buf)
+        }
     }
 }
 

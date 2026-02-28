@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
 use std::io::{self, ErrorKind};
 use std::os::fd::RawFd;
 use std::sync::Arc as StdArc;

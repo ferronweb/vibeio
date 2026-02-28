@@ -8,15 +8,35 @@ use crate::{
     op::{completion_result_to_poll, Op},
 };
 
-pub trait CompletionWriteIo {
+/// Unified write helper trait implemented on `InnerRawHandle`.
+/// Exposes poll-based, completion-based and unified (default) helpers.
+pub trait WriteIo {
+    /// Submit the write operation via the poll/readiness pathway.
+    fn poll_write_poll(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>>;
+
+    /// Submit the write operation via the completion pathway.
     fn poll_write_completion(
         &self,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>>;
+
+    /// High-level write helper that chooses between completion and poll pathways.
+    fn poll_write(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>>;
 }
 
-impl CompletionWriteIo for InnerRawHandle {
+// Compatibility traits removed — use `WriteIo` directly.
+
+impl WriteIo for InnerRawHandle {
+    #[inline]
+    fn poll_write_poll(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+        match self.submit(WriteOp::new(self, buf), cx.waker().clone()) {
+            Ok(written) => Poll::Ready(Ok(written)),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
     #[inline]
     fn poll_write_completion(
         &self,
@@ -27,7 +47,18 @@ impl CompletionWriteIo for InnerRawHandle {
             self.submit_completion(WriteOp::new(self, buf), cx.waker().clone()),
         )
     }
+
+    #[inline]
+    fn poll_write(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+        if self.uses_completion() {
+            self.poll_write_completion(cx, buf)
+        } else {
+            self.poll_write_poll(cx, buf)
+        }
+    }
 }
+
+// Compatibility forwards removed — consumers should call methods on `WriteIo`.
 
 pub struct WriteOp<'a> {
     handle: &'a InnerRawHandle,

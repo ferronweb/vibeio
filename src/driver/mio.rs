@@ -231,7 +231,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use mio::{Interest, Token, Waker};
+    use mio::{Interest, Token};
 
     use super::{MioDriver, Registration};
     use crate::{driver::Driver, op::Op};
@@ -364,9 +364,15 @@ mod tests {
         // TODO: support Windows
         #[cfg(unix)]
         {
-            use std::{io::Write, os::fd::AsRawFd, rc::Rc, time::Duration};
+            use std::{
+                io::Write,
+                os::fd::AsRawFd,
+                rc::Rc,
+                task::{Context, Poll},
+                time::Duration,
+            };
 
-            use crate::{driver::AnyDriver, fd_inner::InnerRawHandle};
+            use crate::{driver::AnyDriver, fd_inner::InnerRawHandle, op::ReadIo};
 
             let driver = Rc::new(AnyDriver::Mio(
                 MioDriver::new().expect("mio driver should initialize"),
@@ -389,13 +395,10 @@ mod tests {
                 crate::driver::RegistrationMode::Poll,
             )
             .expect("failed to register pipe");
-            match driver.submit(
-                crate::op::ReadOp::new(&inner_raw_handle, &mut buffer),
-                waker,
-            ) {
-                Ok(_) => {}
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => panic!("failed to submit operation: {}", e),
+            match inner_raw_handle.poll_read_poll(&mut Context::from_waker(&waker), &mut buffer) {
+                Poll::Pending => {}
+                Poll::Ready(Ok(_)) => panic!("unexpected success"),
+                Poll::Ready(Err(e)) => panic!("failed to submit operation: {}", e),
             };
 
             side2.write_all(b"!").expect("failed to write to pipe"); // Exact data written doesn't matter...
