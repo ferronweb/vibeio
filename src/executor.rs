@@ -224,11 +224,17 @@ impl Runtime {
             batch.clear();
             inner.drain_ready(&mut batch);
 
-            if batch.is_empty() {
-                // Spin timing wheel
+            let deadline = if batch.is_empty() {
+                // Spin the timing wheel
                 let deadline = inner.timer.spin_and_get_deadline();
+                inner.drain_ready(&mut batch);
+                deadline
+            } else {
+                None
+            };
 
-                // Wait for I/O
+            if batch.is_empty() {
+                // Wait for I/O, if still no pending tasks
                 inner.waiting.store(true, Ordering::Relaxed);
                 inner.driver.wait(deadline);
                 inner.waiting.store(false, Ordering::Relaxed);
