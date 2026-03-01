@@ -1,16 +1,17 @@
 use std::cell::{Cell, RefCell, UnsafeCell};
-use std::collections::VecDeque;
+use std::collections::{LinkedList, VecDeque};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{RawWaker, RawWakerVTable, Waker};
 
+use crossbeam_queue::SegQueue;
 use futures_util::future::LocalBoxFuture;
 
 use crate::driver::AnyDriver;
 
 pub struct Task {
     pub future: RefCell<Option<LocalBoxFuture<'static, ()>>>,
-    pub queue: Weak<UnsafeCell<VecDeque<Rc<Task>>>>,
+    pub queue: Weak<SegQueue<Rc<Task>>>,
     pub driver: Weak<AnyDriver>,
     pub queued: Cell<bool>,
     pub thread_id: std::thread::ThreadId,
@@ -62,12 +63,7 @@ impl Task {
     fn enqueue_if_needed(task: &Rc<Self>) {
         if !task.queued.replace(true) {
             if let Some(queue) = task.queue.upgrade() {
-                // SAFETY: the runtime is single-threaded and only mutates the ready
-                // queue from that thread. We also never hold a mutable queue borrow
-                // while polling task futures, so re-entrant wakes do not alias.
-                unsafe {
-                    (&mut *queue.get()).push_back(Rc::clone(task));
-                }
+                queue.push(Rc::clone(task));
             }
         }
 
