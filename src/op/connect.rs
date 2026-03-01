@@ -190,7 +190,7 @@ impl Op for ConnectOp<'_> {
     fn build_completion_entry(
         &mut self,
         user_data: u64,
-    ) -> Result<io_uring::squeue::Entry, io::Error> {
+    ) -> Result<(io_uring::squeue::Entry, Option<Box<dyn std::any::Any>>), io::Error> {
         use io_uring::{opcode, types};
 
         let (addr, addrlen) = self.completion_addr.ok_or_else(|| {
@@ -200,11 +200,11 @@ impl Op for ConnectOp<'_> {
             )
         })?;
 
-        Ok(
-            opcode::Connect::new(types::Fd(self.handle.handle), addr, addrlen)
-                .build()
-                .user_data(user_data),
-        )
+        let entry = opcode::Connect::new(types::Fd(self.handle.handle), addr, addrlen)
+            .build()
+            .user_data(user_data);
+
+        Ok((entry, None))
     }
 
     #[inline]

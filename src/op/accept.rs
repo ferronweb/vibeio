@@ -201,17 +201,19 @@ impl Op for AcceptOp<'_> {
     fn build_completion_entry(
         &mut self,
         user_data: u64,
-    ) -> Result<io_uring::squeue::Entry, io::Error> {
+    ) -> Result<(io_uring::squeue::Entry, Option<Box<dyn std::any::Any>>), io::Error> {
         use io_uring::{opcode, types};
 
-        Ok(opcode::Accept::new(
+        let entry = opcode::Accept::new(
             types::Fd(self.handle.handle),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )
         .flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
         .build()
-        .user_data(user_data))
+        .user_data(user_data);
+
+        Ok((entry, None))
     }
 
     #[inline]

@@ -1,8 +1,8 @@
 use std::future::poll_fn;
-use std::io::{self, IoSlice};
+use std::io::{self, IoSlice, IoSliceMut};
 use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, ToSocketAddrs};
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -13,7 +13,7 @@ use crate::{
     driver::RegistrationMode,
     fd_inner::InnerRawHandle,
     io::{AsyncRead, AsyncWrite},
-    op::{ConnectIo, ReadIo, WriteIo},
+    op::{ConnectIo, ReadIo, ReadvIo, WriteIo, WritevIo},
 };
 
 fn socket_addr_to_raw(
@@ -344,6 +344,15 @@ impl AsyncRead for TcpStream {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         poll_fn(|cx| self.handle.poll_read(cx, buf)).await
     }
+
+    #[inline]
+    async fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> Result<usize, io::Error> {
+        if bufs.is_empty() {
+            return Ok(0);
+        }
+        // Use the readv helper on the registration handle (will choose poll vs completion).
+        poll_fn(|cx| self.handle.poll_readv(cx, bufs)).await
+    }
 }
 
 impl TokioAsyncRead for PollTcpStream {
@@ -380,6 +389,15 @@ impl AsyncWrite for TcpStream {
     async fn flush(&mut self) -> Result<(), io::Error> {
         Ok(())
     }
+
+    #[inline]
+    async fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
+        if bufs.is_empty() {
+            return Ok(0);
+        }
+        // Use the writev helper on the registration handle (will choose poll vs completion).
+        poll_fn(|cx| self.handle.poll_writev(cx, bufs)).await
+    }
 }
 
 impl TokioAsyncWrite for PollTcpStream {
@@ -393,6 +411,23 @@ impl TokioAsyncWrite for PollTcpStream {
     }
 
     #[inline]
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
+        if bufs.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        self.get_mut().stream.handle.poll_writev_poll(cx, bufs)
+    }
+
+    #[inline]
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+
+    #[inline]
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
@@ -401,8 +436,6 @@ impl TokioAsyncWrite for PollTcpStream {
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(self.get_mut().shutdown(Shutdown::Write))
     }
-
-    // TODO: maybe implement vectored write operation on Unix-like systems?
 }
 
 impl Drop for TcpStream {

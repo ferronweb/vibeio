@@ -107,16 +107,18 @@ impl Op for WriteOp<'_> {
     fn build_completion_entry(
         &mut self,
         user_data: u64,
-    ) -> Result<io_uring::squeue::Entry, io::Error> {
+    ) -> Result<(io_uring::squeue::Entry, Option<Box<dyn std::any::Any>>), io::Error> {
         use io_uring::{opcode, types};
 
-        Ok(opcode::Write::new(
+        let entry = opcode::Write::new(
             types::Fd(self.handle.handle),
             self.buf.as_ptr(),
             self.buf.len() as _,
         )
         .build()
-        .user_data(user_data))
+        .user_data(user_data);
+
+        Ok((entry, None))
     }
 
     #[inline]

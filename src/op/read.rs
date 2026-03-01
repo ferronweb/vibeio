@@ -111,16 +111,20 @@ impl Op for ReadOp<'_> {
     fn build_completion_entry(
         &mut self,
         user_data: u64,
-    ) -> Result<io_uring::squeue::Entry, io::Error> {
+    ) -> Result<(io_uring::squeue::Entry, Option<Box<dyn std::any::Any>>), io::Error> {
         use io_uring::{opcode, types};
 
-        Ok(opcode::Read::new(
+        // Build the read SQE as before. This operation does not require any
+        // auxiliary driver-owned storage, so return the SQE together with None.
+        let entry = opcode::Read::new(
             types::Fd(self.handle.handle),
             self.buf.as_mut_ptr(),
             self.buf.len() as _,
         )
         .build()
-        .user_data(user_data))
+        .user_data(user_data);
+
+        Ok((entry, None))
     }
 
     #[inline]

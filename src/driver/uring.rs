@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::cell::RefCell;
 use std::io::{self, ErrorKind};
 use std::os::fd::RawFd;
@@ -22,11 +23,26 @@ const KEY_KIND_MASK: u64 = (1u64 << KEY_KIND_BITS) - 1;
 const POLL_KEY_KIND: u8 = 0;
 const COMPLETION_KEY_KIND: u8 = 1;
 
-#[derive(Default)]
 struct CompletionRegistration {
     inflight: bool,
     waiters: Vec<Waker>,
     completed: Option<i32>,
+    /// Optional auxiliary storage provided by the operation for the duration
+    /// of an io_uring submission. The driver keeps ownership while the
+    /// operation is inflight and transfers it back to the Op before calling
+    /// `complete`.
+    aux: Option<Box<dyn Any>>,
+}
+
+impl Default for CompletionRegistration {
+    fn default() -> Self {
+        Self {
+            inflight: false,
+            waiters: Vec::new(),
+            completed: None,
+            aux: None,
+        }
+    }
 }
 
 struct PollRegistration {
@@ -195,6 +211,8 @@ impl UringDriver {
         // completion state dynamically per-kind.
         let key = Self::encode_completion_key(token);
 
+        // First, check whether a completion result is already available or if an
+        // operation is inflight; update registration state/waiters accordingly.
         {
             let mut state = self.state.borrow_mut();
             let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
@@ -214,7 +232,13 @@ impl UringDriver {
                 ));
             };
 
+            // If a completion has already been collected for this registration,
+            // transfer any stored auxiliary data back into the operation and
+            // return the completion result synchronously.
             if let Some(result) = registration.completed.take() {
+                // Take the stored auxiliary data (if any) and give it back to the op.
+                let aux = registration.aux.take();
+                op.take_completion_storage(aux);
                 return op.complete(result);
             }
 
@@ -226,11 +250,17 @@ impl UringDriver {
                 ));
             }
 
+            // Mark inflight and register the caller's waker.
             registration.inflight = true;
             Self::push_waiter(&mut registration.waiters, waker);
         }
 
-        let entry = op.build_completion_entry(key)?;
+        // Build the SQE and optionally receive auxiliary storage the operation
+        // wants the driver to own while the I/O is inflight.
+        let (entry, storage) = op.build_completion_entry(key).map_err(|e| e)?;
+
+        // Push the SQE into the submission queue. If this fails, undo the inflight
+        // flag and clear waiters on the registration.
         if let Err(err) = self.push_entry(entry) {
             let mut state = self.state.borrow_mut();
             if let Some(HandleRegistration::Completion(registration)) =
@@ -238,8 +268,23 @@ impl UringDriver {
             {
                 registration.inflight = false;
                 registration.waiters.clear();
+                // Discard any provided storage since the submission failed.
+                registration.aux = None;
             }
             return Err(err);
+        }
+
+        // Store auxiliary storage (if any) into the registration so it remains
+        // alive for the duration of the inflight operation.
+        if storage.is_some() {
+            let mut state = self.state.borrow_mut();
+            if let Some(HandleRegistration::Completion(registration)) =
+                state.registrations.get_mut(token.0)
+            {
+                registration.aux = storage;
+            } else {
+                // Shouldn't happen, but if it does, drop the storage.
+            }
         }
 
         Err(io::Error::new(

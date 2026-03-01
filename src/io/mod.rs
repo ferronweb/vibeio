@@ -4,10 +4,27 @@ mod util;
 
 use self::util::*;
 
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, IoSlice, IoSliceMut};
 
 pub trait AsyncRead {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error>;
+
+    /// Default vectored read implementation that falls back to a single-buffer
+    /// read using the first provided `IoSliceMut`.
+    #[inline]
+    async fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> Result<usize, io::Error> {
+        if bufs.is_empty() {
+            return Ok(0);
+        }
+        let first = &mut bufs[0];
+        // Safety: `first.as_mut_ptr()` and `first.len()` come from the IoSliceMut
+        // and are valid for the lifetime of `first`. We create a temporary slice
+        // to call the existing `read` API.
+        let ptr = first.as_mut_ptr();
+        let len = first.len();
+        let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
+        self.read(slice).await
+    }
 
     #[inline]
     async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), io::Error> {
@@ -29,6 +46,21 @@ pub trait AsyncRead {
 
 pub trait AsyncWrite {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error>;
+
+    /// Default vectored write implementation that falls back to a single-buffer
+    /// write using the first provided `IoSlice`.
+    #[inline]
+    async fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
+        if bufs.is_empty() {
+            return Ok(0);
+        }
+        let first = &bufs[0];
+        // Safety: `first.as_ptr()` and `first.len()` come from the IoSlice and are valid.
+        let ptr = first.as_ptr();
+        let len = first.len();
+        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+        self.write(slice).await
+    }
 
     #[inline]
     async fn flush(&mut self) -> Result<(), io::Error> {
