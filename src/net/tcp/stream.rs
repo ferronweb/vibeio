@@ -367,9 +367,12 @@ impl TokioAsyncRead for PollTcpStream {
         }
 
         let this = self.get_mut();
-        let unfilled = buf.initialize_unfilled();
+        let unfilled = unsafe { buf.unfilled_mut().assume_init_mut() };
         match this.stream.handle.poll_read_poll(cx, unfilled) {
             Poll::Ready(Ok(read)) => {
+                unsafe {
+                    buf.assume_init(read);
+                }
                 buf.advance(read);
                 Poll::Ready(Ok(()))
             }
