@@ -6,7 +6,7 @@ use std::{
     pin::Pin,
     rc::Rc,
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use tm_wheel::TimerHandle;
@@ -69,14 +69,26 @@ impl Sleep {
         }
     }
 
-    /// Reset the sleep to a new `duration`.
+    /// Create a Sleep that completes at the specified absolute `deadline`.
+    ///
+    /// This is a convenience constructor that computes the relative duration
+    /// from `Instant::now()` to the provided `deadline`.
+    #[inline]
+    pub fn sleep_until(deadline: Instant) -> Self {
+        let duration = deadline.saturating_duration_since(Instant::now());
+        Self::new(duration)
+    }
+
+    /// Reset the sleep to a new absolute `deadline` (`Instant`).
     ///
     /// If a timer was previously scheduled, cancel it. The timer will be
     /// rescheduled on the next `poll`. This allows reusing a `Sleep` value
-    /// to implement steady intervals or dynamic timeout adjustments.
+    /// to implement steady intervals or dynamic timeout adjustments using
+    /// absolute deadlines instead of relative durations.
     #[inline]
-    pub fn reset(&mut self, duration: Duration) {
-        // Update duration and clear fired state.
+    pub fn reset(&mut self, deadline: Instant) {
+        // Compute relative duration until deadline and update state.
+        let duration = deadline.saturating_duration_since(Instant::now());
         self.duration = duration;
         self.fired.set(false);
         self.yield_scheduled.set(false);

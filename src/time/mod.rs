@@ -50,6 +50,35 @@ pub fn interval(period: std::time::Duration) -> Interval {
     Interval::new(period)
 }
 
+/// Convenience builder: returns a `Sleep` that completes at the provided absolute `Instant`.
+#[inline]
+pub fn sleep_until(deadline: std::time::Instant) -> Sleep {
+    Sleep::sleep_until(deadline)
+}
+
+/// Convenience async function that awaits `future` but returns an error if it
+/// does not complete before the absolute `deadline` Instant.
+#[inline]
+pub async fn timeout_at<T>(
+    deadline: std::time::Instant,
+    future: impl std::future::Future<Output = T>,
+) -> Result<T, TimeoutError> {
+    let dur = deadline.saturating_duration_since(std::time::Instant::now());
+    timeout(dur, future).await
+}
+
+/// Convenience builder: returns an `Interval` with the first tick scheduled to
+/// complete at `first_tick_instant` and subsequent ticks every `period`.
+#[inline]
+pub fn interval_at(
+    first_tick_instant: std::time::Instant,
+    period: std::time::Duration,
+) -> Interval {
+    let mut iv = Interval::new(period);
+    iv.next_deadline = Some(first_tick_instant);
+    iv
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
