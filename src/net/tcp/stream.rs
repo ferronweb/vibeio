@@ -367,7 +367,8 @@ impl TokioAsyncRead for PollTcpStream {
         }
 
         let this = self.get_mut();
-        let unfilled = unsafe { buf.unfilled_mut().assume_init_mut() };
+        // Equivalent to .assume_init_mut() in Rust 1.93.0+
+        let unfilled = unsafe { &mut *(buf.unfilled_mut() as *mut [MaybeUninit<u8>] as *mut [u8]) };
         match this.stream.handle.poll_read_poll(cx, unfilled) {
             Poll::Ready(Ok(read)) => {
                 unsafe {
