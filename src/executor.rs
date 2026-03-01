@@ -272,7 +272,7 @@ impl Runtime {
                 let mut future_returned = false;
                 if let Some(mut future) = future_slot.take() {
                     drop(future_slot);
-                    let waker = futures_util::task::waker_ref(&task);
+                    let waker = task.waker();
                     let mut context = Context::from_waker(&waker);
 
                     if future.as_mut().poll(&mut context).is_pending() {

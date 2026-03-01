@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::rc::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{RawWaker, RawWakerVTable, Waker};
 
 use crossbeam_queue::SegQueue;
 use futures_util::future::LocalBoxFuture;
@@ -21,14 +22,51 @@ pub struct Task {
     pub waiting: std::sync::Weak<AtomicBool>,
 }
 
-impl ArcWake for Task {
-    #[inline]
-    fn wake_by_ref(arc_self: &Arc<Self>) {
-        Task::enqueue_if_needed(arc_self);
-    }
-}
-
 impl Task {
+    #[inline]
+    pub fn waker(self: &Arc<Self>) -> Waker {
+        // SAFETY: the vtable methods correctly clone/drop the Arc reference count.
+        unsafe { Waker::from_raw(Self::raw_waker(Arc::into_raw(Arc::clone(self)) as *const ())) }
+    }
+
+    #[inline]
+    unsafe fn raw_waker(ptr: *const ()) -> RawWaker {
+        RawWaker::new(ptr, &Self::VTABLE)
+    }
+
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        Self::raw_waker_clone,
+        Self::raw_waker_wake,
+        Self::raw_waker_wake_by_ref,
+        Self::raw_waker_drop,
+    );
+
+    #[inline]
+    unsafe fn raw_waker_clone(ptr: *const ()) -> RawWaker {
+        let task = Arc::<Self>::from_raw(ptr as *const Self);
+        let cloned = Arc::clone(&task);
+        let _ = Arc::into_raw(task);
+        Self::raw_waker(Arc::into_raw(cloned) as *const ())
+    }
+
+    #[inline]
+    unsafe fn raw_waker_wake(ptr: *const ()) {
+        let task = Arc::<Self>::from_raw(ptr as *const Self);
+        Self::enqueue_if_needed(&task);
+    }
+
+    #[inline]
+    unsafe fn raw_waker_wake_by_ref(ptr: *const ()) {
+        let task = Arc::<Self>::from_raw(ptr as *const Self);
+        Self::enqueue_if_needed(&task);
+        let _ = Arc::into_raw(task);
+    }
+
+    #[inline]
+    unsafe fn raw_waker_drop(ptr: *const ()) {
+        drop(Arc::<Self>::from_raw(ptr as *const Self));
+    }
+
     #[inline]
     fn enqueue_if_needed(task: &Arc<Self>) {
         if std::thread::current().id() == task.thread_id {
