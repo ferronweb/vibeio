@@ -1,12 +1,11 @@
 use std::cell::{RefCell, UnsafeCell};
-use std::collections::LinkedList;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Waker};
 
-use crossbeam_queue::SegQueue;
 use futures_util::FutureExt;
 
 use crate::driver::AnyDriver;
@@ -18,7 +17,7 @@ thread_local! {
 }
 
 pub struct RuntimeInner {
-    queue: Rc<SegQueue<Rc<Task>>>,
+    queue: Rc<UnsafeCell<VecDeque<Rc<Task>>>>,
     driver: Rc<AnyDriver>,
     timer: Rc<Timer>,
     waiting: Rc<AtomicBool>,
@@ -94,7 +93,7 @@ impl Drop for CurrentRuntimeGuard {
 }
 
 pub fn new_runtime(driver: AnyDriver) -> Runtime {
-    let ready_queue = Rc::new(SegQueue::new());
+    let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(4096)));
     Runtime {
         inner: Some(Rc::new(RuntimeInner {
             queue: ready_queue,
@@ -175,12 +174,19 @@ impl RuntimeInner {
 
     #[inline]
     fn enqueue(&self, task: Rc<Task>) {
-        self.queue.push(task);
+        // SAFETY: this runtime is single-threaded. All ready-queue mutation goes
+        // through runtime/task wake paths on the same thread.
+        unsafe {
+            (&mut *self.queue.get()).push_back(task);
+        }
     }
 
     #[inline]
     fn drain_ready(&self, batch: &mut Vec<Rc<Task>>) {
-        while let Some(task) = self.queue.pop() {
+        // SAFETY: this runtime is single-threaded and we only hold this mutable
+        // access while draining the queue before polling any task futures.
+        let queue = unsafe { &mut *self.queue.get() };
+        while let Some(task) = queue.pop_front() {
             task.mark_dequeued();
             batch.push(task);
         }
