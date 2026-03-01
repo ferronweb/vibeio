@@ -11,19 +11,7 @@ use crate::{
     op::{completion_result_to_poll, Op},
 };
 
-fn set_nonblocking_and_cloexec(fd: RawFd) -> Result<(), io::Error> {
-    // set O_NONBLOCK on file status flags
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    if flags & libc::O_NONBLOCK == 0 {
-        let result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-        if result == -1 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-
+fn set_cloexec(fd: RawFd) -> Result<(), io::Error> {
     // set FD_CLOEXEC on file descriptor flags
     let fdflags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if fdflags == -1 {
@@ -168,8 +156,8 @@ impl Op for AcceptOp<'_> {
 
         let fd = accepted_fd as RawFd;
 
-        // Ensure non-blocking and close-on-exec for the accepted fd
-        set_nonblocking_and_cloexec(fd)?;
+        // Ensure close-on-exec for the accepted fd
+        set_cloexec(fd)?;
 
         // Obtain peer address via getpeername into a sockaddr_storage
         let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
@@ -224,8 +212,8 @@ impl Op for AcceptOp<'_> {
 
         let fd = result as RawFd;
 
-        // Ensure non-blocking and close-on-exec for the accepted fd (io_uring may have already set them)
-        set_nonblocking_and_cloexec(fd)?;
+        // Ensure close-on-exec for the accepted fd (io_uring may have already set them)
+        set_cloexec(fd)?;
 
         // Get peer address via getpeername
         let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
