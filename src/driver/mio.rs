@@ -1,13 +1,28 @@
 use std::cell::RefCell;
 use std::io::{self, ErrorKind};
 use std::os::fd::RawFd;
+use std::sync::Arc;
 use std::task::Waker;
 use std::time::Duration;
 
 use mio::{Events, Interest, Poll, Registry, Token, Waker as MioWaker};
 use slab::Slab;
 
+use crate::driver::Interruptor;
 use crate::{driver::Driver, fd_inner::InnerRawHandle, op::Op};
+
+pub struct MioInterruptor {
+    waker: std::sync::Weak<MioWaker>,
+}
+
+impl Interruptor for MioInterruptor {
+    #[inline]
+    fn interrupt(&self) {
+        if let Some(waker) = self.waker.upgrade() {
+            waker.wake();
+        }
+    }
+}
 
 struct Registration {
     fd: RawFd,
@@ -24,7 +39,7 @@ pub struct MioDriver {
     registry: Registry,
     events: RefCell<Events>,
     state: RefCell<DriverState>,
-    waker: RefCell<MioWaker>,
+    waker: Arc<MioWaker>,
 }
 
 impl MioDriver {
@@ -41,7 +56,7 @@ impl MioDriver {
             state: RefCell::new(DriverState {
                 registrations: Slab::new(),
             }),
-            waker: RefCell::new(waker),
+            waker: Arc::new(waker),
         })
     }
 
@@ -81,6 +96,8 @@ impl MioDriver {
 }
 
 impl Driver for MioDriver {
+    type Interruptor = MioInterruptor;
+
     #[inline]
     fn flush(&self) {
         self.wait_timeout(Some(Duration::ZERO));
@@ -92,9 +109,10 @@ impl Driver for MioDriver {
     }
 
     #[inline]
-    fn interrupt(&self) {
-        // Write a byte to the interrupt pipe to wake up the poll
-        let _ = self.waker.borrow().wake();
+    fn get_interruptor(&self) -> Self::Interruptor {
+        MioInterruptor {
+            waker: Arc::downgrade(&self.waker),
+        }
     }
 
     #[inline]

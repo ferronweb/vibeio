@@ -1,12 +1,15 @@
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
+use crossbeam_queue::SegQueue;
 use futures_util::FutureExt;
+use slab::Slab;
 
 use crate::driver::AnyDriver;
 use crate::task::Task;
@@ -17,10 +20,12 @@ thread_local! {
 }
 
 pub struct RuntimeInner {
-    queue: Rc<UnsafeCell<VecDeque<Rc<Task>>>>,
+    queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
+    remote_queue: Arc<SegQueue<usize>>,
+    token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
     timer: Rc<Timer>,
-    waiting: Rc<AtomicBool>,
+    waiting: Arc<AtomicBool>,
 }
 
 pub struct Runtime {
@@ -97,8 +102,10 @@ pub fn new_runtime(driver: AnyDriver) -> Runtime {
     Runtime {
         inner: Some(Rc::new(RuntimeInner {
             queue: ready_queue,
+            remote_queue: Arc::new(SegQueue::new()),
+            token_to_task: RefCell::new(Slab::with_capacity(4096)),
             driver: Rc::new(driver),
-            waiting: Rc::new(AtomicBool::new(false)),
+            waiting: Arc::new(AtomicBool::new(false)),
             timer: Rc::new(Timer::new()),
         })),
     }
@@ -159,21 +166,26 @@ impl RuntimeInner {
         }
         .boxed_local();
 
-        let task = Rc::new(Task {
+        let mut slab = self.token_to_task.borrow_mut();
+        let vacant_slab_entry = slab.vacant_entry();
+        let task = Arc::new(Task {
             future: RefCell::new(Some(future)),
             queue: Rc::downgrade(&self.queue),
-            queued: std::cell::Cell::new(true),
+            remote_queue: Arc::downgrade(&self.remote_queue),
+            queued: AtomicBool::new(true),
             thread_id: std::thread::current().id(),
-            driver: Rc::downgrade(&self.driver),
-            waiting: Rc::downgrade(&self.waiting),
+            interruptor: self.driver.get_interruptor(),
+            waiting: Arc::downgrade(&self.waiting),
+            token: vacant_slab_entry.key(),
         });
+        vacant_slab_entry.insert(task.clone());
 
         self.enqueue(task);
         JoinHandle::new(state)
     }
 
     #[inline]
-    fn enqueue(&self, task: Rc<Task>) {
+    fn enqueue(&self, task: Arc<Task>) {
         // SAFETY: this runtime is single-threaded. All ready-queue mutation goes
         // through runtime/task wake paths on the same thread.
         unsafe {
@@ -182,7 +194,14 @@ impl RuntimeInner {
     }
 
     #[inline]
-    fn drain_ready(&self, batch: &mut Vec<Rc<Task>>) {
+    fn drain_ready(&self, batch: &mut Vec<Arc<Task>>) {
+        let slab = self.token_to_task.borrow();
+        while let Some(token) = self.remote_queue.pop() {
+            if let Some(task) = slab.get(token) {
+                self.enqueue(task.clone());
+            }
+        }
+
         // SAFETY: this runtime is single-threaded and we only hold this mutable
         // access while draining the queue before polling any task futures.
         let queue = unsafe { &mut *self.queue.get() };
@@ -250,15 +269,21 @@ impl Runtime {
 
             for task in batch.drain(..) {
                 let mut future_slot = task.future.borrow_mut();
+                let mut future_returned = false;
                 if let Some(mut future) = future_slot.take() {
                     drop(future_slot);
-                    let waker = task.waker();
+                    let waker = futures_util::task::waker_ref(&task);
                     let mut context = Context::from_waker(&waker);
 
                     if future.as_mut().poll(&mut context).is_pending() {
                         let mut future_slot = task.future.borrow_mut();
                         *future_slot = Some(future);
+                        future_returned = true;
                     }
+                }
+                if !future_returned {
+                    // Prevent too many tokens in `token_to_task` slab
+                    inner.token_to_task.borrow_mut().remove(task.token);
                 }
             }
 

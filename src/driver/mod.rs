@@ -8,8 +8,9 @@ use std::{io, time::Duration};
 
 use ::mio::{Interest, Token};
 
+use crate::driver::mio::MioInterruptor;
 #[cfg(target_os = "linux")]
-use crate::driver::uring::UringDriver;
+use crate::driver::uring::{UringDriver, UringInterruptor};
 use crate::{
     driver::{mio::MioDriver, mock::MockDriver},
     fd_inner::InnerRawHandle,
@@ -29,7 +30,40 @@ fn unsupported_completion_error() -> io::Error {
     )
 }
 
+pub trait Interruptor {
+    /// Interrupts a waiting I/O operation.
+    fn interrupt(&self);
+}
+
+/// No-op interruptor implementation.
+pub struct NoopInterruptor;
+
+impl Interruptor for NoopInterruptor {
+    #[inline]
+    fn interrupt(&self) {}
+}
+
+pub enum AnyInterruptor {
+    Mio(MioInterruptor),
+    Mock(NoopInterruptor),
+    #[cfg(target_os = "linux")]
+    IoUring(UringInterruptor),
+}
+
+impl AnyInterruptor {
+    pub(crate) fn interrupt(&self) {
+        match self {
+            AnyInterruptor::Mio(interruptor) => interruptor.interrupt(),
+            AnyInterruptor::Mock(interruptor) => interruptor.interrupt(),
+            #[cfg(target_os = "linux")]
+            AnyInterruptor::IoUring(interruptor) => interruptor.interrupt(),
+        }
+    }
+}
+
 pub trait Driver {
+    type Interruptor: Interruptor;
+
     /// Flushes the driver's I/O.
     #[inline]
     fn flush(&self) {}
@@ -85,10 +119,7 @@ pub trait Driver {
     }
 
     /// Interrupts a waiting I/O operation.
-    #[inline]
-    fn interrupt(&self) {
-        // Default implementation does nothing
-    }
+    fn get_interruptor(&self) -> Self::Interruptor;
 }
 
 pub enum AnyDriver {
@@ -235,12 +266,12 @@ impl AnyDriver {
     }
 
     #[inline]
-    pub(crate) fn interrupt(&self) {
+    pub(crate) fn get_interruptor(&self) -> AnyInterruptor {
         match self {
-            AnyDriver::Mio(driver) => driver.interrupt(),
-            AnyDriver::Mock(driver) => driver.interrupt(),
+            AnyDriver::Mio(driver) => AnyInterruptor::Mio(driver.get_interruptor()),
+            AnyDriver::Mock(driver) => AnyInterruptor::Mock(driver.get_interruptor()),
             #[cfg(target_os = "linux")]
-            AnyDriver::IoUring(driver) => driver.interrupt(),
+            AnyDriver::IoUring(driver) => AnyInterruptor::IoUring(driver.get_interruptor()),
         }
     }
 }
@@ -256,11 +287,12 @@ mod tests {
     #[test]
     fn test_mio_driver_interrupt_basic() {
         let driver = AnyDriver::new_mio().expect("Failed to create MioDriver");
+        let interruptor = driver.get_interruptor();
 
         // Test that interrupt doesn't panic and can be called multiple times
-        driver.interrupt();
-        driver.interrupt();
-        driver.interrupt();
+        interruptor.interrupt();
+        interruptor.interrupt();
+        interruptor.interrupt();
     }
 
     #[test]
@@ -268,22 +300,24 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             let driver = AnyDriver::new_uring(1024).expect("Failed to create UringDriver");
+            let interruptor = driver.get_interruptor();
 
             // Test that interrupt doesn't panic and can be called multiple times
-            driver.interrupt();
-            driver.interrupt();
-            driver.interrupt();
+            interruptor.interrupt();
+            interruptor.interrupt();
+            interruptor.interrupt();
         }
     }
 
     #[test]
     fn test_mock_driver_interrupt_basic() {
         let driver = AnyDriver::new_mock();
+        let interruptor = driver.get_interruptor();
 
         // Test that interrupt doesn't panic and can be called multiple times
-        driver.interrupt();
-        driver.interrupt();
-        driver.interrupt();
+        interruptor.interrupt();
+        interruptor.interrupt();
+        interruptor.interrupt();
     }
 
     #[test]

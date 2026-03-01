@@ -12,6 +12,7 @@ use libc;
 use mio::{Interest, Token};
 use slab::Slab;
 
+use crate::driver::Interruptor;
 use crate::{
     driver::{Driver, RegistrationMode},
     fd_inner::InnerRawHandle,
@@ -22,6 +23,27 @@ const KEY_KIND_BITS: u64 = 1;
 const KEY_KIND_MASK: u64 = (1u64 << KEY_KIND_BITS) - 1;
 const POLL_KEY_KIND: u8 = 0;
 const COMPLETION_KEY_KIND: u8 = 1;
+
+pub struct UringInterruptor {
+    eventfd: std::sync::Weak<RawFd>,
+}
+
+impl Interruptor for UringInterruptor {
+    #[inline]
+    fn interrupt(&self) {
+        if let Some(eventfd) = self.eventfd.upgrade() {
+            // Write to the eventfd to wake up the driver
+            let value: u64 = 1;
+            let _ = unsafe {
+                libc::write(
+                    *eventfd,
+                    &value as *const u64 as *const std::ffi::c_void,
+                    std::mem::size_of::<u64>(),
+                )
+            };
+        }
+    }
+}
 
 struct CompletionRegistration {
     inflight: bool,
@@ -61,14 +83,10 @@ struct DriverState {
     registrations: Slab<HandleRegistration>,
 }
 
-struct InterruptState {
-    eventfd: Option<RawFd>,
-}
-
 pub struct UringDriver {
     ring: RefCell<IoUring>,
     state: RefCell<DriverState>,
-    interrupt: StdArc<InterruptState>,
+    interrupt_eventfd: Option<StdArc<RawFd>>,
     interrupt_buffer: RefCell<[u8; 8]>,
     ext_arg: bool,
     timespec: RefCell<Option<Timespec>>,
@@ -76,10 +94,9 @@ pub struct UringDriver {
 
 impl Drop for UringDriver {
     fn drop(&mut self) {
-        // Unregister eventfd if present
-        if let Some(eventfd) = self.interrupt.eventfd {
+        if let Some(eventfd) = self.interrupt_eventfd.take() {
             // Close eventfd
-            unsafe { libc::close(eventfd) };
+            unsafe { libc::close(*eventfd) };
         }
     }
 }
@@ -100,9 +117,7 @@ impl UringDriver {
             state: RefCell::new(DriverState {
                 registrations: Slab::new(),
             }),
-            interrupt: StdArc::new(InterruptState {
-                eventfd: Some(eventfd),
-            }),
+            interrupt_eventfd: Some(StdArc::new(eventfd)),
             interrupt_buffer: RefCell::new([0; 8]),
             ext_arg,
             timespec: RefCell::new(None),
@@ -408,18 +423,28 @@ impl UringDriver {
     fn submit_interrupt(&self) {
         use io_uring::{opcode, types};
         // Submit a read operation to the eventfd to wake up the driver
-        if let Some(eventfd) = self.interrupt.eventfd {
-            let mut buffer = self.interrupt_buffer.borrow_mut();
-            let _ = self.push_entry(
-                opcode::Read::new(types::Fd(eventfd), buffer.as_mut_ptr(), buffer.len() as u32)
-                    .build()
-                    .user_data(u64::MAX),
-            );
-        }
+        let mut buffer = self.interrupt_buffer.borrow_mut();
+        let _ = self.push_entry(
+            opcode::Read::new(
+                types::Fd(
+                    *self
+                        .interrupt_eventfd
+                        .as_ref()
+                        .expect("interrupt_eventfd is not initialized")
+                        .as_ref(),
+                ),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+            )
+            .build()
+            .user_data(u64::MAX),
+        );
     }
 }
 
 impl Driver for UringDriver {
+    type Interruptor = UringInterruptor;
+
     #[inline]
     fn flush(&self) {
         match self.collect_completions(false, None) {
@@ -437,17 +462,13 @@ impl Driver for UringDriver {
     }
 
     #[inline]
-    fn interrupt(&self) {
-        // Write to the eventfd to wake up the driver
-        if let Some(eventfd) = self.interrupt.eventfd {
-            let value: u64 = 1;
-            let _ = unsafe {
-                libc::write(
-                    eventfd,
-                    &value as *const u64 as *const std::ffi::c_void,
-                    std::mem::size_of::<u64>(),
-                )
-            };
+    fn get_interruptor(&self) -> Self::Interruptor {
+        UringInterruptor {
+            eventfd: StdArc::downgrade(
+                self.interrupt_eventfd
+                    .as_ref()
+                    .expect("interrupt_eventfd is not initialized"),
+            ),
         }
     }
 

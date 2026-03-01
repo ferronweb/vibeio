@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::driver::Driver;
+use crate::driver::{Driver, NoopInterruptor};
 use mio::{Interest, Token};
 
 pub struct MockDriver {}
@@ -13,6 +13,8 @@ impl MockDriver {
 }
 
 impl Driver for MockDriver {
+    type Interruptor = NoopInterruptor;
+
     #[inline]
     fn wait(&self, timeout: Option<Duration>) {
         if let Some(timeout) = timeout {
@@ -22,8 +24,8 @@ impl Driver for MockDriver {
     }
 
     #[inline]
-    fn interrupt(&self) {
-        // Mock driver doesn't actually wait, so interrupt is a no-op
+    fn get_interruptor(&self) -> Self::Interruptor {
+        NoopInterruptor
     }
 
     #[inline]
