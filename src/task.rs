@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::rc::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,9 +7,8 @@ use std::task::{RawWaker, RawWakerVTable, Waker};
 
 use crossbeam_queue::SegQueue;
 use futures_util::future::LocalBoxFuture;
-use futures_util::task::ArcWake;
 
-use crate::driver::{AnyDriver, AnyInterruptor};
+use crate::driver::AnyInterruptor;
 
 pub struct Task {
     pub future: RefCell<Option<LocalBoxFuture<'static, ()>>>,
@@ -105,6 +104,3 @@ impl Task {
         self.queued.store(false, Ordering::Relaxed);
     }
 }
-
-unsafe impl Send for Task {}
-unsafe impl Sync for Task {}

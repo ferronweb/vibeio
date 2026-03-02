@@ -19,7 +19,7 @@ impl Interruptor for MioInterruptor {
     #[inline]
     fn interrupt(&self) {
         if let Some(waker) = self.waker.upgrade() {
-            waker.wake();
+            let _ = waker.wake();
         }
     }
 }

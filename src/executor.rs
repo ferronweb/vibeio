@@ -269,7 +269,6 @@ impl Runtime {
 
             for task in batch.drain(..) {
                 let mut future_slot = task.future.borrow_mut();
-                let mut future_returned = false;
                 if let Some(mut future) = future_slot.take() {
                     drop(future_slot);
                     let waker = task.waker();
@@ -278,7 +277,6 @@ impl Runtime {
                     if future.as_mut().poll(&mut context).is_pending() {
                         let mut future_slot = task.future.borrow_mut();
                         *future_slot = Some(future);
-                        future_returned = true;
                     } else {
                         // Future completed, remove task from token_to_task slab to prevent memory leaks
                         inner.token_to_task.borrow_mut().remove(task.token);
