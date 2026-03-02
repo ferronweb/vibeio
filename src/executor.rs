@@ -279,11 +279,10 @@ impl Runtime {
                         let mut future_slot = task.future.borrow_mut();
                         *future_slot = Some(future);
                         future_returned = true;
+                    } else {
+                        // Future completed, remove task from token_to_task slab to prevent memory leaks
+                        inner.token_to_task.borrow_mut().remove(task.token);
                     }
-                }
-                if !future_returned {
-                    // Prevent too many tokens in `token_to_task` slab
-                    inner.token_to_task.borrow_mut().remove(task.token);
                 }
             }
 
