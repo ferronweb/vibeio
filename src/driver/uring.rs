@@ -115,7 +115,7 @@ impl UringDriver {
         let driver = Self {
             ring: RefCell::new(ring),
             state: RefCell::new(DriverState {
-                registrations: Slab::new(),
+                registrations: Slab::with_capacity(entries as usize),
             }),
             interrupt_eventfd: Some(StdArc::new(eventfd)),
             interrupt_buffer: RefCell::new([0; 8]),

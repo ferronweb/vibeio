@@ -54,7 +54,7 @@ impl MioDriver {
             registry,
             events: RefCell::new(Events::with_capacity(1024)),
             state: RefCell::new(DriverState {
-                registrations: Slab::new(),
+                registrations: Slab::with_capacity(1024),
             }),
             waker: Arc::new(waker),
         })
