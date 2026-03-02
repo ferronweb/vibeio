@@ -35,7 +35,7 @@ mod tests {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
                 .expect("address should parse");
-            let Some(mut listener) = try_bind_listener(address) else {
+            let Some(listener) = try_bind_listener(address) else {
                 return;
             };
             let server_address = listener
@@ -83,7 +83,7 @@ mod tests {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
                 .expect("address should parse");
-            let Some(mut listener) = try_bind_listener(address) else {
+            let Some(listener) = try_bind_listener(address) else {
                 return;
             };
             let server_address = listener
@@ -124,7 +124,7 @@ mod tests {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
                 .expect("address should parse");
-            let Some(mut listener) = try_bind_listener(address) else {
+            let Some(listener) = try_bind_listener(address) else {
                 return;
             };
             let server_address = listener
@@ -159,7 +159,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn poll_stream_connect_works_with_live_completion_listener_under_uring() {
-        let Ok(driver) = AnyDriver::new_uring(256) else {
+        let Ok(driver) = AnyDriver::new_uring() else {
             return;
         };
         let runtime = new_runtime(driver);
@@ -167,7 +167,7 @@ mod tests {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
                 .expect("address should parse");
-            let Some(mut listener) = try_bind_listener(address) else {
+            let Some(listener) = try_bind_listener(address) else {
                 return;
             };
             let server_address = listener
@@ -202,7 +202,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn stream_mode_conversion_works_with_uring_driver() {
-        let Ok(driver) = AnyDriver::new_uring(256) else {
+        let Ok(driver) = AnyDriver::new_uring() else {
             return;
         };
         let runtime = new_runtime(driver);
@@ -210,7 +210,7 @@ mod tests {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
                 .expect("address should parse");
-            let Some(mut listener) = try_bind_listener(address) else {
+            let Some(listener) = try_bind_listener(address) else {
                 return;
             };
             let server_address = listener

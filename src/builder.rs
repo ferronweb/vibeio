@@ -3,7 +3,7 @@ use crate::driver::AnyDriver;
 /// I/O driver selection for the async runtime.
 ///
 /// This enum allows choosing which I/O driver to use when building the runtime.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub enum DriverKind {
     /// Uses the Mio driver for I/O operations.
     Mio,
@@ -12,6 +12,9 @@ pub enum DriverKind {
     /// Uses the io_uring driver (Linux only).
     #[cfg(target_os = "linux")]
     IoUring,
+    /// Uses a custom io_uring driver (Linux only).
+    #[cfg(target_os = "linux")]
+    IoUringCustom(io_uring::Builder),
 }
 
 impl DriverKind {
@@ -22,7 +25,9 @@ impl DriverKind {
             DriverKind::Mio => AnyDriver::new_mio(),
             DriverKind::Mock => Ok(AnyDriver::new_mock()),
             #[cfg(target_os = "linux")]
-            DriverKind::IoUring => AnyDriver::new_uring(1024),
+            DriverKind::IoUring => AnyDriver::new_uring(),
+            #[cfg(target_os = "linux")]
+            DriverKind::IoUringCustom(builder) => AnyDriver::new_uring_custom(builder),
         }
     }
 }

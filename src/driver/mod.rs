@@ -142,15 +142,21 @@ impl AnyDriver {
 
     #[cfg(target_os = "linux")]
     #[inline]
-    pub(crate) fn new_uring(entries: u32) -> Result<Self, io::Error> {
-        Ok(AnyDriver::IoUring(UringDriver::new(entries)?))
+    pub(crate) fn new_uring_custom(builder: io_uring::Builder) -> Result<Self, io::Error> {
+        Ok(AnyDriver::IoUring(UringDriver::new(1024, builder)?))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[inline]
+    pub(crate) fn new_uring() -> Result<Self, io::Error> {
+        Self::new_uring_custom(io_uring::IoUring::builder())
     }
 
     #[inline]
     pub(crate) fn new_best() -> Result<Self, io::Error> {
         #[cfg(target_os = "linux")]
-        if let Ok(driver) = UringDriver::new(1024) {
-            return Ok(AnyDriver::IoUring(driver));
+        if let Ok(driver) = Self::new_uring() {
+            return Ok(driver);
         }
 
         Self::new_mio()
@@ -299,7 +305,7 @@ mod tests {
     fn test_uring_driver_interrupt_basic() {
         #[cfg(target_os = "linux")]
         {
-            let driver = AnyDriver::new_uring(1024).expect("Failed to create UringDriver");
+            let driver = AnyDriver::new_uring().expect("Failed to create UringDriver");
             let interruptor = driver.get_interruptor();
 
             // Test that interrupt doesn't panic and can be called multiple times
@@ -347,7 +353,7 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             let runtime = crate::executor::new_runtime(
-                AnyDriver::new_uring(1024).expect("Failed to create UringDriver"),
+                AnyDriver::new_uring().expect("Failed to create UringDriver"),
             );
 
             let (tx, rx) = std::sync::mpsc::channel();
