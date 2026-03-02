@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn copy_copies_all_bytes_and_flushes_writer() {
-        let runtime = new_runtime(crate::driver::AnyDriver::new_mock());
+        let runtime = new_runtime(crate::driver::AnyDriver::new_mock(), false);
         runtime.block_on(async {
             let mut reader = SliceReader::new(b"hello world", 3);
             let mut writer = VecWriter::new(2);
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn split_allows_separate_read_and_write_halves() {
-        let runtime = new_runtime(crate::driver::AnyDriver::new_mock());
+        let runtime = new_runtime(crate::driver::AnyDriver::new_mock(), false);
         runtime.block_on(async {
             let rw = ReadWriteVec::new(b"abc");
             let (mut r, mut w) = split(rw);
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn copy_bidirectional_works() {
-        let runtime = new_runtime(crate::driver::AnyDriver::new_mock());
+        let runtime = new_runtime(crate::driver::AnyDriver::new_mock(), false);
         runtime.block_on(async {
             let a = ReadWriteVec::new(b"hello");
             let b = ReadWriteVec::new(b"world");

@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn sleep_completes() {
-        let rt = new_runtime(AnyDriver::new_mock());
+        let rt = new_runtime(AnyDriver::new_mock(), true);
         rt.block_on(async {
             Sleep::new(Duration::from_millis(1)).await;
         });
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn timeout_expires() {
-        let rt = new_runtime(AnyDriver::new_mock());
+        let rt = new_runtime(AnyDriver::new_mock(), true);
         let res = rt.block_on(async {
             let never = async {
                 futures_util::future::pending::<()>().await;
@@ -108,14 +108,14 @@ mod tests {
 
     #[test]
     fn timeout_succeeds_if_future_completes() {
-        let rt = new_runtime(AnyDriver::new_mock());
+        let rt = new_runtime(AnyDriver::new_mock(), true);
         let res = rt.block_on(async { timeout(Duration::from_secs(1), async { 123usize }).await });
         assert_eq!(res, Ok(123usize));
     }
 
     #[test]
     fn interval_ticks_skip() {
-        let rt = new_runtime(AnyDriver::new_mock());
+        let rt = new_runtime(AnyDriver::new_mock(), true);
         rt.block_on(async {
             let mut interval = Interval::new(Duration::from_millis(1));
             // two ticks should complete quickly
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn interval_catchup_returns_multiple() {
-        let rt = new_runtime(AnyDriver::new_mock());
+        let rt = new_runtime(AnyDriver::new_mock(), true);
         rt.block_on(async {
             let mut interval = Interval::new(Duration::from_millis(1));
             interval.set_missed_tick_behavior(MissedTickBehavior::CatchUp);

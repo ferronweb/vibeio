@@ -25,9 +25,9 @@ pub struct RuntimeInner {
     remote_queue: Arc<SegQueue<usize>>,
     token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
-    #[cfg(feature = "time")]
-    timer: Rc<Timer>,
     waiting: Arc<AtomicBool>,
+    #[cfg(feature = "time")]
+    timer: Option<Rc<Timer>>,
 }
 
 pub struct Runtime {
@@ -99,7 +99,7 @@ impl Drop for CurrentRuntimeGuard {
     }
 }
 
-pub fn new_runtime(driver: AnyDriver) -> Runtime {
+pub fn new_runtime(driver: AnyDriver, enable_timer: bool) -> Runtime {
     let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(4096)));
     Runtime {
         inner: Some(Rc::new(RuntimeInner {
@@ -109,7 +109,11 @@ pub fn new_runtime(driver: AnyDriver) -> Runtime {
             driver: Rc::new(driver),
             waiting: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "time")]
-            timer: Rc::new(Timer::new()),
+            timer: if enable_timer {
+                Some(Rc::new(Timer::new()))
+            } else {
+                None
+            },
         })),
     }
 }
@@ -127,9 +131,13 @@ pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
 pub(crate) fn current_timer() -> Option<Rc<Timer>> {
     CURRENT_RUNTIME.with(|runtime| {
         let runtime = runtime.borrow();
-        runtime
-            .as_ref()
-            .map(|runtime_inner| runtime_inner.timer.clone())
+        runtime.as_ref().map(|runtime_inner| {
+            runtime_inner
+                .timer
+                .as_ref()
+                .expect("timer not enabled")
+                .clone()
+        })
     })
 }
 
@@ -248,14 +256,16 @@ impl Runtime {
             inner.drain_ready(&mut batch);
 
             #[cfg(feature = "time")]
-            let deadline = if batch.is_empty() {
-                // Spin the timing wheel
-                let deadline = inner.timer.spin_and_get_deadline();
-                inner.drain_ready(&mut batch);
-                deadline
-            } else {
-                None
-            };
+            let deadline = inner.timer.as_ref().and_then(|timer| {
+                if batch.is_empty() {
+                    // Spin the timing wheel
+                    let deadline = timer.spin_and_get_deadline();
+                    inner.drain_ready(&mut batch);
+                    deadline
+                } else {
+                    None
+                }
+            });
 
             if batch.is_empty() {
                 // Double-check pattern: set waiting flag before checking queue again
@@ -334,14 +344,14 @@ mod tests {
 
     #[test]
     fn block_on_returns_future_output() {
-        let runtime = new_runtime(AnyDriver::new_mock());
+        let runtime = new_runtime(AnyDriver::new_mock(), false);
         let value = runtime.block_on(async { 42usize });
         assert_eq!(value, 42);
     }
 
     #[test]
     fn spawn_join_handle_returns_task_output() {
-        let runtime = new_runtime(AnyDriver::new_mock());
+        let runtime = new_runtime(AnyDriver::new_mock(), false);
         let value = runtime.block_on(async {
             let handle = spawn(async { 21usize });
             handle.await * 2
@@ -351,7 +361,7 @@ mod tests {
 
     #[test]
     fn runtime_spawn_returns_join_handle() {
-        let runtime = new_runtime(AnyDriver::new_mock());
+        let runtime = new_runtime(AnyDriver::new_mock(), false);
         let handle = runtime.spawn(async { 7usize });
         let value = runtime.block_on(async move { handle.await });
         assert_eq!(value, 7);

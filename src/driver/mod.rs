@@ -328,8 +328,10 @@ mod tests {
 
     #[test]
     fn test_interrupt_mio() {
-        let runtime =
-            crate::executor::new_runtime(AnyDriver::new_mio().expect("Failed to create MioDriver"));
+        let runtime = crate::executor::new_runtime(
+            AnyDriver::new_mio().expect("Failed to create MioDriver"),
+            false,
+        );
 
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -354,6 +356,7 @@ mod tests {
         {
             let runtime = crate::executor::new_runtime(
                 AnyDriver::new_uring().expect("Failed to create UringDriver"),
+                false,
             );
 
             let (tx, rx) = std::sync::mpsc::channel();

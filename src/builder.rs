@@ -47,6 +47,7 @@ impl DriverKind {
 /// ```
 pub struct RuntimeBuilder {
     driver_kind: Option<DriverKind>,
+    enable_timer: bool,
 }
 
 impl RuntimeBuilder {
@@ -54,19 +55,23 @@ impl RuntimeBuilder {
     ///
     /// By default, the builder will select the best available driver for the platform.
     pub fn new() -> Self {
-        Self { driver_kind: None }
-    }
-
-    /// Creates a new runtime builder with the specified driver kind.
-    pub fn with_driver(driver_kind: DriverKind) -> Self {
         Self {
-            driver_kind: Some(driver_kind),
+            driver_kind: None,
+            enable_timer: false,
         }
     }
 
     /// Sets the I/O driver for the runtime.
     pub fn driver(mut self, driver_kind: DriverKind) -> Self {
         self.driver_kind = Some(driver_kind);
+        self
+    }
+
+    /// Enables or disables the timer for the runtime.
+    ///
+    /// By default, the timer is disabled.
+    pub fn enable_timer(mut self, enable: bool) -> Self {
+        self.enable_timer = enable;
         self
     }
 
@@ -79,7 +84,7 @@ impl RuntimeBuilder {
         } else {
             AnyDriver::new_best()?
         };
-        Ok(crate::executor::new_runtime(driver))
+        Ok(crate::executor::new_runtime(driver, self.enable_timer))
     }
 }
 

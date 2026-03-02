@@ -91,7 +91,7 @@ mod vectored_uring_tests {
         // Create a runtime with an io_uring driver and run the test inside it so
         // current_driver() is available for InnerRawHandle::new.
         let driver = AnyDriver::new_uring().expect("failed to create uring driver");
-        let runtime = new_runtime(driver);
+        let runtime = new_runtime(driver, false);
 
         runtime.block_on(async {
             // create a pipe (pair of fds)

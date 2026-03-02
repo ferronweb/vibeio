@@ -30,7 +30,10 @@ mod tests {
 
     #[test]
     fn tcp_listener_and_stream_exchange_data() {
-        let runtime = new_runtime(AnyDriver::new_mio().expect("mio driver should initialize"));
+        let runtime = new_runtime(
+            AnyDriver::new_mio().expect("mio driver should initialize"),
+            false,
+        );
         runtime.block_on(async {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
@@ -78,7 +81,10 @@ mod tests {
 
     #[test]
     fn tcp_stream_implements_custom_async_io_traits() {
-        let runtime = new_runtime(AnyDriver::new_mio().expect("mio driver should initialize"));
+        let runtime = new_runtime(
+            AnyDriver::new_mio().expect("mio driver should initialize"),
+            false,
+        );
         runtime.block_on(async {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
@@ -119,7 +125,10 @@ mod tests {
 
     #[test]
     fn poll_tcp_stream_uses_readiness_path() {
-        let runtime = new_runtime(AnyDriver::new_mio().expect("mio driver should initialize"));
+        let runtime = new_runtime(
+            AnyDriver::new_mio().expect("mio driver should initialize"),
+            false,
+        );
         runtime.block_on(async {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
@@ -162,7 +171,7 @@ mod tests {
         let Ok(driver) = AnyDriver::new_uring() else {
             return;
         };
-        let runtime = new_runtime(driver);
+        let runtime = new_runtime(driver, false);
         runtime.block_on(async {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
@@ -205,7 +214,7 @@ mod tests {
         let Ok(driver) = AnyDriver::new_uring() else {
             return;
         };
-        let runtime = new_runtime(driver);
+        let runtime = new_runtime(driver, false);
         runtime.block_on(async {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()

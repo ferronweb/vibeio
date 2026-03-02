@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn read_exact_and_write_all_work_for_partial_io() {
-        let runtime = new_runtime(AnyDriver::new_mock());
+        let runtime = new_runtime(AnyDriver::new_mock(), false);
         runtime.block_on(async {
             let mut reader = SliceReader::new(b"abcdef", 2);
             let mut out = [0u8; 6];
