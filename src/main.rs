@@ -5,7 +5,10 @@ mod io;
 mod net;
 mod op;
 mod task;
+
+#[cfg(feature = "time")]
 mod time;
+#[cfg(feature = "time")]
 mod timer;
 
 use crate::{

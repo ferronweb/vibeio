@@ -13,6 +13,7 @@ use slab::Slab;
 
 use crate::driver::AnyDriver;
 use crate::task::Task;
+#[cfg(feature = "time")]
 use crate::timer::Timer;
 
 thread_local! {
@@ -24,6 +25,7 @@ pub struct RuntimeInner {
     remote_queue: Arc<SegQueue<usize>>,
     token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
+    #[cfg(feature = "time")]
     timer: Rc<Timer>,
     waiting: Arc<AtomicBool>,
 }
@@ -106,6 +108,7 @@ pub fn new_runtime(driver: AnyDriver) -> Runtime {
             token_to_task: RefCell::new(Slab::with_capacity(4096)),
             driver: Rc::new(driver),
             waiting: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "time")]
             timer: Rc::new(Timer::new()),
         })),
     }
@@ -120,6 +123,7 @@ pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
     })
 }
 
+#[cfg(feature = "time")]
 pub(crate) fn current_timer() -> Option<Rc<Timer>> {
     CURRENT_RUNTIME.with(|runtime| {
         let runtime = runtime.borrow();
@@ -243,6 +247,7 @@ impl Runtime {
             batch.clear();
             inner.drain_ready(&mut batch);
 
+            #[cfg(feature = "time")]
             let deadline = if batch.is_empty() {
                 // Spin the timing wheel
                 let deadline = inner.timer.spin_and_get_deadline();
@@ -261,7 +266,10 @@ impl Runtime {
 
                 if batch.is_empty() {
                     // Queue is still empty after setting waiting flag, safe to wait
+                    #[cfg(feature = "time")]
                     inner.driver.wait(deadline);
+                    #[cfg(not(feature = "time"))]
+                    inner.driver.wait(None);
                 }
                 inner.waiting.store(false, Ordering::Relaxed);
                 continue;
