@@ -1,20 +1,21 @@
-mod builder;
+pub mod builder;
 mod driver;
 mod executor;
 mod fd_inner;
-mod io;
-mod net;
+pub mod io;
+pub mod net;
 mod op;
 mod task;
 
 #[cfg(feature = "time")]
-mod time;
+pub mod time;
 #[cfg(feature = "time")]
 mod timer;
 
+pub use crate::executor::spawn;
+
 use crate::{
     builder::RuntimeBuilder,
-    executor::spawn,
     io::{AsyncRead, AsyncWrite},
 };
 
