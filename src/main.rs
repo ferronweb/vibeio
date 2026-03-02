@@ -1,3 +1,4 @@
+mod builder;
 mod driver;
 mod executor;
 mod fd_inner;
@@ -12,18 +13,17 @@ mod time;
 mod timer;
 
 use crate::{
-    driver::AnyDriver,
-    executor::{new_runtime, spawn},
+    builder::RuntimeBuilder,
+    executor::spawn,
     io::{AsyncRead, AsyncWrite},
 };
 
-fn main() {
-    let runtime =
-        new_runtime(AnyDriver::new_best().expect("failed to initialize runtime I/O driver"));
+fn main() -> Result<(), std::io::Error> {
+    let runtime = RuntimeBuilder::new().build()?;
 
     // A basic TCP echo server example
     runtime.block_on(async {
-        let mut listener = net::TcpListener::bind("127.0.0.1:5555").unwrap();
+        let listener = net::TcpListener::bind("127.0.0.1:5555")?;
         while let Ok((stream, _)) = listener.accept().await {
             spawn(async move {
                 let mut stream = stream;
@@ -42,5 +42,7 @@ fn main() {
                 }
             });
         }
-    });
+
+        Ok(())
+    })
 }
