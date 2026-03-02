@@ -334,14 +334,11 @@ impl UringDriver {
                             let timespec = timeout.into();
                             let timespec_ptr = &timespec as *const Timespec;
                             self.timespec.borrow_mut().replace(timespec);
-                            let entry = opcode::Timeout::new(timespec_ptr)
-                                .build()
-                                .user_data(u64::MAX - 1);
-
-                            let mut sq = ring.submission();
-                            // Safety: timespec would be saved into the I/O driver itself
-                            let _ = unsafe { sq.push(&entry) };
-                            drop(sq);
+                            let _ = self.push_entry(
+                                opcode::Timeout::new(timespec_ptr)
+                                    .build()
+                                    .user_data(u64::MAX - 1),
+                            );
 
                             ring.submit_and_wait(1)
                         }
