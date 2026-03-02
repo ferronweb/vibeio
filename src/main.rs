@@ -1,4 +1,4 @@
-pub mod builder;
+mod builder;
 mod driver;
 mod executor;
 mod fd_inner;
@@ -12,7 +12,8 @@ pub mod time;
 #[cfg(feature = "time")]
 mod timer;
 
-pub use crate::executor::spawn;
+pub use crate::builder::*;
+pub use crate::executor::*;
 
 use crate::{
     builder::RuntimeBuilder,

@@ -20,7 +20,7 @@ thread_local! {
     static CURRENT_RUNTIME: RefCell<Option<Rc<RuntimeInner>>> = RefCell::new(None);
 }
 
-pub struct RuntimeInner {
+pub(crate) struct RuntimeInner {
     queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
     remote_queue: Arc<SegQueue<usize>>,
     token_to_task: RefCell<Slab<Arc<Task>>>,
@@ -99,7 +99,7 @@ impl Drop for CurrentRuntimeGuard {
     }
 }
 
-pub fn new_runtime(driver: AnyDriver, enable_timer: bool) -> Runtime {
+pub(crate) fn new_runtime(driver: AnyDriver, enable_timer: bool) -> Runtime {
     let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(4096)));
     Runtime {
         inner: Some(Rc::new(RuntimeInner {
@@ -314,27 +314,6 @@ impl Drop for Runtime {
         let _runtime_guard = CurrentRuntimeGuard::enter(inner.clone());
         drop(inner);
         drop(_runtime_guard);
-    }
-}
-
-pub struct YieldNow(bool);
-
-pub fn yield_now() -> YieldNow {
-    YieldNow(false)
-}
-
-impl Future for YieldNow {
-    type Output = ();
-
-    #[inline]
-    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.0 {
-            Poll::Ready(())
-        } else {
-            self.0 = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
     }
 }
 
