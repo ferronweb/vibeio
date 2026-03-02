@@ -2,7 +2,7 @@
 
 mod util;
 
-use self::util::*;
+pub use self::util::*;
 
 use std::io::{self, ErrorKind, IoSlice, IoSliceMut};
 
