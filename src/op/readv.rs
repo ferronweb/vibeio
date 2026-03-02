@@ -1,5 +1,6 @@
 use std::io;
 use std::io::IoSliceMut;
+use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
 use mio::{Interest, Token};
@@ -8,6 +9,21 @@ use crate::{
     fd_inner::InnerRawHandle,
     op::{completion_result_to_poll, Op},
 };
+
+/// Converts a slice of `IoSlice` to a system iovec buffer.
+#[inline]
+fn iovec_to_system(bufs: &mut [IoSliceMut<'_>]) -> Box<[libc::iovec]> {
+    let mut iovecs_maybeuninit: Box<[MaybeUninit<libc::iovec>]> = Box::new_uninit_slice(bufs.len());
+    for (index, s) in bufs.iter_mut().enumerate() {
+        let iov = libc::iovec {
+            iov_base: s.as_mut_ptr().cast::<libc::c_void>(),
+            iov_len: s.len(),
+        };
+        iovecs_maybeuninit[index].write(iov);
+    }
+    // SAFETY: The boxed slice would have all values initialized after interating over original array
+    unsafe { iovecs_maybeuninit.assume_init() }
+}
 
 /// Unified vectored-read helper trait implemented on `InnerRawHandle`.
 /// Exposes poll-based, completion-based and unified (default) helpers.
@@ -94,8 +110,8 @@ pub struct ReadvOp<'a> {
     bufs_len: usize,
     // For completion path: owned buffers and cached iovecs that remain alive
     // until the completion is processed.
-    iovecs: Option<Vec<libc::iovec>>,
-    owned_buffers: Option<Vec<Vec<u8>>>,
+    iovecs: Option<Box<[libc::iovec]>>,
+    owned_buffers: Option<Box<[Box<[u8]>]>>,
 }
 
 impl<'a> ReadvOp<'a> {
@@ -136,13 +152,7 @@ impl Op for ReadvOp<'_> {
             std::slice::from_raw_parts_mut(self.bufs_ptr as *mut IoSliceMut, self.bufs_len)
         };
 
-        let mut iovecs: Vec<libc::iovec> = Vec::with_capacity(bufs.len());
-        for s in bufs.iter_mut() {
-            iovecs.push(libc::iovec {
-                iov_base: s.as_mut_ptr().cast::<libc::c_void>(),
-                iov_len: s.len(),
-            });
-        }
+        let iovecs = iovec_to_system(bufs);
 
         let ret = unsafe { libc::readv(self.handle.handle, iovecs.as_ptr(), iovecs.len() as _) };
         if ret == -1 {
@@ -172,25 +182,34 @@ impl Op for ReadvOp<'_> {
         };
 
         // Allocate owned buffers with the same lengths as the caller buffers.
-        let mut owned: Vec<Vec<u8>> = Vec::with_capacity(bufs.len());
-        for s in bufs.iter() {
-            owned.push(vec![0u8; s.len()]);
+        let mut owned_maybeuninit: Box<[MaybeUninit<Box<[u8]>>]> =
+            Box::new_uninit_slice(bufs.len());
+        for (index, s) in bufs.iter().enumerate() {
+            // SAFETY: u8 is a primitive type
+            let iovec = unsafe { Box::new_uninit_slice(s.len()).assume_init() };
+            owned_maybeuninit[index].write(iovec);
         }
+        // SAFETY: All values have been initialized
+        let mut owned = unsafe { owned_maybeuninit.assume_init() };
 
         // Create libc::iovec array pointing to our owned buffers.
-        let mut iovecs: Vec<libc::iovec> = Vec::with_capacity(owned.len());
-        for v in owned.iter_mut() {
-            iovecs.push(libc::iovec {
-                iov_base: v.as_mut_ptr().cast::<libc::c_void>(),
-                iov_len: v.len(),
-            });
+        let mut iovecs_maybeuninit: Box<[MaybeUninit<libc::iovec>]> =
+            Box::new_uninit_slice(owned.len());
+        for (index, s) in owned.iter_mut().enumerate() {
+            let iov = libc::iovec {
+                iov_base: s.as_mut_ptr().cast::<libc::c_void>(),
+                iov_len: s.len(),
+            };
+            iovecs_maybeuninit[index].write(iov);
         }
+        // SAFETY: The boxed slice would have all values initialized after interating over original array
+        let iovecs = unsafe { iovecs_maybeuninit.assume_init() };
 
         // Move the iovec vector and the owned buffers into a single boxed tuple.
         // The driver will take ownership of this boxed value and keep it alive
         // until the completion is processed. We must obtain the pointer to the
         // iovec entries for the SQE from the boxed tuple.
-        let boxed: Box<(Vec<libc::iovec>, Vec<Vec<u8>>)> = Box::new((iovecs, owned));
+        let boxed: Box<(Box<[libc::iovec]>, Box<[Box<[u8]>]>)> = Box::new((iovecs, owned));
         let iov_ptr = boxed.0.as_ptr();
         let iov_len = boxed.0.len();
 
@@ -211,7 +230,8 @@ impl Op for ReadvOp<'_> {
         // tuple type and restore the owned buffers/iovecs into the op so that
         // `complete` can copy data back into the caller buffers.
         if let Some(boxed_any) = storage {
-            if let Ok(boxed_tuple) = boxed_any.downcast::<(Vec<libc::iovec>, Vec<Vec<u8>>)>() {
+            if let Ok(boxed_tuple) = boxed_any.downcast::<(Box<[libc::iovec]>, Box<[Box<[u8]>]>)>()
+            {
                 let (iovecs, owned_buffers) = *boxed_tuple;
                 self.iovecs = Some(iovecs);
                 self.owned_buffers = Some(owned_buffers);

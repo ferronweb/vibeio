@@ -1,5 +1,6 @@
 /// writev.rs
 use std::io;
+use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
 use mio::{Interest, Token};
@@ -9,6 +10,21 @@ use crate::{
     fd_inner::InnerRawHandle,
     op::{completion_result_to_poll, Op},
 };
+
+/// Converts a slice of `IoSlice` to a system iovec buffer.
+#[inline]
+fn iovec_to_system(bufs: &[IoSlice<'_>]) -> Box<[libc::iovec]> {
+    let mut iovecs_maybeuninit: Box<[MaybeUninit<libc::iovec>]> = Box::new_uninit_slice(bufs.len());
+    for (index, s) in bufs.iter().enumerate() {
+        let iov = libc::iovec {
+            iov_base: s.as_ptr() as *mut libc::c_void,
+            iov_len: s.len(),
+        };
+        iovecs_maybeuninit[index].write(iov);
+    }
+    // SAFETY: The boxed slice would have all values initialized after interating over original array
+    unsafe { iovecs_maybeuninit.assume_init() }
+}
 
 /// Unified vectored-write helper trait implemented on `InnerRawHandle`.
 /// Exposes poll-based, completion-based and unified (default) helpers.
@@ -78,7 +94,7 @@ pub struct WritevOp<'a> {
     handle: &'a InnerRawHandle,
     bufs: &'a [IoSlice<'a>],
     // Optional cached iovec list for completion path lifetime reasons.
-    iovecs: Option<Vec<libc::iovec>>,
+    iovecs: Option<Box<[libc::iovec]>>,
 }
 
 impl<'a> WritevOp<'a> {
@@ -103,14 +119,7 @@ impl Op for WritevOp<'_> {
     #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         // Build a temporary iovec array for the syscall.
-        let mut iovecs: Vec<libc::iovec> = Vec::with_capacity(self.bufs.len());
-        for s in self.bufs.iter() {
-            let iov = libc::iovec {
-                iov_base: s.as_ptr() as *mut libc::c_void,
-                iov_len: s.len(),
-            };
-            iovecs.push(iov);
-        }
+        let iovecs = iovec_to_system(self.bufs);
 
         let written = unsafe {
             libc::writev(
@@ -145,13 +154,7 @@ impl Op for WritevOp<'_> {
         // the duration of the submission. Create the Vec, take a raw pointer
         // to its buffer, then move the Vec into a Box<dyn Any> which the driver
         // will store.
-        let mut iovecs: Vec<libc::iovec> = Vec::with_capacity(self.bufs.len());
-        for s in self.bufs.iter() {
-            iovecs.push(libc::iovec {
-                iov_base: s.as_ptr() as *mut libc::c_void,
-                iov_len: s.len(),
-            });
-        }
+        let iovecs = iovec_to_system(self.bufs);
 
         let iov_ptr = iovecs.as_ptr();
         let iov_len = iovecs.len();
@@ -171,7 +174,7 @@ impl Op for WritevOp<'_> {
     fn take_completion_storage(&mut self, storage: Option<Box<dyn std::any::Any>>) {
         if let Some(boxed) = storage {
             // Attempt to downcast to the type we stored in build_completion_entry.
-            if let Ok(vec) = boxed.downcast::<Vec<libc::iovec>>() {
+            if let Ok(vec) = boxed.downcast::<Box<[libc::iovec]>>() {
                 self.iovecs = Some(*vec);
             }
         }
