@@ -15,10 +15,7 @@ mod timer;
 pub use crate::builder::*;
 pub use crate::executor::*;
 
-use crate::{
-    builder::RuntimeBuilder,
-    io::{AsyncRead, AsyncWrite},
-};
+use crate::io::{AsyncRead, AsyncWrite};
 
 fn main() -> Result<(), std::io::Error> {
     let runtime = RuntimeBuilder::new().build()?;

@@ -149,11 +149,7 @@ mod tests {
 
     use crate::{
         executor::new_runtime,
-        io::{
-            split,
-            util::{copy, copy_bidirectional},
-            AsyncRead, AsyncWrite,
-        },
+        io::{split, util::copy, AsyncRead, AsyncWrite},
     };
 
     struct SliceReader {
