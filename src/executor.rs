@@ -34,21 +34,30 @@ pub struct Runtime {
     inner: Option<Rc<RuntimeInner>>,
 }
 
+/// Internal state for a spawned task.
+/// Stores the task's output and a waker to notify when the task completes.
 struct JoinState<T> {
     output: Option<T>,
     waker: Option<Waker>,
 }
 
+/// A handle to a spawned asynchronous task.
+///
+/// This handle implements `Future` and can be `await`ed to retrieve the task's output.
+/// It allows you to wait for a spawned task to complete and get its result.
 pub struct JoinHandle<T> {
     state: Rc<RefCell<JoinState<T>>>,
 }
 
 impl<T> JoinHandle<T> {
+    /// Creates a new `JoinHandle` with the given state.
     #[inline]
     fn new(state: Rc<RefCell<JoinState<T>>>) -> Self {
         Self { state }
     }
 
+    /// Attempts to retrieve the task's output without blocking.
+    /// Returns `Some(output)` if the task has completed, or `None` if it's still running.
     #[inline]
     fn try_take_output(&self) -> Option<T> {
         let mut state = self.state.borrow_mut();
