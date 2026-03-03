@@ -84,6 +84,8 @@ impl Op for ReadOp<'_> {
         self.handle.token()
     }
 
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         let read = unsafe {

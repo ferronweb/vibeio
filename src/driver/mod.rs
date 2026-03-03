@@ -1,3 +1,4 @@
+#[cfg(unix)]
 mod mio;
 mod mock;
 #[cfg(target_os = "linux")]
@@ -37,8 +38,9 @@ pub trait Interruptor {
 }
 
 pub enum AnyInterruptor {
-    Mio(MioInterruptor),
     Mock(MockInterruptor),
+    #[cfg(unix)]
+    Mio(MioInterruptor),
     #[cfg(target_os = "linux")]
     IoUring(UringInterruptor),
 }
@@ -47,6 +49,7 @@ impl AnyInterruptor {
     pub(crate) fn interrupt(&self) {
         match self {
             AnyInterruptor::Mio(interruptor) => interruptor.interrupt(),
+            #[cfg(unix)]
             AnyInterruptor::Mock(interruptor) => interruptor.interrupt(),
             #[cfg(target_os = "linux")]
             AnyInterruptor::IoUring(interruptor) => interruptor.interrupt(),
@@ -116,13 +119,15 @@ pub trait Driver {
 }
 
 pub enum AnyDriver {
-    Mio(MioDriver),
     Mock(MockDriver),
+    #[cfg(unix)]
+    Mio(MioDriver),
     #[cfg(target_os = "linux")]
     IoUring(UringDriver),
 }
 
 impl AnyDriver {
+    #[cfg(unix)]
     #[inline]
     pub(crate) fn new_mio() -> Result<Self, std::io::Error> {
         Ok(AnyDriver::Mio(MioDriver::new()?))
@@ -145,6 +150,7 @@ impl AnyDriver {
         Self::new_uring_custom(io_uring::IoUring::builder())
     }
 
+    #[cfg(unix)]
     #[inline]
     pub(crate) fn new_best() -> Result<Self, io::Error> {
         #[cfg(target_os = "linux")]
@@ -158,6 +164,7 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn flush(&self) {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.flush(),
             AnyDriver::Mock(driver) => driver.flush(),
             #[cfg(target_os = "linux")]
@@ -168,6 +175,7 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn wait(&self, timeout: Option<Duration>) {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.wait(timeout),
             AnyDriver::Mock(driver) => driver.wait(timeout),
             #[cfg(target_os = "linux")]
@@ -181,6 +189,7 @@ impl AnyDriver {
         O: Op<Output = R>,
     {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.submit(op, waker),
             AnyDriver::Mock(driver) => driver.submit(op, waker),
             #[cfg(target_os = "linux")]
@@ -195,6 +204,7 @@ impl AnyDriver {
         interest: Interest,
     ) -> Result<Token, std::io::Error> {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.register_handle(handle, interest),
             AnyDriver::Mock(driver) => driver.register_handle(handle, interest),
             #[cfg(target_os = "linux")]
@@ -210,6 +220,7 @@ impl AnyDriver {
         mode: RegistrationMode,
     ) -> Result<Token, io::Error> {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.register_handle_with_mode(handle, interest, mode),
             AnyDriver::Mock(driver) => driver.register_handle_with_mode(handle, interest, mode),
             #[cfg(target_os = "linux")]
@@ -224,6 +235,7 @@ impl AnyDriver {
         interest: Interest,
     ) -> Result<(), std::io::Error> {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.reregister_handle(handle, interest),
             AnyDriver::Mock(driver) => driver.reregister_handle(handle, interest),
             #[cfg(target_os = "linux")]
@@ -234,6 +246,7 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), std::io::Error> {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.deregister_handle(handle),
             AnyDriver::Mock(driver) => driver.deregister_handle(handle),
             #[cfg(target_os = "linux")]
@@ -244,6 +257,7 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn supports_completion(&self) -> bool {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.supports_completion(),
             AnyDriver::Mock(driver) => driver.supports_completion(),
             #[cfg(target_os = "linux")]
@@ -257,6 +271,7 @@ impl AnyDriver {
         O: Op<Output = R>,
     {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.submit_completion(op, waker),
             AnyDriver::Mock(driver) => driver.submit_completion(op, waker),
             #[cfg(target_os = "linux")]
@@ -267,6 +282,7 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn get_interruptor(&self) -> AnyInterruptor {
         match self {
+            #[cfg(unix)]
             AnyDriver::Mio(driver) => AnyInterruptor::Mio(driver.get_interruptor()),
             AnyDriver::Mock(driver) => AnyInterruptor::Mock(driver.get_interruptor()),
             #[cfg(target_os = "linux")]
@@ -283,6 +299,7 @@ mod tests {
         task::{Poll, Waker},
     };
 
+    #[cfg(unix)]
     #[test]
     fn test_mio_driver_interrupt_basic() {
         let driver = AnyDriver::new_mio().expect("Failed to create MioDriver");
@@ -294,18 +311,16 @@ mod tests {
         interruptor.interrupt();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_uring_driver_interrupt_basic() {
-        #[cfg(target_os = "linux")]
-        {
-            let driver = AnyDriver::new_uring().expect("Failed to create UringDriver");
-            let interruptor = driver.get_interruptor();
+        let driver = AnyDriver::new_uring().expect("Failed to create UringDriver");
+        let interruptor = driver.get_interruptor();
 
-            // Test that interrupt doesn't panic and can be called multiple times
-            interruptor.interrupt();
-            interruptor.interrupt();
-            interruptor.interrupt();
-        }
+        // Test that interrupt doesn't panic and can be called multiple times
+        interruptor.interrupt();
+        interruptor.interrupt();
+        interruptor.interrupt();
     }
 
     #[test]
@@ -319,6 +334,7 @@ mod tests {
         interruptor.interrupt();
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_interrupt_mio() {
         let runtime = crate::executor::Runtime::new(
@@ -342,29 +358,27 @@ mod tests {
         }));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_interruptor_uring() {
-        #[cfg(target_os = "linux")]
-        {
-            let runtime = crate::executor::Runtime::new(
-                AnyDriver::new_uring().expect("Failed to create UringDriver"),
-            );
+        let runtime = crate::executor::Runtime::new(
+            AnyDriver::new_uring().expect("Failed to create UringDriver"),
+        );
 
-            let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::channel();
 
-            std::thread::spawn(move || {
-                let waker: Waker = rx.recv().unwrap();
-                drop(rx); // Drop the receiver before waking the task
-                waker.wake();
-            });
+        std::thread::spawn(move || {
+            let waker: Waker = rx.recv().unwrap();
+            drop(rx); // Drop the receiver before waking the task
+            waker.wake();
+        });
 
-            runtime.block_on(poll_fn(move |cx| {
-                if tx.send(cx.waker().clone()).is_ok() {
-                    Poll::Pending
-                } else {
-                    Poll::Ready(())
-                }
-            }));
-        }
+        runtime.block_on(poll_fn(move |cx| {
+            if tx.send(cx.waker().clone()).is_ok() {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        }));
     }
 }

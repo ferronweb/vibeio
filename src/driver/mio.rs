@@ -365,50 +365,45 @@ mod tests {
 
     #[test]
     fn wait_wakes_task_for_ready_token() {
-        // TODO: support Windows
-        #[cfg(unix)]
-        {
-            use std::{
-                io::Write,
-                os::fd::AsRawFd,
-                rc::Rc,
-                task::{Context, Poll},
-                time::Duration,
-            };
+        use std::{
+            io::Write,
+            os::fd::AsRawFd,
+            rc::Rc,
+            task::{Context, Poll},
+            time::Duration,
+        };
 
-            use crate::{driver::AnyDriver, fd_inner::InnerRawHandle, op::ReadIo};
+        use crate::{driver::AnyDriver, fd_inner::InnerRawHandle, op::ReadIo};
 
-            let driver = Rc::new(AnyDriver::Mio(
-                MioDriver::new().expect("mio driver should initialize"),
-            ));
-            let wake = Arc::new(TestWake::new());
-            let waker = std::task::Waker::from(wake.clone());
+        let driver = Rc::new(AnyDriver::Mio(
+            MioDriver::new().expect("mio driver should initialize"),
+        ));
+        let wake = Arc::new(TestWake::new());
+        let waker = std::task::Waker::from(wake.clone());
 
-            // Since the driver already has a waker, let's use an Unix pipe instead
-            // TODO: support Windows
-            let (side1, mut side2) =
-                std::os::unix::net::UnixStream::pair().expect("failed to create pipe");
-            let mut buffer = [0u8; 1];
-            side1
-                .set_nonblocking(true)
-                .expect("failed to set non-blocking");
-            let inner_raw_handle = InnerRawHandle::new_with_driver_and_mode(
-                &driver,
-                side1.as_raw_fd(),
-                mio::Interest::READABLE,
-                crate::driver::RegistrationMode::Poll,
-            )
-            .expect("failed to register pipe");
-            match inner_raw_handle.poll_read_poll(&mut Context::from_waker(&waker), &mut buffer) {
-                Poll::Pending => {}
-                Poll::Ready(Ok(_)) => panic!("unexpected success"),
-                Poll::Ready(Err(e)) => panic!("failed to submit operation: {}", e),
-            };
+        // Since the driver already has a waker, let's use an Unix pipe instead
+        let (side1, mut side2) =
+            std::os::unix::net::UnixStream::pair().expect("failed to create pipe");
+        let mut buffer = [0u8; 1];
+        side1
+            .set_nonblocking(true)
+            .expect("failed to set non-blocking");
+        let inner_raw_handle = InnerRawHandle::new_with_driver_and_mode(
+            &driver,
+            side1.as_raw_fd(),
+            mio::Interest::READABLE,
+            crate::driver::RegistrationMode::Poll,
+        )
+        .expect("failed to register pipe");
+        match inner_raw_handle.poll_read_poll(&mut Context::from_waker(&waker), &mut buffer) {
+            Poll::Pending => {}
+            Poll::Ready(Ok(_)) => panic!("unexpected success"),
+            Poll::Ready(Err(e)) => panic!("failed to submit operation: {}", e),
+        };
 
-            side2.write_all(b"!").expect("failed to write to pipe"); // Exact data written doesn't matter...
+        side2.write_all(b"!").expect("failed to write to pipe"); // Exact data written doesn't matter...
 
-            driver.wait(Some(Duration::from_millis(100)));
-            assert_eq!(wake.wake_count(), 1);
-        }
+        driver.wait(Some(Duration::from_millis(100)));
+        assert_eq!(wake.wake_count(), 1);
     }
 }

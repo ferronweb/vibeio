@@ -11,6 +11,7 @@ use crate::{
     op::{completion_result_to_poll, Op},
 };
 
+#[cfg(unix)]
 fn set_cloexec(fd: RawFd) -> Result<(), io::Error> {
     // set FD_CLOEXEC on file descriptor flags
     let fdflags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -27,6 +28,7 @@ fn set_cloexec(fd: RawFd) -> Result<(), io::Error> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn sockaddr_storage_to_socketaddr(
     storage: &libc::sockaddr_storage,
 ) -> Result<SocketAddr, io::Error> {
@@ -118,10 +120,6 @@ impl AcceptIo for InnerRawHandle {
     }
 }
 
-/* Compatibility traits and forwarding impls removed.
-Use the unified `AcceptIo` trait implemented on `InnerRawHandle`
-(methods: `poll_accept_poll`, `poll_accept_completion`, `poll_accept`). */
-
 pub struct AcceptOp<'a> {
     handle: &'a InnerRawHandle,
 }
@@ -141,6 +139,8 @@ impl Op for AcceptOp<'_> {
         self.handle.token()
     }
 
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         let accepted_fd = unsafe {
@@ -211,6 +211,8 @@ impl Op for AcceptOp<'_> {
         }
 
         let fd = result as RawFd;
+
+        // TODO: support Windows
 
         // Ensure close-on-exec for the accepted fd (io_uring may have already set them)
         set_cloexec(fd)?;

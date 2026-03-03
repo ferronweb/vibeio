@@ -6,13 +6,16 @@ edition = "2021"
 [dependencies]
 futures-util = "0.3.32"
 libc = "0.2.176"
-mio = { version = "1.1.1", features = ["os-poll", "os-ext"] }
+mio = "1.1.1"
 slab = "0.4.12"
 tm-wheel = { version = "0.1.1", optional = true }
 tokio = { version = "1.49.0", features = ["io-util"] }
 crossbeam-queue = "0.3"
 oneshot = { version = "0.2.1", features = ["async", "std"] }
 crossbeam-channel = { version = "0.5.15", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+mio = { version = "1.1.1", features = ["os-poll", "os-ext"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.6"

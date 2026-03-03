@@ -102,15 +102,6 @@ impl ConnectIo for InnerRawHandle {
     }
 }
 
-/* Backwards-compatibility helpers removed.
-
-   Old small traits `CompletionConnectIo` and `PollConnectIo` and their forwarding
-   impls were removed in favor of the single unified `ConnectIo` trait implemented
-   on `InnerRawHandle` (methods: `poll_connect_poll`, `poll_connect_completion`, `poll_connect`).
-
-   Consumers should import and use `ConnectIo` from `crate::op`.
-*/
-
 impl Op for ConnectOp<'_> {
     type Output = ();
 
@@ -119,6 +110,8 @@ impl Op for ConnectOp<'_> {
         self.handle.token()
     }
 
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         let mut socket_error: libc::c_int = 0;

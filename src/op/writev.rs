@@ -94,7 +94,9 @@ pub struct WritevOp<'a> {
     handle: &'a InnerRawHandle,
     bufs: &'a [IoSlice<'a>],
     // Optional cached iovec list for completion path lifetime reasons.
+    #[cfg(unix)]
     iovecs: Option<Box<[libc::iovec]>>,
+    // TODO: support Windows WSABUFs in "iovec" field.
 }
 
 impl<'a> WritevOp<'a> {
@@ -116,6 +118,8 @@ impl Op for WritevOp<'_> {
         self.handle.token()
     }
 
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         // Build a temporary iovec array for the syscall.

@@ -1,7 +1,4 @@
-// TODO: implement Windows support
-
 use std::io;
-use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::task::Waker;
 
@@ -13,7 +10,14 @@ use crate::{
     op::Op,
 };
 
-pub type RawOsHandle = RawFd;
+#[cfg(unix)]
+pub type RawOsHandle = std::os::fd::RawFd;
+#[cfg(windows)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum RawOsHandle {
+    Socket(std::os::windows::io::RawSocket),
+    Handle(std::os::windows::io::RawHandle),
+}
 
 pub struct InnerRawHandle {
     pub(crate) handle: RawOsHandle,

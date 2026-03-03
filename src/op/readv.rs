@@ -11,6 +11,7 @@ use crate::{
 };
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
+#[cfg(unix)]
 #[inline]
 fn iovec_to_system(bufs: &mut [IoSliceMut<'_>]) -> Box<[libc::iovec]> {
     let mut iovecs_maybeuninit: Box<[MaybeUninit<libc::iovec>]> = Box::new_uninit_slice(bufs.len());
@@ -110,7 +111,9 @@ pub struct ReadvOp<'a> {
     bufs_len: usize,
     // For completion path: owned buffers and cached iovecs that remain alive
     // until the completion is processed.
+    #[cfg(unix)]
     iovecs: Option<Box<[libc::iovec]>>,
+    // TODO: support Windows WSABUFs in "iovec" field.
     owned_buffers: Option<Box<[Box<[u8]>]>>,
 }
 
@@ -139,6 +142,8 @@ impl Op for ReadvOp<'_> {
         self.handle.token()
     }
 
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
     fn execute(&mut self) -> Result<Self::Output, io::Error> {
         // Reconstruct the caller-provided IoSliceMut array from the raw pointer.
@@ -245,6 +250,8 @@ impl Op for ReadvOp<'_> {
             return Err(io::Error::from_raw_os_error(-result));
         }
         let mut remaining = result as usize;
+
+        // TODO: support Windows
 
         // If we used the completion path, copy data from owned buffers into the
         // caller's IoSliceMut buffers.
