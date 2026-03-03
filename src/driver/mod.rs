@@ -9,15 +9,12 @@ use std::{io, time::Duration};
 
 use ::mio::{Interest, Token};
 
-use crate::driver::mio::MioInterruptor;
+#[cfg(unix)]
+use crate::driver::mio::{MioDriver, MioInterruptor};
 use crate::driver::mock::MockInterruptor;
 #[cfg(target_os = "linux")]
 use crate::driver::uring::{UringDriver, UringInterruptor};
-use crate::{
-    driver::{mio::MioDriver, mock::MockDriver},
-    fd_inner::InnerRawHandle,
-    op::Op,
-};
+use crate::{driver::mock::MockDriver, fd_inner::InnerRawHandle, op::Op};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegistrationMode {
@@ -48,9 +45,9 @@ pub enum AnyInterruptor {
 impl AnyInterruptor {
     pub(crate) fn interrupt(&self) {
         match self {
-            AnyInterruptor::Mio(interruptor) => interruptor.interrupt(),
-            #[cfg(unix)]
             AnyInterruptor::Mock(interruptor) => interruptor.interrupt(),
+            #[cfg(unix)]
+            AnyInterruptor::Mio(interruptor) => interruptor.interrupt(),
             #[cfg(target_os = "linux")]
             AnyInterruptor::IoUring(interruptor) => interruptor.interrupt(),
         }

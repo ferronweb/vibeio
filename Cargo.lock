@@ -52,6 +52,7 @@ dependencies = [
  "slab",
  "tm-wheel",
  "tokio",
+ "windows-sys",
 ]
 
 [[package]]

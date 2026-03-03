@@ -1,6 +1,7 @@
 use std::io;
 use std::mem::{self, MaybeUninit};
 use std::net::SocketAddr;
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::task::{Context, Poll};
 
@@ -203,7 +204,8 @@ impl Op for AcceptOp<'_> {
 
         Ok((entry, None))
     }
-
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
     fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
         if result < 0 {
@@ -211,8 +213,6 @@ impl Op for AcceptOp<'_> {
         }
 
         let fd = result as RawFd;
-
-        // TODO: support Windows
 
         // Ensure close-on-exec for the accepted fd (io_uring may have already set them)
         set_cloexec(fd)?;

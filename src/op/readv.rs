@@ -128,7 +128,9 @@ impl<'a> ReadvOp<'a> {
             handle,
             bufs_ptr,
             bufs_len,
+            #[cfg(unix)]
             iovecs: None,
+            // TODO: support Windows WSABUFs in "iovecs" field.
             owned_buffers: None,
         }
     }
@@ -244,14 +246,14 @@ impl Op for ReadvOp<'_> {
         }
     }
 
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
     fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
         if result < 0 {
             return Err(io::Error::from_raw_os_error(-result));
         }
         let mut remaining = result as usize;
-
-        // TODO: support Windows
 
         // If we used the completion path, copy data from owned buffers into the
         // caller's IoSliceMut buffers.

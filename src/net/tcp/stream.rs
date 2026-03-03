@@ -1,6 +1,6 @@
 use std::future::poll_fn;
 use std::io::{self, IoSlice, IoSliceMut};
-use std::mem::{self, ManuallyDrop, MaybeUninit};
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
@@ -12,6 +12,12 @@ use std::task::{Context, Poll};
 use mio::Interest;
 use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock::{
+    self, AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_STORAGE, SOCKET,
+    SOCK_STREAM, WSADATA, WSAEALREADY, WSAEINPROGRESS, WSAEWOULDBLOCK,
+};
+
 use crate::{
     driver::RegistrationMode,
     fd_inner::InnerRawHandle,
@@ -19,7 +25,6 @@ use crate::{
     op::{ConnectIo, ReadIo, ReadvIo, WriteIo, WritevIo},
 };
 
-// TODO: Add Windows support
 #[cfg(unix)]
 fn socket_addr_to_raw(
     address: SocketAddr,
@@ -55,7 +60,7 @@ fn socket_addr_to_raw(
                 (
                     libc::AF_INET,
                     storage.assume_init(),
-                    mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
                 )
             }
         }
@@ -90,14 +95,61 @@ fn socket_addr_to_raw(
                 (
                     libc::AF_INET6,
                     storage.assume_init(),
-                    mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
                 )
             }
         }
     }
 }
 
-// TODO: Add Windows support
+#[cfg(windows)]
+fn socket_addr_to_raw(address: SocketAddr) -> (i32, SOCKADDR_STORAGE, i32) {
+    match address {
+        SocketAddr::V4(address) => {
+            let mut sockaddr = SOCKADDR_IN::default();
+            sockaddr.sin_family = AF_INET;
+            sockaddr.sin_port = address.port().to_be();
+            sockaddr.sin_addr.S_un.S_addr = u32::from_ne_bytes(address.ip().octets());
+
+            let mut storage = SOCKADDR_STORAGE::default();
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    &sockaddr as *const SOCKADDR_IN as *const u8,
+                    &mut storage as *mut SOCKADDR_STORAGE as *mut u8,
+                    std::mem::size_of::<SOCKADDR_IN>(),
+                );
+            }
+            (
+                AF_INET as _,
+                storage,
+                std::mem::size_of::<SOCKADDR_IN>() as i32,
+            )
+        }
+        SocketAddr::V6(address) => {
+            let mut sockaddr = SOCKADDR_IN6::default();
+            sockaddr.sin6_family = AF_INET6;
+            sockaddr.sin6_port = address.port().to_be();
+            sockaddr.sin6_flowinfo = address.flowinfo();
+            sockaddr.sin6_addr.u.Byte = address.ip().octets();
+            sockaddr.Anonymous.sin6_scope_id = address.scope_id() as u32;
+
+            let mut storage = SOCKADDR_STORAGE::default();
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    &sockaddr as *const SOCKADDR_IN6 as *const u8,
+                    &mut storage as *mut SOCKADDR_STORAGE as *mut u8,
+                    std::mem::size_of::<SOCKADDR_IN6>(),
+                );
+            }
+            (
+                AF_INET6 as _,
+                storage,
+                std::mem::size_of::<SOCKADDR_IN6>() as i32,
+            )
+        }
+    }
+}
+
 #[cfg(unix)]
 fn new_socket(
     address: SocketAddr,
@@ -111,7 +163,26 @@ fn new_socket(
     Ok((stream, raw_addr, raw_addr_len))
 }
 
-// TODO: Add Windows support
+#[cfg(windows)]
+fn new_socket(
+    address: SocketAddr,
+) -> Result<(std::net::TcpStream, SOCKADDR_STORAGE, i32), io::Error> {
+    // 0x202 = MAKEWORD(2, 2)
+    let mut wsadata = WSADATA::default();
+    if unsafe { WinSock::WSAStartup(0x202, &mut wsadata as *mut WSADATA) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let (domain, raw_addr, raw_addr_len) = socket_addr_to_raw(address);
+    let socket = unsafe { WinSock::socket(domain, SOCK_STREAM, 0) };
+    if socket == WinSock::INVALID_SOCKET {
+        let err = io::Error::last_os_error();
+        let _ = unsafe { WinSock::WSACleanup() };
+        return Err(err);
+    }
+    let stream = unsafe { std::net::TcpStream::from_raw_socket(socket as u64) };
+    Ok((stream, raw_addr, raw_addr_len))
+}
+
 #[cfg(unix)]
 fn start_nonblocking_connect(
     fd: RawFd,
@@ -131,6 +202,33 @@ fn start_nonblocking_connect(
         if !matches!(
             err.raw_os_error(),
             Some(libc::EINPROGRESS) | Some(libc::EWOULDBLOCK) | Some(libc::EALREADY)
+        ) {
+            return Err(err);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn start_nonblocking_connect(
+    socket: RawSocket,
+    raw_addr: &SOCKADDR_STORAGE,
+    raw_addr_len: i32,
+) -> Result<(), io::Error> {
+    let connect_result = unsafe {
+        WinSock::connect(
+            socket as SOCKET,
+            raw_addr as *const SOCKADDR_STORAGE as *const _,
+            raw_addr_len,
+        )
+    };
+
+    if connect_result == WinSock::SOCKET_ERROR {
+        let err = io::Error::last_os_error();
+        if !matches!(
+            err.raw_os_error(),
+            Some(WSAEINPROGRESS) | Some(WSAEWOULDBLOCK) | Some(WSAEALREADY)
         ) {
             return Err(err);
         }
@@ -171,15 +269,20 @@ impl TcpStream {
         if stream.handle.uses_completion() {
             let raw_addr = Box::new(raw_addr);
             poll_fn(|cx| {
+                #[cfg(unix)]
                 let raw_addr_ptr =
                     (&*raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>();
+                #[cfg(windows)]
+                let raw_addr_ptr = (&*raw_addr as *const SOCKADDR_STORAGE).cast::<SOCKADDR>();
                 // use the high-level connect helper on the registration handle
                 stream.handle.poll_connect(cx, raw_addr_ptr, raw_addr_len)
             })
             .await?;
         } else {
-            // TODO: Add Windows support
+            #[cfg(unix)]
             start_nonblocking_connect(stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
+            #[cfg(windows)]
+            start_nonblocking_connect(stream.inner.as_raw_socket(), &raw_addr, raw_addr_len)?;
             poll_fn(|cx| stream.handle.poll_connect_poll(cx)).await?;
         }
 
@@ -267,8 +370,10 @@ impl PollTcpStream {
         let (inner, raw_addr, raw_addr_len) = new_socket(address)?;
         let stream = Self::from_std(inner)?;
 
-        // TODO: Add Windows support
+        #[cfg(unix)]
         start_nonblocking_connect(stream.stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
+        #[cfg(windows)]
+        start_nonblocking_connect(stream.stream.inner.as_raw_socket(), &raw_addr, raw_addr_len)?;
         poll_fn(|cx| stream.stream.handle.poll_connect_poll(cx)).await?;
 
         Ok(stream)
@@ -365,7 +470,7 @@ impl IntoRawFd for PollTcpStream {
 impl AsRawSocket for TcpStream {
     #[inline]
     fn as_raw_socket(&self) -> RawSocket {
-        self.stream.inner.as_raw_socket()
+        self.inner.as_raw_socket()
     }
 }
 

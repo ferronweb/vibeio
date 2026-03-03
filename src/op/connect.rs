@@ -4,6 +4,8 @@ use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
 use mio::{Interest, Token};
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock::SOCKADDR;
 
 use crate::{
     fd_inner::InnerRawHandle,
@@ -12,7 +14,10 @@ use crate::{
 
 pub struct ConnectOp<'a> {
     handle: &'a InnerRawHandle,
+    #[cfg(unix)]
     completion_addr: Option<(*const libc::sockaddr, libc::socklen_t)>,
+    #[cfg(windows)]
+    completion_addr: Option<(*const SOCKADDR, i32)>,
 }
 
 impl<'a> ConnectOp<'a> {
@@ -24,12 +29,22 @@ impl<'a> ConnectOp<'a> {
         }
     }
 
+    #[cfg(unix)]
     #[inline]
     pub fn new_completion(
         handle: &'a InnerRawHandle,
         addr: *const libc::sockaddr,
         addrlen: libc::socklen_t,
     ) -> Self {
+        Self {
+            handle,
+            completion_addr: Some((addr, addrlen)),
+        }
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    pub fn new_completion(handle: &'a InnerRawHandle, addr: *const SOCKADDR, addrlen: i32) -> Self {
         Self {
             handle,
             completion_addr: Some((addr, addrlen)),
@@ -48,6 +63,7 @@ pub trait ConnectIo {
     fn poll_connect_poll(&self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>>;
 
     /// Completion submission path (requires address pointer and length).
+    #[cfg(unix)]
     fn poll_connect_completion(
         &self,
         cx: &mut Context<'_>,
@@ -55,12 +71,31 @@ pub trait ConnectIo {
         addrlen: libc::socklen_t,
     ) -> Poll<Result<(), io::Error>>;
 
+    /// Completion submission path (requires address pointer and length).
+    #[cfg(windows)]
+    fn poll_connect_completion(
+        &self,
+        cx: &mut Context<'_>,
+        addr: *const SOCKADDR,
+        addrlen: i32,
+    ) -> Poll<Result<(), io::Error>>;
+
     /// High-level connect that chooses completion vs poll based on registration mode.
+    #[cfg(unix)]
     fn poll_connect(
         &self,
         cx: &mut Context<'_>,
         addr: *const libc::sockaddr,
         addrlen: libc::socklen_t,
+    ) -> Poll<Result<(), io::Error>>;
+
+    /// High-level connect that chooses completion vs poll based on registration mode.
+    #[cfg(windows)]
+    fn poll_connect(
+        &self,
+        cx: &mut Context<'_>,
+        addr: *const SOCKADDR,
+        addrlen: i32,
     ) -> Poll<Result<(), io::Error>>;
 }
 
@@ -74,6 +109,7 @@ impl ConnectIo for InnerRawHandle {
         }
     }
 
+    #[cfg(unix)]
     #[inline]
     fn poll_connect_completion(
         &self,
@@ -87,12 +123,42 @@ impl ConnectIo for InnerRawHandle {
         ))
     }
 
+    #[cfg(windows)]
+    #[inline]
+    fn poll_connect_completion(
+        &self,
+        cx: &mut Context<'_>,
+        addr: *const SOCKADDR,
+        addrlen: i32,
+    ) -> Poll<Result<(), io::Error>> {
+        completion_result_to_poll(self.submit_completion(
+            ConnectOp::new_completion(self, addr, addrlen),
+            cx.waker().clone(),
+        ))
+    }
+
+    #[cfg(unix)]
     #[inline]
     fn poll_connect(
         &self,
         cx: &mut Context<'_>,
         addr: *const libc::sockaddr,
         addrlen: libc::socklen_t,
+    ) -> Poll<Result<(), io::Error>> {
+        if self.uses_completion() {
+            self.poll_connect_completion(cx, addr, addrlen)
+        } else {
+            self.poll_connect_poll(cx)
+        }
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    fn poll_connect(
+        &self,
+        cx: &mut Context<'_>,
+        addr: *const SOCKADDR,
+        addrlen: i32,
     ) -> Poll<Result<(), io::Error>> {
         if self.uses_completion() {
             self.poll_connect_completion(cx, addr, addrlen)

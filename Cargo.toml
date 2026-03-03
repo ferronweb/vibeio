@@ -17,6 +17,13 @@ crossbeam-channel = { version = "0.5.15", optional = true }
 mio = { version = "1.1.1", features = ["os-poll", "os-ext"] }
 libc = "0.2.176"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Networking_WinSock",
+    "Win32_Foundation",
+    "Win32_System_IO",
+] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.6"
 

@@ -48,7 +48,18 @@ impl TcpListener {
             Poll::Ready(Ok((raw, address))) => {
                 // Recreate a std TcpStream from the raw fd and convert it into our async TcpStream.
                 // If conversion fails, the std TcpStream will be dropped and the fd closed.
+                #[cfg(unix)]
                 let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw) };
+                #[cfg(windows)]
+                let crate::fd_inner::RawOsHandle::Socket(raw) = raw
+                else {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "invalid raw handle",
+                    )));
+                };
+                #[cfg(windows)]
+                let std_stream = unsafe { std::net::TcpStream::from_raw_socket(raw) };
                 match TcpStream::from_std(std_stream) {
                     Ok(stream) => Poll::Ready(Ok((stream, address))),
                     Err(err) => Poll::Ready(Err(err)),
