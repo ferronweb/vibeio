@@ -84,14 +84,14 @@ mod vectored_uring_tests {
     use mio::Interest;
 
     use crate::op::{ReadvIo, WritevIo};
-    use crate::{driver::AnyDriver, executor::new_runtime, fd_inner::InnerRawHandle};
+    use crate::{driver::AnyDriver, fd_inner::InnerRawHandle};
 
     #[test]
     fn io_uring_vectored_read_write_pipe() {
         // Create a runtime with an io_uring driver and run the test inside it so
         // current_driver() is available for InnerRawHandle::new.
         let driver = AnyDriver::new_uring().expect("failed to create uring driver");
-        let runtime = new_runtime(driver, false);
+        let runtime = crate::executor::Runtime::new(driver);
 
         runtime.block_on(async {
             // create a pipe (pair of fds)

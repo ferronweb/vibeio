@@ -90,7 +90,6 @@ mod tests {
 
     use crate::{
         driver::AnyDriver,
-        executor::new_runtime,
         io::{AsyncRead, AsyncWrite},
     };
 
@@ -163,7 +162,7 @@ mod tests {
 
     #[test]
     fn read_exact_and_write_all_work_for_partial_io() {
-        let runtime = new_runtime(AnyDriver::new_mock(), false);
+        let runtime = crate::executor::Runtime::new(AnyDriver::new_mock());
         runtime.block_on(async {
             let mut reader = SliceReader::new(b"abcdef", 2);
             let mut out = [0u8; 6];

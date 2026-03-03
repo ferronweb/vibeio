@@ -17,10 +17,7 @@ impl Driver for MockDriver {
 
     #[inline]
     fn wait(&self, timeout: Option<Duration>) {
-        if let Some(timeout) = timeout {
-            std::thread::sleep(timeout);
-        }
-        // Don't do anything then, as the mock driver doesn't actually wait for I/O operations
+        std::thread::sleep(timeout.unwrap_or(Duration::from_millis(10)));
     }
 
     #[inline]

@@ -1,3 +1,4 @@
+pub mod blocking;
 mod builder;
 mod driver;
 mod executor;

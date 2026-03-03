@@ -11,10 +11,13 @@ slab = "0.4.12"
 tm-wheel = { version = "0.1.1", optional = true }
 tokio = { version = "1.49.0", features = ["io-util"] }
 crossbeam-queue = "0.3"
+oneshot = { version = "0.2.1", features = ["async", "std"] }
+crossbeam-channel = { version = "0.5.15", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.6"
 
 [features]
-default = ["time"]
+default = ["time", "blocking-default"]
 time = ["tm-wheel"]
+blocking-default = ["crossbeam-channel"]

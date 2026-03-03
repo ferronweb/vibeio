@@ -12,10 +12,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use crate::io::{AsyncRead, AsyncWrite};
-    use crate::{
-        driver::AnyDriver,
-        executor::{new_runtime, spawn},
-    };
+    use crate::{driver::AnyDriver, executor::spawn};
 
     use super::{PollTcpStream, TcpListener, TcpStream};
 
@@ -30,9 +27,8 @@ mod tests {
 
     #[test]
     fn tcp_listener_and_stream_exchange_data() {
-        let runtime = new_runtime(
+        let runtime = crate::executor::Runtime::new(
             AnyDriver::new_mio().expect("mio driver should initialize"),
-            false,
         );
         runtime.block_on(async {
             let address = "127.0.0.1:0"
@@ -81,9 +77,8 @@ mod tests {
 
     #[test]
     fn tcp_stream_implements_custom_async_io_traits() {
-        let runtime = new_runtime(
+        let runtime = crate::executor::Runtime::new(
             AnyDriver::new_mio().expect("mio driver should initialize"),
-            false,
         );
         runtime.block_on(async {
             let address = "127.0.0.1:0"
@@ -125,9 +120,8 @@ mod tests {
 
     #[test]
     fn poll_tcp_stream_uses_readiness_path() {
-        let runtime = new_runtime(
+        let runtime = crate::executor::Runtime::new(
             AnyDriver::new_mio().expect("mio driver should initialize"),
-            false,
         );
         runtime.block_on(async {
             let address = "127.0.0.1:0"
@@ -171,7 +165,7 @@ mod tests {
         let Ok(driver) = AnyDriver::new_uring() else {
             return;
         };
-        let runtime = new_runtime(driver, false);
+        let runtime = crate::executor::Runtime::new(driver);
         runtime.block_on(async {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()
@@ -214,7 +208,7 @@ mod tests {
         let Ok(driver) = AnyDriver::new_uring() else {
             return;
         };
-        let runtime = new_runtime(driver, false);
+        let runtime = crate::executor::Runtime::new(driver);
         runtime.block_on(async {
             let address = "127.0.0.1:0"
                 .parse::<SocketAddr>()

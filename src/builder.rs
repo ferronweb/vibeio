@@ -1,4 +1,6 @@
-use crate::driver::AnyDriver;
+#[cfg(feature = "blocking-default")]
+use crate::blocking::DefaultBlockingThreadPool;
+use crate::{blocking::BlockingThreadPool, driver::AnyDriver};
 
 /// I/O driver selection for the async runtime.
 ///
@@ -48,6 +50,7 @@ impl DriverKind {
 pub struct RuntimeBuilder {
     driver_kind: Option<DriverKind>,
     enable_timer: bool,
+    blocking_pool: Option<Box<dyn BlockingThreadPool>>,
 }
 
 impl RuntimeBuilder {
@@ -58,6 +61,7 @@ impl RuntimeBuilder {
         Self {
             driver_kind: None,
             enable_timer: false,
+            blocking_pool: None,
         }
     }
 
@@ -75,6 +79,21 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Sets the blocking thread pool for the runtime.
+    pub fn blocking_pool(mut self, blocking_pool: Box<dyn BlockingThreadPool>) -> Self {
+        self.blocking_pool = Some(blocking_pool);
+        self
+    }
+
+    /// Sets the default blocking thread pool for the runtime with specified maximum number of threads.
+    #[cfg(feature = "blocking-default")]
+    pub fn default_blocking_pool(mut self, max_threads: usize, wait_on_exit: bool) -> Self {
+        self.blocking_pool = Some(Box::new(
+            DefaultBlockingThreadPool::with_max_threads_and_wait_on_exit(max_threads, wait_on_exit),
+        ));
+        self
+    }
+
     /// Builds the async runtime with the configured settings.
     ///
     /// If no driver was explicitly set, selects the best available driver for the platform.
@@ -84,7 +103,11 @@ impl RuntimeBuilder {
         } else {
             AnyDriver::new_best()?
         };
-        Ok(crate::executor::new_runtime(driver, self.enable_timer))
+        Ok(crate::executor::Runtime::with_options(
+            driver,
+            self.enable_timer,
+            self.blocking_pool,
+        ))
     }
 }
 

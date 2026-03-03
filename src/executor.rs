@@ -11,6 +11,9 @@ use crossbeam_queue::SegQueue;
 use futures_util::FutureExt;
 use slab::Slab;
 
+#[cfg(feature = "blocking-default")]
+use crate::blocking::DefaultBlockingThreadPool;
+use crate::blocking::{BlockingThreadPool, SpawnBlockingError};
 use crate::driver::AnyDriver;
 use crate::task::Task;
 #[cfg(feature = "time")]
@@ -26,6 +29,7 @@ pub(crate) struct RuntimeInner {
     token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
     waiting: Arc<AtomicBool>,
+    blocking_pool: Option<Box<dyn BlockingThreadPool>>,
     #[cfg(feature = "time")]
     timer: Option<Rc<Timer>>,
 }
@@ -108,25 +112,6 @@ impl Drop for CurrentRuntimeGuard {
     }
 }
 
-pub(crate) fn new_runtime(driver: AnyDriver, enable_timer: bool) -> Runtime {
-    let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(4096)));
-    Runtime {
-        inner: Some(Rc::new(RuntimeInner {
-            queue: ready_queue,
-            remote_queue: Arc::new(SegQueue::new()),
-            token_to_task: RefCell::new(Slab::with_capacity(4096)),
-            driver: Rc::new(driver),
-            waiting: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "time")]
-            timer: if enable_timer {
-                Some(Rc::new(Timer::new()))
-            } else {
-                None
-            },
-        })),
-    }
-}
-
 pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
     CURRENT_RUNTIME.with(|runtime| {
         let runtime = runtime.borrow();
@@ -166,9 +151,26 @@ where
     runtime.spawn(future)
 }
 
+pub async fn spawn_blocking<T, F>(f: F) -> Result<T, SpawnBlockingError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let runtime = CURRENT_RUNTIME.with(|runtime| {
+        let runtime = runtime.borrow();
+        if let Some(runtime_inner) = &*runtime {
+            runtime_inner.clone()
+        } else {
+            panic!("can't spawn a blocking task outside runtime");
+        }
+    });
+
+    runtime.spawn_blocking(f).await
+}
+
 impl RuntimeInner {
     #[inline]
-    pub fn spawn<T>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T>
+    pub(crate) fn spawn<T>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T>
     where
         T: 'static,
     {
@@ -206,6 +208,19 @@ impl RuntimeInner {
     }
 
     #[inline]
+    pub(crate) async fn spawn_blocking<T, F>(&self, f: F) -> Result<T, SpawnBlockingError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let pool = self
+            .blocking_pool
+            .as_ref()
+            .expect("blocking pool not initialized");
+        crate::blocking::spawn_blocking(pool.as_ref(), f).await
+    }
+
+    #[inline]
     fn enqueue(&self, task: Arc<Task>) {
         // SAFETY: this runtime is single-threaded. All ready-queue mutation goes
         // through runtime/task wake paths on the same thread.
@@ -234,6 +249,42 @@ impl RuntimeInner {
 }
 
 impl Runtime {
+    /// Create a new runtime with the given driver.
+    #[inline]
+    pub(crate) fn new(driver: AnyDriver) -> Self {
+        #[cfg(not(feature = "blocking-default"))]
+        let blocking_pool = None;
+        #[cfg(feature = "blocking-default")]
+        let blocking_pool: Option<Box<dyn BlockingThreadPool>> =
+            Some(Box::new(DefaultBlockingThreadPool::new()));
+        Self::with_options(driver, true, blocking_pool)
+    }
+
+    #[inline]
+    pub(crate) fn with_options(
+        driver: AnyDriver,
+        enable_timer: bool,
+        blocking_pool: Option<Box<dyn BlockingThreadPool>>,
+    ) -> Self {
+        let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(4096)));
+        Runtime {
+            inner: Some(Rc::new(RuntimeInner {
+                queue: ready_queue,
+                remote_queue: Arc::new(SegQueue::new()),
+                token_to_task: RefCell::new(Slab::with_capacity(4096)),
+                driver: Rc::new(driver),
+                waiting: Arc::new(AtomicBool::new(false)),
+                blocking_pool,
+                #[cfg(feature = "time")]
+                timer: if enable_timer {
+                    Some(Rc::new(Timer::new()))
+                } else {
+                    None
+                },
+            })),
+        }
+    }
+
     #[inline]
     pub fn spawn<T>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T>
     where
@@ -243,6 +294,16 @@ impl Runtime {
             .as_ref()
             .expect("runtime has been dropped")
             .spawn(future)
+    }
+
+    #[inline]
+    pub async fn spawn_blocking<T, F>(&self, f: F) -> Result<T, SpawnBlockingError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let inner = self.inner.as_ref().expect("runtime has been dropped");
+        inner.spawn_blocking(f).await
     }
 
     #[inline]
@@ -332,14 +393,14 @@ mod tests {
 
     #[test]
     fn block_on_returns_future_output() {
-        let runtime = new_runtime(AnyDriver::new_mock(), false);
+        let runtime = crate::executor::Runtime::new(AnyDriver::new_mock());
         let value = runtime.block_on(async { 42usize });
         assert_eq!(value, 42);
     }
 
     #[test]
     fn spawn_join_handle_returns_task_output() {
-        let runtime = new_runtime(AnyDriver::new_mock(), false);
+        let runtime = crate::executor::Runtime::new(AnyDriver::new_mock());
         let value = runtime.block_on(async {
             let handle = spawn(async { 21usize });
             handle.await * 2
@@ -349,9 +410,20 @@ mod tests {
 
     #[test]
     fn runtime_spawn_returns_join_handle() {
-        let runtime = new_runtime(AnyDriver::new_mock(), false);
+        let runtime = crate::executor::Runtime::new(AnyDriver::new_mock());
         let handle = runtime.spawn(async { 7usize });
         let value = runtime.block_on(async move { handle.await });
         assert_eq!(value, 7);
+    }
+
+    #[cfg(feature = "blocking-default")]
+    #[test]
+    fn spawn_blocking_returns_task_output() {
+        let runtime = crate::executor::Runtime::new(AnyDriver::new_mock());
+        let value = runtime.block_on(async {
+            let handle = spawn_blocking(|| 21usize).await.unwrap();
+            handle * 2
+        });
+        assert_eq!(value, 42);
     }
 }
