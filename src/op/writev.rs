@@ -12,6 +12,7 @@ use crate::{
 };
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
+#[cfg(unix)]
 #[inline]
 fn iovec_to_system(bufs: &[IoSlice<'_>]) -> Box<[libc::iovec]> {
     let mut iovecs_maybeuninit: Box<[MaybeUninit<libc::iovec>]> = Box::new_uninit_slice(bufs.len());
@@ -96,7 +97,7 @@ pub struct WritevOp<'a> {
     // Optional cached iovec list for completion path lifetime reasons.
     #[cfg(unix)]
     iovecs: Option<Box<[libc::iovec]>>,
-    // TODO: support Windows WSABUFs in "iovec" field.
+    // TODO: support Windows WSABUFs in "iovecs" field.
 }
 
 impl<'a> WritevOp<'a> {

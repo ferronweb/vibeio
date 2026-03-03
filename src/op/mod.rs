@@ -37,7 +37,13 @@ pub trait Op {
     fn token(&self) -> Token;
 
     /// Executes the I/O operation (poll/readiness path).
-    fn execute(&mut self) -> Result<Self::Output, io::Error>;
+    #[inline]
+    fn execute(&mut self) -> Result<Self::Output, io::Error> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "operation does not support poll/readiness-based submission",
+        ))
+    }
 
     /// Returns a poll interest for the I/O source this operation targets.
     #[inline]

@@ -7,7 +7,8 @@ use crate::{blocking::BlockingThreadPool, driver::AnyDriver};
 /// This enum allows choosing which I/O driver to use when building the runtime.
 #[derive(Clone)]
 pub enum DriverKind {
-    /// Uses the Mio driver for I/O operations.
+    /// Uses the Mio driver for I/O operations (Unix only).
+    #[cfg(unix)]
     Mio,
     /// Uses the mock driver for testing purposes.
     Mock,
@@ -24,6 +25,7 @@ impl DriverKind {
     #[inline]
     pub(crate) fn into_driver(self) -> Result<AnyDriver, std::io::Error> {
         match self {
+            #[cfg(unix)]
             DriverKind::Mio => AnyDriver::new_mio(),
             DriverKind::Mock => Ok(AnyDriver::new_mock()),
             #[cfg(target_os = "linux")]

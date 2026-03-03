@@ -2,7 +2,10 @@ use std::future::poll_fn;
 use std::io::{self, IoSlice, IoSliceMut};
 use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::net::{Shutdown, SocketAddr, ToSocketAddrs};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -16,6 +19,8 @@ use crate::{
     op::{ConnectIo, ReadIo, ReadvIo, WriteIo, WritevIo},
 };
 
+// TODO: Add Windows support
+#[cfg(unix)]
 fn socket_addr_to_raw(
     address: SocketAddr,
 ) -> (libc::c_int, libc::sockaddr_storage, libc::socklen_t) {
@@ -92,6 +97,8 @@ fn socket_addr_to_raw(
     }
 }
 
+// TODO: Add Windows support
+#[cfg(unix)]
 fn new_socket(
     address: SocketAddr,
 ) -> Result<(std::net::TcpStream, libc::sockaddr_storage, libc::socklen_t), io::Error> {
@@ -104,6 +111,8 @@ fn new_socket(
     Ok((stream, raw_addr, raw_addr_len))
 }
 
+// TODO: Add Windows support
+#[cfg(unix)]
 fn start_nonblocking_connect(
     fd: RawFd,
     raw_addr: &libc::sockaddr_storage,
@@ -169,6 +178,7 @@ impl TcpStream {
             })
             .await?;
         } else {
+            // TODO: Add Windows support
             start_nonblocking_connect(stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
             poll_fn(|cx| stream.handle.poll_connect_poll(cx)).await?;
         }
@@ -211,8 +221,15 @@ impl TcpStream {
         inner: std::net::TcpStream,
         mode: RegistrationMode,
     ) -> Result<Self, io::Error> {
+        #[cfg(unix)]
         let handle = ManuallyDrop::new(InnerRawHandle::new_with_mode(
             inner.as_raw_fd(),
+            Interest::READABLE | Interest::WRITABLE,
+            mode,
+        )?);
+        #[cfg(windows)]
+        let handle = ManuallyDrop::new(InnerRawHandle::new_with_mode(
+            crate::fd_inner::RawOsHandle::Socket(inner.as_raw_socket()),
             Interest::READABLE | Interest::WRITABLE,
             mode,
         )?);
@@ -250,6 +267,7 @@ impl PollTcpStream {
         let (inner, raw_addr, raw_addr_len) = new_socket(address)?;
         let stream = Self::from_std(inner)?;
 
+        // TODO: Add Windows support
         start_nonblocking_connect(stream.stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
         poll_fn(|cx| stream.stream.handle.poll_connect_poll(cx)).await?;
 
@@ -304,6 +322,7 @@ impl PollTcpStream {
     }
 }
 
+#[cfg(unix)]
 impl AsRawFd for TcpStream {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
@@ -311,6 +330,7 @@ impl AsRawFd for TcpStream {
     }
 }
 
+#[cfg(unix)]
 impl AsRawFd for PollTcpStream {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
@@ -318,6 +338,7 @@ impl AsRawFd for PollTcpStream {
     }
 }
 
+#[cfg(unix)]
 impl IntoRawFd for TcpStream {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
@@ -332,10 +353,50 @@ impl IntoRawFd for TcpStream {
     }
 }
 
+#[cfg(unix)]
 impl IntoRawFd for PollTcpStream {
     #[inline]
     fn into_raw_fd(self) -> RawFd {
         self.stream.into_raw_fd()
+    }
+}
+
+#[cfg(windows)]
+impl AsRawSocket for TcpStream {
+    #[inline]
+    fn as_raw_socket(&self) -> RawSocket {
+        self.stream.inner.as_raw_socket()
+    }
+}
+
+#[cfg(windows)]
+impl IntoRawSocket for TcpStream {
+    #[inline]
+    fn into_raw_socket(self) -> RawSocket {
+        let mut this = ManuallyDrop::new(self);
+
+        // Safety: `this` will not be dropped, so we must drop the registration handle manually.
+        // We then move out the inner std stream and transfer its fd ownership to the caller.
+        unsafe {
+            ManuallyDrop::drop(&mut this.handle);
+            std::ptr::read(&this.inner).into_raw_socket()
+        }
+    }
+}
+
+#[cfg(windows)]
+impl AsRawSocket for PollTcpStream {
+    #[inline]
+    fn as_raw_socket(&self) -> RawSocket {
+        self.stream.as_raw_socket()
+    }
+}
+
+#[cfg(windows)]
+impl IntoRawSocket for PollTcpStream {
+    #[inline]
+    fn into_raw_socket(self) -> RawSocket {
+        self.stream.into_raw_socket()
     }
 }
 

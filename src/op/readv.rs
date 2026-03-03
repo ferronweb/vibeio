@@ -113,7 +113,7 @@ pub struct ReadvOp<'a> {
     // until the completion is processed.
     #[cfg(unix)]
     iovecs: Option<Box<[libc::iovec]>>,
-    // TODO: support Windows WSABUFs in "iovec" field.
+    // TODO: support Windows WSABUFs in "iovecs" field.
     owned_buffers: Option<Box<[Box<[u8]>]>>,
 }
 

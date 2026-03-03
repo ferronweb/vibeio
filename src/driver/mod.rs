@@ -150,7 +150,6 @@ impl AnyDriver {
         Self::new_uring_custom(io_uring::IoUring::builder())
     }
 
-    #[cfg(unix)]
     #[inline]
     pub(crate) fn new_best() -> Result<Self, io::Error> {
         #[cfg(target_os = "linux")]
@@ -158,7 +157,12 @@ impl AnyDriver {
             return Ok(driver);
         }
 
-        Self::new_mio()
+        #[cfg(unix)]
+        let driver = Self::new_mio()?;
+        #[cfg(windows)]
+        let driver = Self::new_mock(); // TODO: add real IOCP driver for Windows
+
+        Ok(driver)
     }
 
     #[inline]
