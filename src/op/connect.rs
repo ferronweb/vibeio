@@ -4,11 +4,57 @@ use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
 use mio::Interest;
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock::{
+    self, SOCKADDR, SOCKET, WSAEALREADY, WSAEINPROGRESS, WSAEWOULDBLOCK,
+};
 
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 use crate::op::Op;
+
+#[cfg(unix)]
+fn start_nonblocking_connect(
+    fd: std::os::fd::RawFd,
+    raw_addr: *const libc::sockaddr,
+    raw_addr_len: libc::socklen_t,
+) -> Result<(), io::Error> {
+    let connect_result = unsafe { libc::connect(fd, raw_addr, raw_addr_len) };
+
+    if connect_result == -1 {
+        let err = io::Error::last_os_error();
+        if !matches!(
+            err.raw_os_error(),
+            Some(libc::EINPROGRESS) | Some(libc::EWOULDBLOCK) | Some(libc::EALREADY)
+        ) {
+            return Err(err);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn start_nonblocking_connect(
+    socket: std::os::windows::io::RawSocket,
+    raw_addr: *const SOCKADDR,
+    raw_addr_len: i32,
+) -> Result<(), io::Error> {
+    let connect_result = unsafe { WinSock::connect(socket as SOCKET, raw_addr, raw_addr_len) };
+
+    if connect_result == WinSock::SOCKET_ERROR {
+        let err = io::Error::last_os_error();
+        if !matches!(
+            err.raw_os_error(),
+            Some(WSAEINPROGRESS) | Some(WSAEWOULDBLOCK) | Some(WSAEALREADY)
+        ) {
+            return Err(err);
+        }
+    }
+
+    Ok(())
+}
 
 pub struct ConnectOp<'a> {
     handle: &'a InnerRawHandle,
@@ -17,6 +63,7 @@ pub struct ConnectOp<'a> {
     #[cfg(windows)]
     addr: (*const SOCKADDR, i32),
     completion_token: Option<usize>,
+    poll_connect_started: bool,
 }
 
 impl<'a> ConnectOp<'a> {
@@ -31,6 +78,7 @@ impl<'a> ConnectOp<'a> {
             handle,
             addr: (addr, addrlen),
             completion_token: None,
+            poll_connect_started: false,
         }
     }
 
@@ -41,6 +89,7 @@ impl<'a> ConnectOp<'a> {
             handle,
             addr: (addr, addrlen),
             completion_token: None,
+            poll_connect_started: false,
         }
     }
 }
@@ -56,6 +105,26 @@ impl Op for ConnectOp<'_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
+        if !self.poll_connect_started {
+            #[cfg(unix)]
+            let handle = self.handle.handle;
+            #[cfg(windows)]
+            let crate::fd_inner::RawOsHandle::Socket(handle) = self.handle.handle
+            else {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid raw handle",
+                )));
+            };
+
+            if let Err(err) = start_nonblocking_connect(handle, self.addr.0, self.addr.1) {
+                return Poll::Ready(Err(err));
+            };
+
+            self.poll_connect_started = true;
+        }
+
+        // TODO: support Windows in the code below
         let mut socket_error: libc::c_int = 0;
         let mut socket_error_len = mem::size_of::<libc::c_int>() as libc::socklen_t;
         let getsockopt_result = unsafe {

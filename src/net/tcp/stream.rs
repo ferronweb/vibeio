@@ -183,60 +183,6 @@ fn new_socket(
     Ok((stream, raw_addr, raw_addr_len))
 }
 
-#[cfg(unix)]
-fn start_nonblocking_connect(
-    fd: RawFd,
-    raw_addr: &libc::sockaddr_storage,
-    raw_addr_len: libc::socklen_t,
-) -> Result<(), io::Error> {
-    let connect_result = unsafe {
-        libc::connect(
-            fd,
-            (raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>(),
-            raw_addr_len,
-        )
-    };
-
-    if connect_result == -1 {
-        let err = io::Error::last_os_error();
-        if !matches!(
-            err.raw_os_error(),
-            Some(libc::EINPROGRESS) | Some(libc::EWOULDBLOCK) | Some(libc::EALREADY)
-        ) {
-            return Err(err);
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn start_nonblocking_connect(
-    socket: RawSocket,
-    raw_addr: &SOCKADDR_STORAGE,
-    raw_addr_len: i32,
-) -> Result<(), io::Error> {
-    let connect_result = unsafe {
-        WinSock::connect(
-            socket as SOCKET,
-            raw_addr as *const SOCKADDR_STORAGE as *const _,
-            raw_addr_len,
-        )
-    };
-
-    if connect_result == WinSock::SOCKET_ERROR {
-        let err = io::Error::last_os_error();
-        if !matches!(
-            err.raw_os_error(),
-            Some(WSAEINPROGRESS) | Some(WSAEWOULDBLOCK) | Some(WSAEALREADY)
-        ) {
-            return Err(err);
-        }
-    }
-
-    Ok(())
-}
-
 pub struct TcpStream {
     inner: std::net::TcpStream,
     handle: ManuallyDrop<InnerRawHandle>,
@@ -265,13 +211,6 @@ impl TcpStream {
     async fn connect_one(address: SocketAddr) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_socket(address)?;
         let stream = Self::from_std(inner)?;
-
-        if !stream.handle.uses_completion() {
-            #[cfg(unix)]
-            start_nonblocking_connect(stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
-            #[cfg(windows)]
-            start_nonblocking_connect(stream.inner.as_raw_socket(), &raw_addr, raw_addr_len)?;
-        }
 
         #[cfg(unix)]
         let raw_addr_ptr = (&raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>();
@@ -364,11 +303,6 @@ impl PollTcpStream {
     async fn connect_one(address: SocketAddr) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_socket(address)?;
         let stream = Self::from_std(inner)?;
-
-        #[cfg(unix)]
-        start_nonblocking_connect(stream.stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
-        #[cfg(windows)]
-        start_nonblocking_connect(stream.stream.inner.as_raw_socket(), &raw_addr, raw_addr_len)?;
 
         #[cfg(unix)]
         let raw_addr_ptr = (&raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>();
