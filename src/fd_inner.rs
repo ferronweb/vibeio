@@ -1,6 +1,6 @@
-use std::io;
 use std::rc::Rc;
-use std::task::Waker;
+use std::task::Poll;
+use std::{io, task::Context};
 
 use mio::{Interest, Token};
 
@@ -93,14 +93,6 @@ impl InnerRawHandle {
     }
 
     #[inline]
-    pub(crate) fn submit<O, R>(&self, op: O, waker: Waker) -> Result<R, io::Error>
-    where
-        O: Op<Output = R>,
-    {
-        self.driver.submit(op, waker)
-    }
-
-    #[inline]
     pub(crate) fn supports_completion(&self) -> bool {
         self.driver.supports_completion()
     }
@@ -141,11 +133,37 @@ impl InnerRawHandle {
     }
 
     #[inline]
-    pub(crate) fn submit_completion<O, R>(&self, op: O, waker: Waker) -> Result<R, io::Error>
+    pub(crate) fn poll_op<O, R>(
+        &self,
+        cx: &mut Context<'_>,
+        op: &mut O,
+    ) -> Poll<Result<R, io::Error>>
     where
         O: Op<Output = R>,
     {
-        self.driver.submit_completion(op, waker)
+        if self.uses_completion() {
+            op.poll_completion(cx, &self.driver)
+        } else {
+            op.poll_poll(cx, &self.driver)
+        }
+    }
+
+    #[inline]
+    pub(crate) fn poll_op_poll<O, R>(
+        &self,
+        cx: &mut Context<'_>,
+        op: &mut O,
+    ) -> Poll<Result<R, io::Error>>
+    where
+        O: Op<Output = R>,
+    {
+        if self.uses_completion() {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "poll-based I/O operation called on a completion-based I/O handle",
+            )));
+        }
+        op.poll_poll(cx, &self.driver)
     }
 }
 

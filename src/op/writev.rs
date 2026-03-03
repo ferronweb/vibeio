@@ -1,20 +1,19 @@
-/// writev.rs
-use std::io;
-use std::mem::MaybeUninit;
+use std::io::{self, IoSlice};
 use std::task::{Context, Poll};
 
-use mio::{Interest, Token};
-use std::io::IoSlice;
+use mio::Interest;
 
-use crate::{
-    fd_inner::InnerRawHandle,
-    op::{completion_result_to_poll, Op},
-};
+use crate::driver::AnyDriver;
+use crate::driver::CompletionIoResult;
+use crate::fd_inner::InnerRawHandle;
+use crate::op::Op;
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
 #[cfg(unix)]
 #[inline]
 fn iovec_to_system(bufs: &[IoSlice<'_>]) -> Box<[libc::iovec]> {
+    use std::mem::MaybeUninit;
+
     let mut iovecs_maybeuninit: Box<[MaybeUninit<libc::iovec>]> = Box::new_uninit_slice(bufs.len());
     for (index, s) in bufs.iter().enumerate() {
         let iov = libc::iovec {
@@ -27,102 +26,38 @@ fn iovec_to_system(bufs: &[IoSlice<'_>]) -> Box<[libc::iovec]> {
     unsafe { iovecs_maybeuninit.assume_init() }
 }
 
-/// Unified vectored-write helper trait implemented on `InnerRawHandle`.
-/// Exposes poll-based, completion-based and unified (default) helpers.
-pub trait WritevIo {
-    /// Submit the vectored write operation via the poll/readiness pathway.
-    fn poll_writev_poll(
-        &self,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>>;
-
-    /// Submit the vectored write operation via the completion pathway.
-    fn poll_writev_completion(
-        &self,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>>;
-
-    /// High-level vectored-write helper that chooses between completion and poll pathways.
-    fn poll_writev(
-        &self,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>>;
-}
-
-impl WritevIo for InnerRawHandle {
-    #[inline]
-    fn poll_writev_poll(
-        &self,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>> {
-        match self.submit(WritevOp::new(self, bufs), cx.waker().clone()) {
-            Ok(written) => Poll::Ready(Ok(written)),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
-            Err(err) => Poll::Ready(Err(err)),
-        }
-    }
-
-    #[inline]
-    fn poll_writev_completion(
-        &self,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>> {
-        completion_result_to_poll(
-            self.submit_completion(WritevOp::new(self, bufs), cx.waker().clone()),
-        )
-    }
-
-    #[inline]
-    fn poll_writev(
-        &self,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>> {
-        if self.uses_completion() {
-            self.poll_writev_completion(cx, bufs)
-        } else {
-            self.poll_writev_poll(cx, bufs)
-        }
-    }
-}
-
-pub struct WritevOp<'a> {
+pub struct WritevOp<'a, 'b> {
     handle: &'a InnerRawHandle,
-    bufs: &'a [IoSlice<'a>],
-    // Optional cached iovec list for completion path lifetime reasons.
-    #[cfg(unix)]
-    iovecs: Option<Box<[libc::iovec]>>,
-    // TODO: support Windows WSABUFs in "iovecs" field.
+    bufs: &'a [IoSlice<'b>],
+    completion_token: Option<usize>,
+    #[cfg(target_os = "linux")]
+    completion_system_iovecs: Option<Box<[libc::iovec]>>,
 }
 
-impl<'a> WritevOp<'a> {
+impl<'a, 'b> WritevOp<'a, 'b> {
     #[inline]
-    pub fn new(handle: &'a InnerRawHandle, bufs: &'a [IoSlice<'a>]) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, bufs: &'a [IoSlice<'b>]) -> Self {
         Self {
             handle,
             bufs,
-            iovecs: None,
+            completion_token: None,
+            #[cfg(target_os = "linux")]
+            completion_system_iovecs: None,
         }
     }
 }
 
-impl Op for WritevOp<'_> {
+impl Op for WritevOp<'_, '_> {
     type Output = usize;
-
-    #[inline]
-    fn token(&self) -> Token {
-        self.handle.token()
-    }
 
     // TODO: support Windows
     #[cfg(unix)]
     #[inline]
-    fn execute(&mut self) -> Result<Self::Output, io::Error> {
+    fn poll_poll(
+        &mut self,
+        cx: &mut Context<'_>,
+        driver: &AnyDriver,
+    ) -> Poll<io::Result<Self::Output>> {
         // Build a temporary iovec array for the syscall.
         let iovecs = iovec_to_system(self.bufs);
 
@@ -135,15 +70,53 @@ impl Op for WritevOp<'_> {
         };
 
         if written == -1 {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock {
+                if let Err(err) =
+                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                {
+                    return Poll::Ready(Err(err));
+                }
+                return Poll::Pending;
+            }
+            return Poll::Ready(Err(error));
         }
 
-        Ok(written as usize)
+        Poll::Ready(Ok(written as usize))
     }
 
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
-    fn interest(&self) -> Interest {
-        Interest::WRITABLE
+    fn poll_completion(
+        &mut self,
+        cx: &mut Context<'_>,
+        driver: &AnyDriver,
+    ) -> Poll<io::Result<Self::Output>> {
+        let result = if let Some(completion_token) = self.completion_token {
+            // Get the completion result
+            match driver.get_completion_result(completion_token) {
+                Some(result) => result,
+                None => {
+                    // The completion is not ready yet
+                    return Poll::Pending;
+                }
+            }
+        } else {
+            // Submit the op
+            match driver.submit_completion(self, cx.waker().clone()) {
+                CompletionIoResult::Ok(result) => result,
+                CompletionIoResult::Retry(token) => {
+                    self.completion_token = Some(token);
+                    return Poll::Pending;
+                }
+                CompletionIoResult::SubmitErr(err) => return Poll::Ready(Err(err)),
+            }
+        };
+        if result < 0 {
+            return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
+        }
+        Poll::Ready(Ok(result as usize))
     }
 
     #[cfg(target_os = "linux")]
@@ -151,45 +124,28 @@ impl Op for WritevOp<'_> {
     fn build_completion_entry(
         &mut self,
         user_data: u64,
-    ) -> Result<(io_uring::squeue::Entry, Option<Box<dyn std::any::Any>>), io::Error> {
+    ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        // Build libc::iovec array referencing caller buffers. We must transfer
-        // ownership of the iovec vector to the driver so it remains valid for
-        // the duration of the submission. Create the Vec, take a raw pointer
-        // to its buffer, then move the Vec into a Box<dyn Any> which the driver
-        // will store.
-        let iovecs = iovec_to_system(self.bufs);
+        // Build a temporary iovec array for the syscall.
+        let iovecs = if let Some(iovecs) = self.completion_system_iovecs.take() {
+            iovecs
+        } else {
+            iovec_to_system(self.bufs)
+        };
 
-        let iov_ptr = iovecs.as_ptr();
-        let iov_len = iovecs.len();
+        let entry = opcode::Writev::new(
+            types::Fd(self.handle.handle),
+            iovecs.as_ptr(),
+            iovecs.len() as _,
+        )
+        .build()
+        .user_data(user_data);
 
-        // Move ownership of the Vec into boxed storage so the driver can own it.
-        let storage: Option<Box<dyn std::any::Any>> = Some(Box::new(iovecs));
+        // Store the iovec array for the completion, because it needs to be kept alive until the
+        // completion is ready.
+        self.completion_system_iovecs = Some(iovecs);
 
-        let entry = opcode::Writev::new(types::Fd(self.handle.handle), iov_ptr, iov_len as _)
-            .build()
-            .user_data(user_data);
-
-        Ok((entry, storage))
-    }
-
-    #[cfg(target_os = "linux")]
-    #[inline]
-    fn take_completion_storage(&mut self, storage: Option<Box<dyn std::any::Any>>) {
-        if let Some(boxed) = storage {
-            // Attempt to downcast to the type we stored in build_completion_entry.
-            if let Ok(vec) = boxed.downcast::<Box<[libc::iovec]>>() {
-                self.iovecs = Some(*vec);
-            }
-        }
-    }
-
-    #[inline]
-    fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
-        if result < 0 {
-            return Err(io::Error::from_raw_os_error(-result));
-        }
-        Ok(result as usize)
+        Ok(entry)
     }
 }

@@ -6,11 +6,11 @@ use std::net::{SocketAddr, TcpListener as StdTcpListener, ToSocketAddrs};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
-use std::task::Poll;
 
 use mio::Interest;
 
-use crate::{fd_inner::InnerRawHandle, net::TcpStream, op::AcceptIo};
+use crate::op::AcceptOp;
+use crate::{fd_inner::InnerRawHandle, net::TcpStream};
 
 pub struct TcpListener {
     inner: StdTcpListener,
@@ -44,31 +44,26 @@ impl TcpListener {
 
     #[inline]
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), io::Error> {
-        poll_fn(|cx| match self.handle.poll_accept(cx) {
-            Poll::Ready(Ok((raw, address))) => {
-                // Recreate a std TcpStream from the raw fd and convert it into our async TcpStream.
-                // If conversion fails, the std TcpStream will be dropped and the fd closed.
-                #[cfg(unix)]
-                let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw) };
-                #[cfg(windows)]
-                let crate::fd_inner::RawOsHandle::Socket(raw) = raw
-                else {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "invalid raw handle",
-                    )));
-                };
-                #[cfg(windows)]
-                let std_stream = unsafe { std::net::TcpStream::from_raw_socket(raw) };
-                match TcpStream::from_std(std_stream) {
-                    Ok(stream) => Poll::Ready(Ok((stream, address))),
-                    Err(err) => Poll::Ready(Err(err)),
-                }
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-            Poll::Pending => Poll::Pending,
-        })
-        .await
+        let mut op = AcceptOp::new(&self.handle);
+        let (raw, address) = poll_fn(move |cx| self.handle.poll_op(cx, &mut op)).await?;
+        // Recreate a std TcpStream from the raw fd and convert it into our async TcpStream.
+        // If conversion fails, the std TcpStream will be dropped and the fd closed.
+        #[cfg(unix)]
+        let std_stream = unsafe { std::net::TcpStream::from_raw_fd(raw) };
+        #[cfg(windows)]
+        let crate::fd_inner::RawOsHandle::Socket(raw) = raw
+        else {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid raw handle",
+            )));
+        };
+        #[cfg(windows)]
+        let std_stream = unsafe { std::net::TcpStream::from_raw_socket(raw) };
+        match TcpStream::from_std(std_stream) {
+            Ok(stream) => Ok((stream, address)),
+            Err(err) => Err(err),
+        }
     }
 }
 

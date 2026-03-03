@@ -43,17 +43,6 @@ impl Driver for MockDriver {
     }
 
     #[inline]
-    fn submit<O, R>(&self, _op: O, _waker: std::task::Waker) -> Result<R, std::io::Error>
-    where
-        O: crate::op::Op<Output = R>,
-    {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "MockDriver does not support I/O operation submission",
-        ))
-    }
-
-    #[inline]
     fn register_handle(
         &self,
         _handle: &crate::fd_inner::InnerRawHandle,

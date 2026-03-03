@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::cell::RefCell;
 use std::io::{self, ErrorKind};
 use std::os::fd::RawFd;
@@ -12,11 +11,10 @@ use libc;
 use mio::{Interest, Token};
 use slab::Slab;
 
-use crate::driver::Interruptor;
+use crate::driver::{CompletionIoResult, Interruptor};
 use crate::{
     driver::{Driver, RegistrationMode},
     fd_inner::InnerRawHandle,
-    op::Op,
 };
 
 const KEY_KIND_BITS: u64 = 1;
@@ -45,28 +43,6 @@ impl Interruptor for UringInterruptor {
     }
 }
 
-struct CompletionRegistration {
-    inflight: bool,
-    waiters: Vec<Waker>,
-    completed: Option<i32>,
-    /// Optional auxiliary storage provided by the operation for the duration
-    /// of an io_uring submission. The driver keeps ownership while the
-    /// operation is inflight and transfers it back to the Op before calling
-    /// `complete`.
-    aux: Option<Box<dyn Any>>,
-}
-
-impl Default for CompletionRegistration {
-    fn default() -> Self {
-        Self {
-            inflight: false,
-            waiters: Vec::new(),
-            completed: None,
-            aux: None,
-        }
-    }
-}
-
 struct PollRegistration {
     fd: RawFd,
     poll_mask: u32,
@@ -75,12 +51,18 @@ struct PollRegistration {
 }
 
 enum HandleRegistration {
-    Completion(CompletionRegistration),
+    Completion,
     Poll(PollRegistration),
+}
+
+struct Completion {
+    waiter: Option<Waker>,
+    completed: Option<i32>,
 }
 
 struct DriverState {
     registrations: Slab<HandleRegistration>,
+    completions: Slab<Completion>,
 }
 
 pub struct UringDriver {
@@ -110,12 +92,13 @@ impl UringDriver {
             return Err(io::Error::last_os_error());
         }
 
-        let ring = builder.build(1024)?;
+        let ring = builder.build(entries)?;
         let ext_arg = ring.params().is_feature_ext_arg();
         let driver = Self {
             ring: RefCell::new(ring),
             state: RefCell::new(DriverState {
                 registrations: Slab::with_capacity(entries as usize),
+                completions: Slab::with_capacity(entries as usize),
             }),
             interrupt_eventfd: Some(StdArc::new(eventfd)),
             interrupt_buffer: RefCell::new([0; 8]),
@@ -139,18 +122,8 @@ impl UringDriver {
     }
 
     #[inline]
-    fn push_waiter(waiters: &mut Vec<Waker>, waker: Waker) {
-        if !waiters
-            .last()
-            .is_some_and(|waiter| waiter.will_wake(&waker))
-        {
-            waiters.push(waker);
-        }
-    }
-
-    #[inline]
-    fn encode_completion_key(token: Token) -> u64 {
-        ((token.0 as u64) << KEY_KIND_BITS) | COMPLETION_KEY_KIND as u64
+    fn encode_completion_key(token: usize) -> u64 {
+        ((token as u64) << KEY_KIND_BITS) | COMPLETION_KEY_KIND as u64
     }
 
     #[inline]
@@ -217,103 +190,11 @@ impl UringDriver {
     }
 
     #[inline]
-    fn submit_completion_entry<O>(&self, op: &mut O, waker: Waker) -> Result<O::Output, io::Error>
-    where
-        O: Op,
-    {
-        let token = op.token();
-        // No fixed upper bound on completion kind codes anymore — registration stores
-        // completion state dynamically per-kind.
-        let key = Self::encode_completion_key(token);
-
-        // First, check whether a completion result is already available or if an
-        // operation is inflight; update registration state/waiters accordingly.
-        {
-            let mut state = self.state.borrow_mut();
-            let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
-                io::Error::new(
-                    ErrorKind::NotFound,
-                    format!("I/O token {} is not registered with this driver", token.0),
-                )
-            })?;
-
-            let HandleRegistration::Completion(registration) = registration else {
-                return Err(io::Error::new(
-                    ErrorKind::Unsupported,
-                    format!(
-                        "I/O token {} is registered for poll mode, not completion mode",
-                        token.0
-                    ),
-                ));
-            };
-
-            // If a completion has already been collected for this registration,
-            // transfer any stored auxiliary data back into the operation and
-            // return the completion result synchronously.
-            if let Some(result) = registration.completed.take() {
-                // Take the stored auxiliary data (if any) and give it back to the op.
-                let aux = registration.aux.take();
-                op.take_completion_storage(aux);
-                return op.complete(result);
-            }
-
-            if registration.inflight {
-                Self::push_waiter(&mut registration.waiters, waker);
-                return Err(io::Error::new(
-                    ErrorKind::WouldBlock,
-                    "An I/O completion is pending",
-                ));
-            }
-
-            // Mark inflight and register the caller's waker.
-            registration.inflight = true;
-            Self::push_waiter(&mut registration.waiters, waker);
-        }
-
-        // Build the SQE and optionally receive auxiliary storage the operation
-        // wants the driver to own while the I/O is inflight.
-        let (entry, storage) = op.build_completion_entry(key).map_err(|e| e)?;
-
-        // Push the SQE into the submission queue. If this fails, undo the inflight
-        // flag and clear waiters on the registration.
-        if let Err(err) = self.push_entry(entry) {
-            let mut state = self.state.borrow_mut();
-            if let Some(HandleRegistration::Completion(registration)) =
-                state.registrations.get_mut(token.0)
-            {
-                registration.inflight = false;
-                registration.waiters.clear();
-                // Discard any provided storage since the submission failed.
-                registration.aux = None;
-            }
-            return Err(err);
-        }
-
-        // Store auxiliary storage (if any) into the registration so it remains
-        // alive for the duration of the inflight operation.
-        if storage.is_some() {
-            let mut state = self.state.borrow_mut();
-            if let Some(HandleRegistration::Completion(registration)) =
-                state.registrations.get_mut(token.0)
-            {
-                registration.aux = storage;
-            } else {
-                // Shouldn't happen, but if it does, drop the storage.
-            }
-        }
-
-        Err(io::Error::new(
-            ErrorKind::WouldBlock,
-            "An I/O completion is pending",
-        ))
-    }
-
-    #[inline]
     fn collect_completions(
         &self,
         wait_for_one: bool,
         timeout: Option<Duration>,
-    ) -> Result<bool, io::Error> {
+    ) -> Result<(), io::Error> {
         {
             let mut ring = self.ring.borrow_mut();
             let should_submit = if wait_for_one {
@@ -352,9 +233,7 @@ impl UringDriver {
             }
         }
 
-        let mut woke_any = false;
         let mut interrupt = false;
-        let mut timeout = false;
 
         {
             let mut ring = self.ring.borrow_mut();
@@ -371,7 +250,6 @@ impl UringDriver {
                     continue;
                 } else if key == u64::MAX - 1 {
                     // Timeout (Linux <5.10)
-                    timeout = true;
                     continue;
                 }
 
@@ -390,15 +268,9 @@ impl UringDriver {
                     continue;
                 }
 
-                if let Some(HandleRegistration::Completion(registration)) =
-                    state.registrations.get_mut(token.0)
-                {
-                    registration.completed = Some(result);
-                    registration.inflight = false;
-                    if !registration.waiters.is_empty() {
-                        woke_any = true;
-                    }
-                    for waiter in registration.waiters.drain(..) {
+                if let Some(completion) = state.completions.get_mut(token.0) {
+                    completion.completed = Some(result);
+                    if let Some(waiter) = completion.waiter.take() {
                         waiter.wake();
                     }
                 }
@@ -409,11 +281,7 @@ impl UringDriver {
             self.submit_interrupt();
         }
 
-        if interrupt || timeout {
-            woke_any = true;
-        }
-
-        Ok(woke_any)
+        Ok(())
     }
 
     #[inline]
@@ -470,87 +338,6 @@ impl Driver for UringDriver {
     }
 
     #[inline]
-    fn submit<O, R>(&self, mut op: O, waker: Waker) -> Result<R, io::Error>
-    where
-        O: Op<Output = R>,
-    {
-        let token = op.token();
-        {
-            let state = self.state.borrow();
-            match state.registrations.get(token.0) {
-                Some(HandleRegistration::Poll(_)) => (),
-                Some(HandleRegistration::Completion(_)) => {
-                    return Err(io::Error::new(
-                        ErrorKind::Unsupported,
-                        format!(
-                            "I/O token {} is registered for completion mode, not poll mode",
-                            token.0
-                        ),
-                    ));
-                }
-                None => {
-                    return Err(io::Error::new(
-                        ErrorKind::NotFound,
-                        format!("I/O token {} is not registered with this driver", token.0),
-                    ));
-                }
-            }
-        }
-
-        match op.execute() {
-            Ok(output) => Ok(output),
-            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                let poll_spec = {
-                    let mut state = self.state.borrow_mut();
-                    let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
-                        io::Error::new(
-                            ErrorKind::NotFound,
-                            format!("I/O token {} is not registered with this driver", token.0),
-                        )
-                    })?;
-
-                    let HandleRegistration::Poll(registration) = registration else {
-                        return Err(io::Error::new(
-                            ErrorKind::Unsupported,
-                            format!(
-                                "I/O token {} is registered for completion mode, not poll mode",
-                                token.0
-                            ),
-                        ));
-                    };
-
-                    Self::update_waiter(&mut registration.waiter, waker);
-                    let desired_mask = Self::interest_to_poll_mask(op.interest());
-                    registration.poll_mask = desired_mask;
-
-                    if registration.poll_armed {
-                        None
-                    } else {
-                        registration.poll_armed = true;
-                        Some((registration.fd, desired_mask))
-                    }
-                };
-
-                if let Some((fd, poll_mask)) = poll_spec {
-                    if let Err(submit_err) = self.push_poll_add(token, fd, poll_mask) {
-                        let mut state = self.state.borrow_mut();
-                        if let Some(HandleRegistration::Poll(registration)) =
-                            state.registrations.get_mut(token.0)
-                        {
-                            registration.poll_armed = false;
-                            registration.waiter = None;
-                        }
-                        return Err(submit_err);
-                    }
-                }
-
-                Err(err)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    #[inline]
     fn register_handle(
         &self,
         handle: &InnerRawHandle,
@@ -572,9 +359,7 @@ impl Driver for UringDriver {
 
         match mode {
             RegistrationMode::Completion => {
-                entry.insert(HandleRegistration::Completion(
-                    CompletionRegistration::default(),
-                ));
+                entry.insert(HandleRegistration::Completion);
             }
             RegistrationMode::Poll => {
                 entry.insert(HandleRegistration::Poll(PollRegistration {
@@ -597,7 +382,7 @@ impl Driver for UringDriver {
     ) -> Result<(), io::Error> {
         let mut state = self.state.borrow_mut();
         match state.registrations.get_mut(handle.token.0) {
-            Some(HandleRegistration::Completion(_)) => Ok(()),
+            Some(HandleRegistration::Completion) => Ok(()),
             Some(HandleRegistration::Poll(registration)) => {
                 registration.poll_mask = Self::interest_to_poll_mask(interest);
                 Ok(())
@@ -634,10 +419,122 @@ impl Driver for UringDriver {
     }
 
     #[inline]
-    fn submit_completion<O, R>(&self, mut op: O, waker: Waker) -> Result<R, io::Error>
+    fn submit_poll(
+        &self,
+        handle: &InnerRawHandle,
+        waker: Waker,
+        interest: Interest,
+    ) -> Result<(), io::Error> {
+        let token = handle.token();
+        {
+            let state = self.state.borrow();
+            match state.registrations.get(token.0) {
+                Some(HandleRegistration::Poll(_)) => (),
+                Some(HandleRegistration::Completion) => {
+                    return Err(io::Error::new(
+                        ErrorKind::Unsupported,
+                        format!(
+                            "I/O token {} is registered for completion mode, not poll mode",
+                            token.0
+                        ),
+                    ));
+                }
+                None => {
+                    return Err(io::Error::new(
+                        ErrorKind::NotFound,
+                        format!("I/O token {} is not registered with this driver", token.0),
+                    ));
+                }
+            }
+        }
+
+        let poll_spec = {
+            let mut state = self.state.borrow_mut();
+            let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::NotFound,
+                    format!("I/O token {} is not registered with this driver", token.0),
+                )
+            })?;
+
+            let HandleRegistration::Poll(registration) = registration else {
+                return Err(io::Error::new(
+                    ErrorKind::Unsupported,
+                    format!(
+                        "I/O token {} is registered for completion mode, not poll mode",
+                        token.0
+                    ),
+                ));
+            };
+
+            Self::update_waiter(&mut registration.waiter, waker);
+            let desired_mask = Self::interest_to_poll_mask(interest);
+            registration.poll_mask = desired_mask;
+
+            if registration.poll_armed {
+                None
+            } else {
+                registration.poll_armed = true;
+                Some((registration.fd, desired_mask))
+            }
+        };
+
+        if let Some((fd, poll_mask)) = poll_spec {
+            if let Err(submit_err) = self.push_poll_add(token, fd, poll_mask) {
+                let mut state = self.state.borrow_mut();
+                if let Some(HandleRegistration::Poll(registration)) =
+                    state.registrations.get_mut(token.0)
+                {
+                    registration.poll_armed = false;
+                    registration.waiter = None;
+                }
+                return Err(submit_err);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    fn submit_completion<O>(&self, op: &mut O, waker: Waker) -> super::CompletionIoResult
     where
-        O: Op<Output = R>,
+        O: crate::op::Op,
     {
-        self.submit_completion_entry(&mut op, waker)
+        let mut state = self.state.borrow_mut();
+        let vacant_completion = state.completions.vacant_entry();
+        let token = vacant_completion.key();
+
+        // Build the SQE. If this fails, return the error.
+        let entry = match op
+            .build_completion_entry(Self::encode_completion_key(token))
+            .map_err(|e| e)
+        {
+            Ok(entry) => entry,
+            Err(err) => return CompletionIoResult::SubmitErr(err),
+        };
+
+        // Push the SQE into the submission queue. If this fails, undo the inflight
+        // flag and clear waiters on the registration.
+        if let Err(err) = self.push_entry(entry) {
+            return CompletionIoResult::SubmitErr(err);
+        }
+
+        // Store the operation in the completions slab.
+        vacant_completion.insert(Completion {
+            waiter: Some(waker),
+            completed: None,
+        });
+
+        CompletionIoResult::Retry(token)
+    }
+
+    #[inline]
+    fn get_completion_result(&self, token: usize) -> Option<i32> {
+        let mut state = self.state.borrow_mut();
+        let completed = state.completions.get(token).and_then(|c| c.completed);
+        if completed.is_some() {
+            state.completions.remove(token);
+        }
+        completed
     }
 }

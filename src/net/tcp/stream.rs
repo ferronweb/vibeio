@@ -18,11 +18,11 @@ use windows_sys::Win32::Networking::WinSock::{
     SOCK_STREAM, WSADATA, WSAEALREADY, WSAEINPROGRESS, WSAEWOULDBLOCK,
 };
 
+use crate::op::{ConnectOp, ReadOp, ReadvOp, WriteOp, WritevOp};
 use crate::{
     driver::RegistrationMode,
     fd_inner::InnerRawHandle,
     io::{AsyncRead, AsyncWrite},
-    op::{ConnectIo, ReadIo, ReadvIo, WriteIo, WritevIo},
 };
 
 #[cfg(unix)]
@@ -266,25 +266,20 @@ impl TcpStream {
         let (inner, raw_addr, raw_addr_len) = new_socket(address)?;
         let stream = Self::from_std(inner)?;
 
-        if stream.handle.uses_completion() {
-            let raw_addr = Box::new(raw_addr);
-            poll_fn(|cx| {
-                #[cfg(unix)]
-                let raw_addr_ptr =
-                    (&*raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>();
-                #[cfg(windows)]
-                let raw_addr_ptr = (&*raw_addr as *const SOCKADDR_STORAGE).cast::<SOCKADDR>();
-                // use the high-level connect helper on the registration handle
-                stream.handle.poll_connect(cx, raw_addr_ptr, raw_addr_len)
-            })
-            .await?;
-        } else {
+        if !stream.handle.uses_completion() {
             #[cfg(unix)]
             start_nonblocking_connect(stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
             #[cfg(windows)]
             start_nonblocking_connect(stream.inner.as_raw_socket(), &raw_addr, raw_addr_len)?;
-            poll_fn(|cx| stream.handle.poll_connect_poll(cx)).await?;
         }
+
+        #[cfg(unix)]
+        let raw_addr_ptr = (&raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>();
+        #[cfg(windows)]
+        let raw_addr_ptr = (&raw_addr as *const SOCKADDR_STORAGE).cast::<SOCKADDR>();
+        let handle = &stream.handle;
+        let mut op = ConnectOp::new(handle, raw_addr_ptr, raw_addr_len);
+        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await?;
 
         Ok(stream)
     }
@@ -374,7 +369,15 @@ impl PollTcpStream {
         start_nonblocking_connect(stream.stream.inner.as_raw_fd(), &raw_addr, raw_addr_len)?;
         #[cfg(windows)]
         start_nonblocking_connect(stream.stream.inner.as_raw_socket(), &raw_addr, raw_addr_len)?;
-        poll_fn(|cx| stream.stream.handle.poll_connect_poll(cx)).await?;
+
+        #[cfg(unix)]
+        let raw_addr_ptr = (&raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>();
+        #[cfg(windows)]
+        let raw_addr_ptr = (&raw_addr as *const SOCKADDR_STORAGE).cast::<SOCKADDR>();
+
+        let handle = &stream.stream.handle;
+        let mut op = ConnectOp::new(handle, raw_addr_ptr, raw_addr_len);
+        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await?;
 
         Ok(stream)
     }
@@ -508,7 +511,9 @@ impl IntoRawSocket for PollTcpStream {
 impl AsyncRead for TcpStream {
     #[inline]
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        poll_fn(|cx| self.handle.poll_read(cx, buf)).await
+        let handle = &self.handle;
+        let mut op = ReadOp::new(handle, buf);
+        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
     }
 
     #[inline]
@@ -516,8 +521,9 @@ impl AsyncRead for TcpStream {
         if bufs.is_empty() {
             return Ok(0);
         }
-        // Use the readv helper on the registration handle (will choose poll vs completion).
-        poll_fn(|cx| self.handle.poll_readv(cx, bufs)).await
+        let handle = &self.handle;
+        let mut op = ReadvOp::new(handle, bufs);
+        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
     }
 }
 
@@ -535,7 +541,8 @@ impl TokioAsyncRead for PollTcpStream {
         let this = self.get_mut();
         // Equivalent to .assume_init_mut() in Rust 1.93.0+
         let unfilled = unsafe { &mut *(buf.unfilled_mut() as *mut [MaybeUninit<u8>] as *mut [u8]) };
-        match this.stream.handle.poll_read_poll(cx, unfilled) {
+        let mut op = ReadOp::new(&this.stream.handle, unfilled);
+        match this.stream.handle.poll_op_poll(cx, &mut op) {
             Poll::Ready(Ok(read)) => {
                 unsafe {
                     buf.assume_init(read);
@@ -552,7 +559,9 @@ impl TokioAsyncRead for PollTcpStream {
 impl AsyncWrite for TcpStream {
     #[inline]
     async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-        poll_fn(|cx| self.handle.poll_write(cx, buf)).await
+        let handle = &self.handle;
+        let mut op = WriteOp::new(handle, buf);
+        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
     }
 
     #[inline]
@@ -565,8 +574,9 @@ impl AsyncWrite for TcpStream {
         if bufs.is_empty() {
             return Ok(0);
         }
-        // Use the writev helper on the registration handle (will choose poll vs completion).
-        poll_fn(|cx| self.handle.poll_writev(cx, bufs)).await
+        let handle = &self.handle;
+        let mut op = WritevOp::new(handle, bufs);
+        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
     }
 }
 
@@ -577,7 +587,9 @@ impl TokioAsyncWrite for PollTcpStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.get_mut().stream.handle.poll_write_poll(cx, buf)
+        let this = self.get_mut();
+        let mut op = WriteOp::new(&this.stream.handle, buf);
+        this.stream.handle.poll_op_poll(cx, &mut op)
     }
 
     #[inline]
@@ -589,7 +601,9 @@ impl TokioAsyncWrite for PollTcpStream {
         if bufs.is_empty() {
             return Poll::Ready(Ok(0));
         }
-        self.get_mut().stream.handle.poll_writev_poll(cx, bufs)
+        let this = self.get_mut();
+        let mut op = WritevOp::new(&this.stream.handle, bufs);
+        this.stream.handle.poll_op_poll(cx, &mut op)
     }
 
     #[inline]

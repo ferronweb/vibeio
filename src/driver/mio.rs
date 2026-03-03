@@ -9,7 +9,7 @@ use mio::{Events, Interest, Poll, Registry, Token, Waker as MioWaker};
 use slab::Slab;
 
 use crate::driver::Interruptor;
-use crate::{driver::Driver, fd_inner::InnerRawHandle, op::Op};
+use crate::{driver::Driver, fd_inner::InnerRawHandle};
 
 pub struct MioInterruptor {
     waker: std::sync::Weak<MioWaker>,
@@ -116,43 +116,6 @@ impl Driver for MioDriver {
     }
 
     #[inline]
-    fn submit<O, R>(&self, mut op: O, waker: Waker) -> Result<R, io::Error>
-    where
-        O: Op<Output = R>,
-    {
-        let token = op.token();
-        let result = op.execute();
-
-        match result {
-            Ok(output) => Ok(output),
-            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                let mut state = self.state.borrow_mut();
-                let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
-                    io::Error::new(
-                        ErrorKind::NotFound,
-                        format!("I/O token {} is not registered with this driver", token.0),
-                    )
-                })?;
-
-                let new_interest = op.interest();
-                if registration.interest != new_interest {
-                    // Re-register, but only if the interest has change
-                    self.registry.reregister(
-                        &mut mio::unix::SourceFd(&registration.fd),
-                        token,
-                        op.interest(),
-                    )?;
-                    registration.interest = new_interest;
-                }
-
-                Self::update_waiter(&mut registration.waiter, waker);
-                Err(err)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    #[inline]
     fn register_handle(
         &self,
         handle: &InnerRawHandle,
@@ -227,18 +190,45 @@ impl Driver for MioDriver {
         let _ = state.registrations.try_remove(handle.token.0);
         Ok(())
     }
+
+    #[inline]
+    fn submit_poll(
+        &self,
+        handle: &InnerRawHandle,
+        waker: Waker,
+        interest: Interest,
+    ) -> Result<(), io::Error> {
+        let token = handle.token();
+
+        let mut state = self.state.borrow_mut();
+        let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::NotFound,
+                format!("I/O token {} is not registered with this driver", token.0),
+            )
+        })?;
+
+        if registration.interest != interest {
+            // Re-register, but only if the interest has change
+            self.registry.reregister(
+                &mut mio::unix::SourceFd(&registration.fd),
+                token,
+                interest,
+            )?;
+            registration.interest = interest;
+        }
+
+        Self::update_waiter(&mut registration.waiter, waker);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use mio::{Interest, Token};
-
-    use super::{MioDriver, Registration};
-    use crate::{driver::Driver, op::Op};
+    use super::MioDriver;
 
     struct TestWake {
         count: AtomicUsize,
@@ -270,99 +260,6 @@ mod tests {
         }
     }
 
-    struct SuccessOp {
-        token: Token,
-        value: usize,
-    }
-
-    impl Op for SuccessOp {
-        type Output = usize;
-
-        #[inline]
-        fn token(&self) -> Token {
-            self.token
-        }
-
-        #[inline]
-        fn execute(&mut self) -> Result<Self::Output, io::Error> {
-            Ok(self.value)
-        }
-    }
-
-    struct PendingOp {
-        token: Token,
-    }
-
-    impl Op for PendingOp {
-        type Output = ();
-
-        #[inline]
-        fn token(&self) -> Token {
-            self.token
-        }
-
-        #[inline]
-        fn execute(&mut self) -> Result<Self::Output, io::Error> {
-            Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "operation is not ready",
-            ))
-        }
-    }
-
-    #[test]
-    fn submit_executes_operation_and_returns_output() {
-        let driver = MioDriver::new().expect("mio driver should initialize");
-        let wake = Arc::new(TestWake::new());
-        let waker = std::task::Waker::from(wake.clone());
-
-        let output = driver
-            .submit(
-                SuccessOp {
-                    token: Token(0),
-                    value: 42,
-                },
-                waker,
-            )
-            .expect("operation should succeed");
-
-        assert_eq!(output, 42);
-        assert_eq!(wake.wake_count(), 0);
-    }
-
-    #[test]
-    fn submit_would_block_arms_task() {
-        let driver = MioDriver::new().expect("mio driver should initialize");
-        let wake = Arc::new(TestWake::new());
-        let waker = std::task::Waker::from(wake.clone());
-
-        let token = {
-            let mut state = driver.state.borrow_mut();
-            Token(state.registrations.insert(Registration {
-                fd: 0,
-                waiter: None,
-                interest: Interest::READABLE | Interest::WRITABLE,
-            }))
-        };
-        {
-            let state = driver.state.borrow();
-            assert!(state.registrations.contains(token.0));
-        }
-
-        let err = driver
-            .submit(PendingOp { token }, waker)
-            .expect_err("operation should be pending");
-        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
-        assert_eq!(wake.wake_count(), 0);
-
-        let state = driver.state.borrow();
-        let registration = state
-            .registrations
-            .get(token.0)
-            .expect("token should still be registered");
-        assert!(registration.waiter.is_some());
-    }
-
     #[test]
     fn wait_wakes_task_for_ready_token() {
         use std::{
@@ -373,7 +270,7 @@ mod tests {
             time::Duration,
         };
 
-        use crate::{driver::AnyDriver, fd_inner::InnerRawHandle, op::ReadIo};
+        use crate::{driver::AnyDriver, fd_inner::InnerRawHandle, op::ReadOp};
 
         let driver = Rc::new(AnyDriver::Mio(
             MioDriver::new().expect("mio driver should initialize"),
@@ -395,7 +292,8 @@ mod tests {
             crate::driver::RegistrationMode::Poll,
         )
         .expect("failed to register pipe");
-        match inner_raw_handle.poll_read_poll(&mut Context::from_waker(&waker), &mut buffer) {
+        let mut read_op = ReadOp::new(&inner_raw_handle, &mut buffer);
+        match inner_raw_handle.poll_op(&mut Context::from_waker(&waker), &mut read_op) {
             Poll::Pending => {}
             Poll::Ready(Ok(_)) => panic!("unexpected success"),
             Poll::Ready(Err(e)) => panic!("failed to submit operation: {}", e),

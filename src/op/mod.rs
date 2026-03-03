@@ -5,76 +5,67 @@ mod readv;
 mod write;
 mod writev;
 
-use std::any::Any;
 use std::io;
+use std::task::Context;
 use std::task::Poll;
 
-use mio::{Interest, Token};
+pub use accept::AcceptOp;
+pub use connect::ConnectOp;
+pub use read::ReadOp;
+pub use readv::ReadvOp;
+pub use write::WriteOp;
+pub use writev::WritevOp;
 
-pub use accept::AcceptIo;
-pub use connect::ConnectIo;
-pub use read::ReadIo;
-pub use readv::ReadvIo;
-pub use write::WriteIo;
-pub use writev::WritevIo;
-
-#[inline]
-pub(crate) fn completion_result_to_poll<T>(
-    result: Result<T, io::Error>,
-) -> Poll<Result<T, io::Error>> {
-    match result {
-        Ok(output) => Poll::Ready(Ok(output)),
-        Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
-        Err(err) => Poll::Ready(Err(err)),
-    }
-}
+use crate::driver::AnyDriver;
 
 pub trait Op {
     /// I/O operation return type
     type Output;
 
-    /// Returns the token of the I/O source this operation targets.
-    fn token(&self) -> Token;
-
-    /// Executes the I/O operation (poll/readiness path).
+    /// Polls the operation for readiness (poll-based I/O).
     #[inline]
-    fn execute(&mut self) -> Result<Self::Output, io::Error> {
-        Err(io::Error::new(
+    fn poll_poll(
+        &mut self,
+        _cx: &mut Context<'_>,
+        _driver: &AnyDriver,
+    ) -> Poll<io::Result<Self::Output>> {
+        Poll::Ready(Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "operation does not support poll/readiness-based submission",
-        ))
+            "operation does not support poll-based submission",
+        )))
     }
 
-    /// Returns a poll interest for the I/O source this operation targets.
+    /// Polls the operation for readiness (completion-based I/O).
     #[inline]
-    fn interest(&self) -> Interest {
-        Interest::READABLE | Interest::WRITABLE
+    fn poll_completion(
+        &mut self,
+        _cx: &mut Context<'_>,
+        _driver: &AnyDriver,
+    ) -> Poll<io::Result<Self::Output>> {
+        Poll::Ready(Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "operation does not support completion-based submission",
+        )))
+    }
+
+    /// Polls the operation for readiness (automatically determined I/O).
+    #[inline]
+    fn poll(&mut self, cx: &mut Context<'_>, driver: &AnyDriver) -> Poll<io::Result<Self::Output>> {
+        if driver.supports_completion() {
+            self.poll_completion(cx, driver)
+        } else {
+            self.poll_poll(cx, driver)
+        }
     }
 
     /// Builds an io_uring submission entry for this operation. Returns the
-    /// constructed SQE and an optional boxed storage value which the driver
-    /// will hold onto for the duration of the completion.
+    /// constructed SQE.
     #[cfg(target_os = "linux")]
     #[inline]
     fn build_completion_entry(
         &mut self,
         _user_data: u64,
-    ) -> Result<(io_uring::squeue::Entry, Option<Box<dyn Any>>), io::Error> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "operation does not support completion-based submission",
-        ))
-    }
-
-    /// Called by the driver to transfer previously-stored completion storage
-    /// back into the operation prior to calling `complete`.
-    #[cfg(target_os = "linux")]
-    #[inline]
-    fn take_completion_storage(&mut self, _storage: Option<Box<dyn Any>>) {}
-
-    /// Converts a completion result into the operation output.
-    #[inline]
-    fn complete(&mut self, _result: i32) -> Result<Self::Output, io::Error> {
+    ) -> Result<io_uring::squeue::Entry, io::Error> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "operation does not support completion-based submission",
@@ -89,7 +80,7 @@ mod vectored_uring_tests {
 
     use mio::Interest;
 
-    use crate::op::{ReadvIo, WritevIo};
+    use crate::op::{ReadvOp, WritevOp};
     use crate::{driver::AnyDriver, fd_inner::InnerRawHandle};
 
     #[test]
@@ -124,7 +115,9 @@ mod vectored_uring_tests {
 
             // Submit vectored write. poll_writev will choose completion-path (io_uring)
             // for this handle because the driver supports completions.
-            let write_res = poll_fn(|cx| whandle.poll_writev(cx, &bufs)).await;
+            let whandle_ref = &whandle;
+            let mut writev_op = WritevOp::new(whandle_ref, &bufs);
+            let write_res = poll_fn(move |cx| whandle_ref.poll_op(cx, &mut writev_op)).await;
             let written = write_res.expect("writev failed");
             assert!(
                 written > 0,
@@ -137,7 +130,9 @@ mod vectored_uring_tests {
             let mut rd_bufs = [IoSliceMut::new(&mut dst1), IoSliceMut::new(&mut dst2)];
 
             // Read using vectored read. poll_readv will choose completion-path when available.
-            let read_res = poll_fn(|cx| rhandle.poll_readv(cx, &mut rd_bufs)).await;
+            let rhandle_ref = &rhandle;
+            let mut readv_op = ReadvOp::new(rhandle_ref, &mut rd_bufs);
+            let read_res = poll_fn(move |cx| rhandle_ref.poll_op(cx, &mut readv_op)).await;
             let read = read_res.expect("readv failed");
 
             // We expect to read at least as many bytes as were written (pipe semantics

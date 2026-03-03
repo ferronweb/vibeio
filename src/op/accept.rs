@@ -5,12 +5,12 @@ use std::net::SocketAddr;
 use std::os::fd::RawFd;
 use std::task::{Context, Poll};
 
-use mio::{Interest, Token};
+use mio::Interest;
 
-use crate::{
-    fd_inner::{InnerRawHandle, RawOsHandle},
-    op::{completion_result_to_poll, Op},
-};
+use crate::driver::AnyDriver;
+use crate::driver::CompletionIoResult;
+use crate::fd_inner::{InnerRawHandle, RawOsHandle};
+use crate::op::Op;
 
 #[cfg(unix)]
 fn set_cloexec(fd: RawFd) -> Result<(), io::Error> {
@@ -63,87 +63,32 @@ fn sockaddr_storage_to_socketaddr(
     }
 }
 
-/// Poll-based accept helper trait. Submits the operation via the poll/readiness pathway.
-/// Unified accept helper trait implemented on `InnerRawHandle`.
-///
-/// This single trait exposes:
-/// - `poll_accept` (high-level, picks completion vs poll based on registration mode)
-/// - `poll_accept_poll` (poll/readiness pathway)
-/// - `poll_accept_completion` (completion/pathway)
-pub trait AcceptIo {
-    fn poll_accept(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>>;
-
-    fn poll_accept_poll(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>>;
-
-    fn poll_accept_completion(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>>;
-}
-
-impl AcceptIo for InnerRawHandle {
-    #[inline]
-    fn poll_accept(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>> {
-        if self.uses_completion() {
-            self.poll_accept_completion(cx)
-        } else {
-            self.poll_accept_poll(cx)
-        }
-    }
-
-    #[inline]
-    fn poll_accept_poll(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>> {
-        match self.submit(AcceptOp::new(self), cx.waker().clone()) {
-            Ok((raw, address)) => Poll::Ready(Ok((raw, address))),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
-            Err(err) => Poll::Ready(Err(err)),
-        }
-    }
-
-    #[inline]
-    fn poll_accept_completion(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(RawOsHandle, SocketAddr), io::Error>> {
-        completion_result_to_poll(self.submit_completion(AcceptOp::new(self), cx.waker().clone()))
-    }
-}
-
 pub struct AcceptOp<'a> {
     handle: &'a InnerRawHandle,
+    completion_token: Option<usize>,
 }
 
 impl<'a> AcceptOp<'a> {
     #[inline]
     pub fn new(handle: &'a InnerRawHandle) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            completion_token: None,
+        }
     }
 }
 
 impl Op for AcceptOp<'_> {
     type Output = (RawOsHandle, SocketAddr);
 
-    #[inline]
-    fn token(&self) -> Token {
-        self.handle.token()
-    }
-
     // TODO: support Windows
     #[cfg(unix)]
     #[inline]
-    fn execute(&mut self) -> Result<Self::Output, io::Error> {
+    fn poll_poll(
+        &mut self,
+        cx: &mut Context<'_>,
+        driver: &AnyDriver,
+    ) -> Poll<io::Result<Self::Output>> {
         let accepted_fd = unsafe {
             libc::accept(
                 self.handle.handle,
@@ -152,13 +97,24 @@ impl Op for AcceptOp<'_> {
             )
         };
         if accepted_fd == -1 {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock {
+                if let Err(err) =
+                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE)
+                {
+                    return Poll::Ready(Err(err));
+                }
+                return Poll::Pending;
+            }
+            return Poll::Ready(Err(error));
         }
 
         let fd = accepted_fd as RawFd;
 
         // Ensure close-on-exec for the accepted fd
-        set_cloexec(fd)?;
+        if let Err(err) = set_cloexec(fd) {
+            return Poll::Ready(Err(err));
+        }
 
         // Obtain peer address via getpeername into a sockaddr_storage
         let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
@@ -172,50 +128,61 @@ impl Op for AcceptOp<'_> {
         };
 
         if getpeername_result == -1 {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock {
+                if let Err(err) =
+                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE)
+                {
+                    return Poll::Ready(Err(err));
+                }
+                return Poll::Pending;
+            }
+            return Poll::Ready(Err(error));
         }
 
         let peer = unsafe { peer.assume_init() };
         let address = sockaddr_storage_to_socketaddr(&peer)?;
-        Ok((fd as RawOsHandle, address))
+        Poll::Ready(Ok((fd as RawOsHandle, address)))
     }
 
-    #[inline]
-    fn interest(&self) -> Interest {
-        Interest::READABLE
-    }
-
-    #[cfg(target_os = "linux")]
-    #[inline]
-    fn build_completion_entry(
-        &mut self,
-        user_data: u64,
-    ) -> Result<(io_uring::squeue::Entry, Option<Box<dyn std::any::Any>>), io::Error> {
-        use io_uring::{opcode, types};
-
-        let entry = opcode::Accept::new(
-            types::Fd(self.handle.handle),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-        .flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
-        .build()
-        .user_data(user_data);
-
-        Ok((entry, None))
-    }
     // TODO: support Windows
     #[cfg(unix)]
     #[inline]
-    fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
+    fn poll_completion(
+        &mut self,
+        cx: &mut Context<'_>,
+        driver: &AnyDriver,
+    ) -> Poll<io::Result<Self::Output>> {
+        let result = if let Some(completion_token) = self.completion_token {
+            // Get the completion result
+            match driver.get_completion_result(completion_token) {
+                Some(result) => result,
+                None => {
+                    // The completion is not ready yet
+                    return Poll::Pending;
+                }
+            }
+        } else {
+            // Submit the op
+            match driver.submit_completion(self, cx.waker().clone()) {
+                CompletionIoResult::Ok(result) => result,
+                CompletionIoResult::Retry(token) => {
+                    self.completion_token = Some(token);
+                    return Poll::Pending;
+                }
+                CompletionIoResult::SubmitErr(err) => return Poll::Ready(Err(err)),
+            }
+        };
         if result < 0 {
-            return Err(io::Error::from_raw_os_error(-result));
+            return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
 
         let fd = result as RawFd;
 
         // Ensure close-on-exec for the accepted fd (io_uring may have already set them)
-        set_cloexec(fd)?;
+        if let Err(err) = set_cloexec(fd) {
+            return Poll::Ready(Err(err));
+        }
 
         // Get peer address via getpeername
         let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
@@ -229,11 +196,31 @@ impl Op for AcceptOp<'_> {
         };
 
         if getpeername_result == -1 {
-            return Err(io::Error::last_os_error());
+            return Poll::Ready(Err(io::Error::last_os_error()));
         }
 
         let peer = unsafe { peer.assume_init() };
         let address = sockaddr_storage_to_socketaddr(&peer)?;
-        Ok((fd as RawOsHandle, address))
+        Poll::Ready(Ok((fd as RawOsHandle, address)))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[inline]
+    fn build_completion_entry(
+        &mut self,
+        user_data: u64,
+    ) -> Result<io_uring::squeue::Entry, io::Error> {
+        use io_uring::{opcode, types};
+
+        let entry = opcode::Accept::new(
+            types::Fd(self.handle.handle),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+        .flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
+        .build()
+        .user_data(user_data);
+
+        Ok(entry)
     }
 }

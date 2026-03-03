@@ -14,7 +14,8 @@ use crate::driver::mio::{MioDriver, MioInterruptor};
 use crate::driver::mock::MockInterruptor;
 #[cfg(target_os = "linux")]
 use crate::driver::uring::{UringDriver, UringInterruptor};
-use crate::{driver::mock::MockDriver, fd_inner::InnerRawHandle, op::Op};
+use crate::op::Op;
+use crate::{driver::mock::MockDriver, fd_inner::InnerRawHandle};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegistrationMode {
@@ -22,10 +23,26 @@ pub enum RegistrationMode {
     Completion,
 }
 
+#[derive(Debug)]
+pub enum CompletionIoResult {
+    Ok(i32),
+    Retry(usize), // usize -> token
+    SubmitErr(std::io::Error),
+}
+
+#[inline]
 fn unsupported_completion_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
         "driver does not support completion-based I/O submission",
+    )
+}
+
+#[inline]
+fn unsupported_poll_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "driver does not support poll-based I/O submission",
     )
 }
 
@@ -64,11 +81,6 @@ pub trait Driver {
     /// Waits for the I/O.
     fn wait(&self, timeout: Option<Duration>);
 
-    /// Submits an I/O operation.
-    fn submit<O, R>(&self, op: O, waker: Waker) -> Result<R, std::io::Error>
-    where
-        O: Op<Output = R>;
-
     /// Registers an I/O source and returns its token.
     fn register_handle(
         &self,
@@ -104,11 +116,28 @@ pub trait Driver {
 
     /// Submits a completion-based I/O operation.
     #[inline]
-    fn submit_completion<O, R>(&self, _op: O, _waker: Waker) -> Result<R, io::Error>
+    fn submit_completion<O>(&self, _op: &mut O, _waker: Waker) -> CompletionIoResult
     where
-        O: Op<Output = R>,
+        O: Op,
     {
-        Err(unsupported_completion_error())
+        CompletionIoResult::SubmitErr(unsupported_completion_error())
+    }
+
+    /// Re-registers interest and submits a waker for poll-based I/O.
+    #[inline]
+    fn submit_poll(
+        &self,
+        _handle: &InnerRawHandle,
+        _waker: Waker,
+        _interest: Interest,
+    ) -> Result<(), io::Error> {
+        Err(unsupported_poll_error())
+    }
+
+    /// Obtains the result for a completion-based I/O operation.
+    #[inline]
+    fn get_completion_result(&self, _token: usize) -> Option<i32> {
+        None
     }
 
     /// Interrupts a waiting I/O operation.
@@ -185,20 +214,6 @@ impl AnyDriver {
     }
 
     #[inline]
-    pub(crate) fn submit<O, R>(&self, op: O, waker: Waker) -> Result<R, std::io::Error>
-    where
-        O: Op<Output = R>,
-    {
-        match self {
-            #[cfg(unix)]
-            AnyDriver::Mio(driver) => driver.submit(op, waker),
-            AnyDriver::Mock(driver) => driver.submit(op, waker),
-            #[cfg(target_os = "linux")]
-            AnyDriver::IoUring(driver) => driver.submit(op, waker),
-        }
-    }
-
-    #[inline]
     pub(crate) fn register_handle(
         &self,
         handle: &InnerRawHandle,
@@ -267,9 +282,9 @@ impl AnyDriver {
     }
 
     #[inline]
-    pub(crate) fn submit_completion<O, R>(&self, op: O, waker: Waker) -> Result<R, io::Error>
+    pub(crate) fn submit_completion<O>(&self, op: &mut O, waker: Waker) -> CompletionIoResult
     where
-        O: Op<Output = R>,
+        O: Op,
     {
         match self {
             #[cfg(unix)]
@@ -277,6 +292,33 @@ impl AnyDriver {
             AnyDriver::Mock(driver) => driver.submit_completion(op, waker),
             #[cfg(target_os = "linux")]
             AnyDriver::IoUring(driver) => driver.submit_completion(op, waker),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn submit_poll(
+        &self,
+        handle: &InnerRawHandle,
+        waker: Waker,
+        interest: Interest,
+    ) -> Result<(), io::Error> {
+        match self {
+            #[cfg(unix)]
+            AnyDriver::Mio(driver) => driver.submit_poll(handle, waker, interest),
+            AnyDriver::Mock(driver) => driver.submit_poll(handle, waker, interest),
+            #[cfg(target_os = "linux")]
+            AnyDriver::IoUring(driver) => driver.submit_poll(handle, waker, interest),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn get_completion_result(&self, token: usize) -> Option<i32> {
+        match self {
+            #[cfg(unix)]
+            AnyDriver::Mio(driver) => driver.get_completion_result(token),
+            AnyDriver::Mock(driver) => driver.get_completion_result(token),
+            #[cfg(target_os = "linux")]
+            AnyDriver::IoUring(driver) => driver.get_completion_result(token),
         }
     }
 

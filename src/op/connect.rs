@@ -1,169 +1,46 @@
-use std::io::{self, ErrorKind};
+use std::io;
 use std::mem;
 use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
-use mio::{Interest, Token};
-#[cfg(windows)]
-use windows_sys::Win32::Networking::WinSock::SOCKADDR;
+use mio::Interest;
 
-use crate::{
-    fd_inner::InnerRawHandle,
-    op::{completion_result_to_poll, Op},
-};
+use crate::driver::AnyDriver;
+use crate::driver::CompletionIoResult;
+use crate::fd_inner::InnerRawHandle;
+use crate::op::Op;
 
 pub struct ConnectOp<'a> {
     handle: &'a InnerRawHandle,
     #[cfg(unix)]
-    completion_addr: Option<(*const libc::sockaddr, libc::socklen_t)>,
+    addr: (*const libc::sockaddr, libc::socklen_t),
     #[cfg(windows)]
-    completion_addr: Option<(*const SOCKADDR, i32)>,
+    addr: (*const SOCKADDR, i32),
+    completion_token: Option<usize>,
 }
 
 impl<'a> ConnectOp<'a> {
-    #[inline]
-    pub fn new(handle: &'a InnerRawHandle) -> Self {
-        Self {
-            handle,
-            completion_addr: None,
-        }
-    }
-
     #[cfg(unix)]
     #[inline]
-    pub fn new_completion(
+    pub fn new(
         handle: &'a InnerRawHandle,
         addr: *const libc::sockaddr,
         addrlen: libc::socklen_t,
     ) -> Self {
         Self {
             handle,
-            completion_addr: Some((addr, addrlen)),
+            addr: (addr, addrlen),
+            completion_token: None,
         }
     }
 
     #[cfg(windows)]
     #[inline]
-    pub fn new_completion(handle: &'a InnerRawHandle, addr: *const SOCKADDR, addrlen: i32) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, addr: *const SOCKADDR, addrlen: i32) -> Self {
         Self {
             handle,
-            completion_addr: Some((addr, addrlen)),
-        }
-    }
-}
-
-/// Unified connect helper trait implemented on `InnerRawHandle`.
-///
-/// Exposes:
-/// - `poll_connect_poll`  -> poll/readiness submission path
-/// - `poll_connect_completion` -> completion submission path
-/// - `poll_connect` -> high-level helper that picks the appropriate path based on mode
-pub trait ConnectIo {
-    /// Poll/readiness submission path (ignores address parameters).
-    fn poll_connect_poll(&self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>>;
-
-    /// Completion submission path (requires address pointer and length).
-    #[cfg(unix)]
-    fn poll_connect_completion(
-        &self,
-        cx: &mut Context<'_>,
-        addr: *const libc::sockaddr,
-        addrlen: libc::socklen_t,
-    ) -> Poll<Result<(), io::Error>>;
-
-    /// Completion submission path (requires address pointer and length).
-    #[cfg(windows)]
-    fn poll_connect_completion(
-        &self,
-        cx: &mut Context<'_>,
-        addr: *const SOCKADDR,
-        addrlen: i32,
-    ) -> Poll<Result<(), io::Error>>;
-
-    /// High-level connect that chooses completion vs poll based on registration mode.
-    #[cfg(unix)]
-    fn poll_connect(
-        &self,
-        cx: &mut Context<'_>,
-        addr: *const libc::sockaddr,
-        addrlen: libc::socklen_t,
-    ) -> Poll<Result<(), io::Error>>;
-
-    /// High-level connect that chooses completion vs poll based on registration mode.
-    #[cfg(windows)]
-    fn poll_connect(
-        &self,
-        cx: &mut Context<'_>,
-        addr: *const SOCKADDR,
-        addrlen: i32,
-    ) -> Poll<Result<(), io::Error>>;
-}
-
-impl ConnectIo for InnerRawHandle {
-    #[inline]
-    fn poll_connect_poll(&self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        match self.submit(ConnectOp::new(self), cx.waker().clone()) {
-            Ok(()) => Poll::Ready(Ok(())),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
-            Err(err) => Poll::Ready(Err(err)),
-        }
-    }
-
-    #[cfg(unix)]
-    #[inline]
-    fn poll_connect_completion(
-        &self,
-        cx: &mut Context<'_>,
-        addr: *const libc::sockaddr,
-        addrlen: libc::socklen_t,
-    ) -> Poll<Result<(), io::Error>> {
-        completion_result_to_poll(self.submit_completion(
-            ConnectOp::new_completion(self, addr, addrlen),
-            cx.waker().clone(),
-        ))
-    }
-
-    #[cfg(windows)]
-    #[inline]
-    fn poll_connect_completion(
-        &self,
-        cx: &mut Context<'_>,
-        addr: *const SOCKADDR,
-        addrlen: i32,
-    ) -> Poll<Result<(), io::Error>> {
-        completion_result_to_poll(self.submit_completion(
-            ConnectOp::new_completion(self, addr, addrlen),
-            cx.waker().clone(),
-        ))
-    }
-
-    #[cfg(unix)]
-    #[inline]
-    fn poll_connect(
-        &self,
-        cx: &mut Context<'_>,
-        addr: *const libc::sockaddr,
-        addrlen: libc::socklen_t,
-    ) -> Poll<Result<(), io::Error>> {
-        if self.uses_completion() {
-            self.poll_connect_completion(cx, addr, addrlen)
-        } else {
-            self.poll_connect_poll(cx)
-        }
-    }
-
-    #[cfg(windows)]
-    #[inline]
-    fn poll_connect(
-        &self,
-        cx: &mut Context<'_>,
-        addr: *const SOCKADDR,
-        addrlen: i32,
-    ) -> Poll<Result<(), io::Error>> {
-        if self.uses_completion() {
-            self.poll_connect_completion(cx, addr, addrlen)
-        } else {
-            self.poll_connect_poll(cx)
+            addr: (addr, addrlen),
+            completion_token: None,
         }
     }
 }
@@ -171,15 +48,14 @@ impl ConnectIo for InnerRawHandle {
 impl Op for ConnectOp<'_> {
     type Output = ();
 
-    #[inline]
-    fn token(&self) -> Token {
-        self.handle.token()
-    }
-
     // TODO: support Windows
     #[cfg(unix)]
     #[inline]
-    fn execute(&mut self) -> Result<Self::Output, io::Error> {
+    fn poll_poll(
+        &mut self,
+        cx: &mut Context<'_>,
+        driver: &AnyDriver,
+    ) -> Poll<io::Result<Self::Output>> {
         let mut socket_error: libc::c_int = 0;
         let mut socket_error_len = mem::size_of::<libc::c_int>() as libc::socklen_t;
         let getsockopt_result = unsafe {
@@ -192,7 +68,16 @@ impl Op for ConnectOp<'_> {
             )
         };
         if getsockopt_result == -1 {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock {
+                if let Err(err) =
+                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                {
+                    return Poll::Ready(Err(err));
+                }
+                return Poll::Pending;
+            }
+            return Poll::Ready(Err(error));
         }
 
         if socket_error != 0 {
@@ -200,12 +85,14 @@ impl Op for ConnectOp<'_> {
                 socket_error,
                 libc::EINPROGRESS | libc::EALREADY | libc::EWOULDBLOCK
             ) {
-                return Err(io::Error::new(
-                    ErrorKind::WouldBlock,
-                    "connect is in progress",
-                ));
+                if let Err(err) =
+                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                {
+                    return Poll::Ready(Err(err));
+                }
+                return Poll::Pending;
             }
-            return Err(io::Error::from_raw_os_error(socket_error));
+            return Poll::Ready(Err(io::Error::from_raw_os_error(socket_error)));
         }
 
         let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
@@ -227,21 +114,52 @@ impl Op for ConnectOp<'_> {
                     | Some(libc::EWOULDBLOCK)
                     | Some(libc::ENOTCONN)
             ) {
-                return Err(io::Error::new(
-                    ErrorKind::WouldBlock,
-                    "connect is in progress",
-                ));
+                if let Err(err) =
+                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                {
+                    return Poll::Ready(Err(err));
+                }
+                return Poll::Pending;
             }
 
-            return Err(err);
+            return Poll::Ready(Err(err));
         }
 
-        Ok(())
+        Poll::Ready(Ok(()))
     }
 
+    // TODO: support Windows
+    #[cfg(unix)]
     #[inline]
-    fn interest(&self) -> Interest {
-        Interest::WRITABLE
+    fn poll_completion(
+        &mut self,
+        cx: &mut Context<'_>,
+        driver: &AnyDriver,
+    ) -> Poll<io::Result<Self::Output>> {
+        let result = if let Some(completion_token) = self.completion_token {
+            // Get the completion result
+            match driver.get_completion_result(completion_token) {
+                Some(result) => result,
+                None => {
+                    // The completion is not ready yet
+                    return Poll::Pending;
+                }
+            }
+        } else {
+            // Submit the op
+            match driver.submit_completion(self, cx.waker().clone()) {
+                CompletionIoResult::Ok(result) => result,
+                CompletionIoResult::Retry(token) => {
+                    self.completion_token = Some(token);
+                    return Poll::Pending;
+                }
+                CompletionIoResult::SubmitErr(err) => return Poll::Ready(Err(err)),
+            }
+        };
+        if result < 0 {
+            return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
+        }
+        Poll::Ready(Ok(()))
     }
 
     #[cfg(target_os = "linux")]
@@ -249,28 +167,15 @@ impl Op for ConnectOp<'_> {
     fn build_completion_entry(
         &mut self,
         user_data: u64,
-    ) -> Result<(io_uring::squeue::Entry, Option<Box<dyn std::any::Any>>), io::Error> {
+    ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let (addr, addrlen) = self.completion_addr.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "missing socket address for completion-based connect",
-            )
-        })?;
+        let (addr, addrlen) = self.addr;
 
         let entry = opcode::Connect::new(types::Fd(self.handle.handle), addr, addrlen)
             .build()
             .user_data(user_data);
 
-        Ok((entry, None))
-    }
-
-    #[inline]
-    fn complete(&mut self, result: i32) -> Result<Self::Output, io::Error> {
-        if result < 0 {
-            return Err(io::Error::from_raw_os_error(-result));
-        }
-        Ok(())
+        Ok(entry)
     }
 }
