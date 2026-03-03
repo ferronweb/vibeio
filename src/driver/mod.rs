@@ -9,6 +9,7 @@ use std::{io, time::Duration};
 use ::mio::{Interest, Token};
 
 use crate::driver::mio::MioInterruptor;
+use crate::driver::mock::MockInterruptor;
 #[cfg(target_os = "linux")]
 use crate::driver::uring::{UringDriver, UringInterruptor};
 use crate::{
@@ -35,17 +36,9 @@ pub trait Interruptor {
     fn interrupt(&self);
 }
 
-/// No-op interruptor implementation.
-pub struct NoopInterruptor;
-
-impl Interruptor for NoopInterruptor {
-    #[inline]
-    fn interrupt(&self) {}
-}
-
 pub enum AnyInterruptor {
     Mio(MioInterruptor),
-    Mock(NoopInterruptor),
+    Mock(MockInterruptor),
     #[cfg(target_os = "linux")]
     IoUring(UringInterruptor),
 }

@@ -1,9 +1,20 @@
 use std::time::Duration;
 
-use crate::driver::{Driver, NoopInterruptor};
+use crate::driver::{Driver, Interruptor};
 use mio::{Interest, Token};
 
-pub struct MockDriver {}
+pub struct MockInterruptor {
+    thread: std::thread::Thread,
+}
+
+impl Interruptor for MockInterruptor {
+    #[inline]
+    fn interrupt(&self) {
+        self.thread.unpark();
+    }
+}
+
+pub struct MockDriver;
 
 impl MockDriver {
     #[inline]
@@ -13,16 +24,22 @@ impl MockDriver {
 }
 
 impl Driver for MockDriver {
-    type Interruptor = NoopInterruptor;
+    type Interruptor = MockInterruptor;
 
     #[inline]
     fn wait(&self, timeout: Option<Duration>) {
-        std::thread::sleep(timeout.unwrap_or(Duration::from_millis(10)));
+        if let Some(timeout) = timeout {
+            std::thread::park_timeout(timeout);
+        } else {
+            std::thread::park();
+        }
     }
 
     #[inline]
     fn get_interruptor(&self) -> Self::Interruptor {
-        NoopInterruptor
+        MockInterruptor {
+            thread: std::thread::current(),
+        }
     }
 
     #[inline]
