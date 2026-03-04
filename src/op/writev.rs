@@ -1,8 +1,10 @@
 use std::io::{self, IoSlice};
 use std::task::{Context, Poll};
 
+use futures_util::future::LocalBoxFuture;
 use mio::Interest;
 
+use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
@@ -32,6 +34,8 @@ pub struct WritevOp<'a, 'b> {
     completion_token: Option<usize>,
     #[cfg(target_os = "linux")]
     completion_system_iovecs: Option<Box<[libc::iovec]>>,
+    blocking: bool,
+    blocking_future: Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
 }
 
 impl<'a, 'b> WritevOp<'a, 'b> {
@@ -43,6 +47,21 @@ impl<'a, 'b> WritevOp<'a, 'b> {
             completion_token: None,
             #[cfg(target_os = "linux")]
             completion_system_iovecs: None,
+            blocking: false,
+            blocking_future: None,
+        }
+    }
+
+    #[inline]
+    pub fn new_blocking(inner: &'a InnerRawHandle, bufs: &'a [IoSlice<'b>]) -> Self {
+        Self {
+            handle: inner,
+            bufs,
+            completion_token: None,
+            #[cfg(target_os = "linux")]
+            completion_system_iovecs: None,
+            blocking: true,
+            blocking_future: None,
         }
     }
 }
@@ -58,15 +77,50 @@ impl Op for WritevOp<'_, '_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        // Build a temporary iovec array for the syscall.
-        let iovecs = iovec_to_system(self.bufs);
+        let written = if !self.blocking {
+            // Build a temporary iovec array for the syscall.
+            let iovecs = iovec_to_system(self.bufs);
 
-        let written = unsafe {
-            libc::writev(
-                self.handle.handle,
-                iovecs.as_ptr(),
-                iovecs.len() as libc::c_int,
-            )
+            unsafe {
+                libc::writev(
+                    self.handle.handle,
+                    iovecs.as_ptr(),
+                    iovecs.len() as libc::c_int,
+                )
+            }
+        } else {
+            use futures_util::FutureExt;
+            use std::task::ready;
+
+            let mut blocking_future = if let Some(blocking_future) = self.blocking_future.take() {
+                blocking_future
+            } else {
+                let bufs: &[IoSlice] = unsafe {
+                    std::mem::transmute::<&[IoSlice], &[IoSlice]>(self.bufs)
+                };
+                let handle = self.handle.handle;
+                Box::pin(crate::spawn_blocking(move || {
+                    // Build a temporary iovec array for the syscall.
+                    let iovecs = iovec_to_system(bufs);
+
+                    unsafe {
+                        libc::writev(
+                            handle,
+                            iovecs.as_ptr(),
+                            iovecs.len() as libc::c_int,
+                        )
+                    }
+                }))
+            };
+            match ready!(blocking_future.poll_unpin(cx)) {
+                Ok(written) => written,
+                Err(_) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        io::ErrorKind::Other,
+                        "can't spawn blocking task for I/O",
+                    )))
+                }
+            }
         };
 
         if written == -1 {

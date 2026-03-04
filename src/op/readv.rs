@@ -3,8 +3,10 @@ use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
+use futures_util::future::LocalBoxFuture;
 use mio::Interest;
 
+use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
@@ -32,6 +34,8 @@ pub struct ReadvOp<'a, 'b> {
     completion_token: Option<usize>,
     #[cfg(target_os = "linux")]
     completion_system_iovecs: Option<Box<[libc::iovec]>>,
+    blocking: bool,
+    blocking_future: Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
 }
 
 impl<'a, 'b> ReadvOp<'a, 'b> {
@@ -43,6 +47,21 @@ impl<'a, 'b> ReadvOp<'a, 'b> {
             completion_token: None,
             #[cfg(target_os = "linux")]
             completion_system_iovecs: None,
+            blocking: false,
+            blocking_future: None,
+        }
+    }
+
+    #[inline]
+    pub fn new_blocking(inner: &'a InnerRawHandle, bufs: &'a mut [IoSliceMut<'b>]) -> Self {
+        Self {
+            handle: inner,
+            bufs,
+            completion_token: None,
+            #[cfg(target_os = "linux")]
+            completion_system_iovecs: None,
+            blocking: true,
+            blocking_future: None,
         }
     }
 }
@@ -58,10 +77,35 @@ impl Op for ReadvOp<'_, '_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let mut iovecs = iovec_to_system(self.bufs);
+        let read = if !self.blocking {
+            let mut iovecs = iovec_to_system(self.bufs);
+            unsafe { libc::readv(self.handle.handle, iovecs.as_mut_ptr(), iovecs.len() as _) }
+        } else {
+            use futures_util::FutureExt;
+            use std::task::ready;
 
-        let read =
-            unsafe { libc::readv(self.handle.handle, iovecs.as_mut_ptr(), iovecs.len() as _) };
+            let mut blocking_future = if let Some(blocking_future) = self.blocking_future.take() {
+                blocking_future
+            } else {
+                let bufs: &mut [IoSliceMut] = unsafe {
+                    std::mem::transmute::<&mut [IoSliceMut], &mut [IoSliceMut]>(self.bufs)
+                };
+                let handle = self.handle.handle;
+                Box::pin(crate::spawn_blocking(move || {
+                    let mut iovecs = iovec_to_system(bufs);
+                    unsafe { libc::readv(handle, iovecs.as_mut_ptr(), iovecs.len() as _) }
+                }))
+            };
+            match ready!(blocking_future.poll_unpin(cx)) {
+                Ok(read) => read,
+                Err(_) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        io::ErrorKind::Other,
+                        "can't spawn blocking task for I/O",
+                    )))
+                }
+            }
+        };
 
         if read == -1 {
             let error = io::Error::last_os_error();

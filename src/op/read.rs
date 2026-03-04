@@ -1,8 +1,10 @@
 use std::io;
 use std::task::{Context, Poll};
 
+use futures_util::future::LocalBoxFuture;
 use mio::Interest;
 
+use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
@@ -12,6 +14,8 @@ pub struct ReadOp<'a> {
     handle: &'a InnerRawHandle,
     buf: &'a mut [u8],
     completion_token: Option<usize>,
+    blocking: bool,
+    blocking_future: Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
 }
 
 impl<'a> ReadOp<'a> {
@@ -21,6 +25,19 @@ impl<'a> ReadOp<'a> {
             handle,
             buf,
             completion_token: None,
+            blocking: false,
+            blocking_future: None,
+        }
+    }
+
+    #[inline]
+    pub fn new_blocking(inner: &'a InnerRawHandle, buf: &'a mut [u8]) -> Self {
+        Self {
+            handle: inner,
+            buf,
+            completion_token: None,
+            blocking: true,
+            blocking_future: None,
         }
     }
 }
@@ -36,12 +53,44 @@ impl Op for ReadOp<'_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let read = unsafe {
-            libc::read(
-                self.handle.handle,
-                self.buf.as_mut_ptr().cast::<libc::c_void>(),
-                self.buf.len(),
-            )
+        let read = if !self.blocking {
+            unsafe {
+                libc::read(
+                    self.handle.handle,
+                    self.buf.as_mut_ptr().cast::<libc::c_void>(),
+                    self.buf.len(),
+                )
+            }
+        } else {
+            use futures_util::FutureExt;
+            use std::task::ready;
+
+            let mut blocking_future = if let Some(blocking_future) = self.blocking_future.take() {
+                blocking_future
+            } else {
+                let buf: &mut [u8] = unsafe {
+                    std::mem::transmute::<&mut [u8], &mut [u8]>(self.buf)
+                };
+                let handle = self.handle.handle;
+                Box::pin(crate::spawn_blocking(move || {
+                    unsafe {
+                        libc::read(
+                            handle,
+                            buf.as_mut_ptr().cast::<libc::c_void>(),
+                            buf.len(),
+                        )
+                    }
+                }))
+            };
+            match ready!(blocking_future.poll_unpin(cx)) {
+                Ok(read) => read,
+                Err(_) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        io::ErrorKind::Other,
+                        "can't spawn blocking task for I/O",
+                    )))
+                }
+            }
         };
 
         if read == -1 {
