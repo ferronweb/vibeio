@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::ptr;
@@ -48,13 +47,18 @@ impl Interruptor for IocpInterruptor {
 struct Completion {
     waiter: Option<Waker>,
     completed: Option<i32>,
-    overlapped: Option<Box<OVERLAPPED>>,
+    overlapped: Option<Box<OverlappedCtx>>,
+}
+
+#[repr(C)]
+struct OverlappedCtx {
+    overlapped: OVERLAPPED,
+    token: usize,
 }
 
 struct DriverState {
     registrations: Slab<RegistrationMode>,
     completions: Slab<Completion>,
-    overlapped_to_completion: HashMap<usize, usize>,
 }
 
 pub struct IocpDriver {
@@ -77,7 +81,6 @@ impl IocpDriver {
             state: RefCell::new(DriverState {
                 registrations: Slab::with_capacity(1024),
                 completions: Slab::with_capacity(1024),
-                overlapped_to_completion: HashMap::with_capacity(1024),
             }),
         })
     }
@@ -158,16 +161,15 @@ impl IocpDriver {
         };
 
         let mut state = self.state.borrow_mut();
-        let completion_token = state
-            .overlapped_to_completion
-            .remove(&(overlapped as usize));
-        if let Some(completion_token) = completion_token {
-            if let Some(completion) = state.completions.get_mut(completion_token) {
-                completion.completed = Some(completion_result);
-                completion.overlapped = None;
-                if let Some(waiter) = completion.waiter.take() {
-                    waiter.wake();
-                }
+        // SAFETY: every OVERLAPPED pointer submitted by this driver points to the first field
+        // of OverlappedCtx (repr(C), first field), and stays alive in Completion::overlapped
+        // until consumed here.
+        let completion_token = unsafe { (*overlapped.cast::<OverlappedCtx>()).token };
+        if let Some(completion) = state.completions.get_mut(completion_token) {
+            completion.completed = Some(completion_result);
+            completion.overlapped = None;
+            if let Some(waiter) = completion.waiter.take() {
+                waiter.wake();
             }
         }
 
@@ -295,25 +297,24 @@ impl Driver for IocpDriver {
     {
         let (completion_token, overlapped_ptr) = {
             let mut state = self.state.borrow_mut();
-            let mut overlapped = Box::new(unsafe { std::mem::zeroed::<OVERLAPPED>() });
-            let overlapped_ptr: *mut OVERLAPPED = overlapped.as_mut();
-            let completion_token = state.completions.insert(Completion {
+            let vacant_completion = state.completions.vacant_entry();
+            let completion_token = vacant_completion.key();
+
+            let mut overlapped = Box::new(unsafe { std::mem::zeroed::<OverlappedCtx>() });
+            overlapped.token = completion_token;
+            let overlapped_ptr: *mut OVERLAPPED = &mut overlapped.overlapped;
+
+            vacant_completion.insert(Completion {
                 waiter: Some(waker),
                 completed: None,
                 overlapped: Some(overlapped),
             });
-            state
-                .overlapped_to_completion
-                .insert(overlapped_ptr as usize, completion_token);
 
             (completion_token, overlapped_ptr)
         };
 
         if let Err(err) = op.submit_windows(overlapped_ptr) {
             let mut state = self.state.borrow_mut();
-            state
-                .overlapped_to_completion
-                .remove(&(overlapped_ptr as usize));
             let _ = state.completions.try_remove(completion_token);
             return CompletionIoResult::SubmitErr(err);
         }
