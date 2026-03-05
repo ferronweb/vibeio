@@ -53,10 +53,10 @@ impl TcpListener {
         #[cfg(windows)]
         let crate::fd_inner::RawOsHandle::Socket(raw) = raw
         else {
-            return Poll::Ready(Err(io::Error::new(
+            return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid raw handle",
-            )));
+            ));
         };
         #[cfg(windows)]
         let std_stream = unsafe { std::net::TcpStream::from_raw_socket(raw) };
