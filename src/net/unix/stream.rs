@@ -6,11 +6,15 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{SocketAddr, UnixStream as StdUnixStream};
 use std::path::Path;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use mio::Interest;
+use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
 use crate::op::{ConnectOp, ReadOp, ReadvOp, WriteOp, WritevOp};
 use crate::{
+    driver::RegistrationMode,
     fd_inner::InnerRawHandle,
     io::{AsyncRead, AsyncWrite},
 };
@@ -83,6 +87,11 @@ pub struct UnixStream {
     handle: ManuallyDrop<InnerRawHandle>,
 }
 
+/// A poll-only variant that always uses readiness-based operations.
+pub struct PollUnixStream {
+    stream: UnixStream,
+}
+
 impl UnixStream {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_socket(path.as_ref())?;
@@ -113,12 +122,181 @@ impl UnixStream {
 
     #[inline]
     pub fn from_std(inner: StdUnixStream) -> Result<Self, io::Error> {
+        Self::from_std_with_mode(inner, RegistrationMode::Completion)
+    }
+
+    #[inline]
+    pub(crate) fn from_std_with_mode(
+        inner: StdUnixStream,
+        mode: RegistrationMode,
+    ) -> Result<Self, io::Error> {
+        let handle = ManuallyDrop::new(InnerRawHandle::new_with_mode(
+            inner.as_raw_fd(),
+            Interest::READABLE | Interest::WRITABLE,
+            mode,
+        )?);
+        inner.set_nonblocking(!handle.uses_completion())?;
+        Ok(Self { inner, handle })
+    }
+
+    #[inline]
+    pub fn into_poll(self) -> Result<PollUnixStream, io::Error> {
+        let mut stream = self;
+        stream.handle.rebind_mode(RegistrationMode::Poll)?;
+        stream
+            .inner
+            .set_nonblocking(!stream.handle.uses_completion())?;
+        Ok(PollUnixStream { stream })
+    }
+}
+
+impl PollUnixStream {
+    pub async fn connect(path: impl AsRef<Path>) -> Result<Self, io::Error> {
+        let (inner, raw_addr, raw_addr_len) = new_socket(path.as_ref())?;
+        let stream = Self::from_std(inner)?;
+
+        let raw_addr_ptr = (&raw_addr as *const libc::sockaddr_un).cast::<libc::sockaddr>();
+        let handle = &stream.stream.handle;
+        let mut op = ConnectOp::new(handle, raw_addr_ptr, raw_addr_len);
+        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await?;
+
+        Ok(stream)
+    }
+
+    #[inline]
+    pub fn from_std(inner: StdUnixStream) -> Result<Self, io::Error> {
+        Ok(Self {
+            stream: UnixStream::from_std_with_mode(inner, RegistrationMode::Poll)?,
+        })
+    }
+
+    #[inline]
+    pub fn into_adaptive(self) -> UnixStream {
+        self.stream
+    }
+
+    #[inline]
+    pub fn into_completion(self) -> Result<UnixStream, io::Error> {
+        let mut stream = self.stream;
+        stream.handle.rebind_mode(RegistrationMode::Completion)?;
+        stream
+            .inner
+            .set_nonblocking(!stream.handle.uses_completion())?;
+        Ok(stream)
+    }
+
+    #[inline]
+    pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
+        self.stream.local_addr()
+    }
+
+    #[inline]
+    pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
+        self.stream.peer_addr()
+    }
+
+    #[inline]
+    pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
+        self.stream.shutdown(how)
+    }
+}
+
+impl AsRawFd for PollUnixStream {
+    #[inline]
+    fn as_raw_fd(&self) -> RawFd {
+        self.stream.inner.as_raw_fd()
+    }
+}
+
+impl IntoRawFd for PollUnixStream {
+    #[inline]
+    fn into_raw_fd(self) -> RawFd {
+        self.stream.into_raw_fd()
+    }
+}
+
+impl TokioAsyncRead for PollUnixStream {
+    #[inline]
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
+        let this = self.get_mut();
+        // Equivalent to .assume_init_mut() in Rust 1.93.0+
+        let unfilled = unsafe { &mut *(buf.unfilled_mut() as *mut [MaybeUninit<u8>] as *mut [u8]) };
+        let mut op = ReadOp::new(&this.stream.handle, unfilled);
+        match this.stream.handle.poll_op_poll(cx, &mut op) {
+            Poll::Ready(Ok(read)) => {
+                unsafe {
+                    buf.assume_init(read);
+                }
+                buf.advance(read);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl TokioAsyncWrite for PollUnixStream {
+    #[inline]
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        let this = self.get_mut();
+        let mut op = WriteOp::new(&this.stream.handle, buf);
+        this.stream.handle.poll_op_poll(cx, &mut op)
+    }
+
+    #[inline]
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
+        if bufs.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        let this = self.get_mut();
+        let mut op = WritevOp::new(&this.stream.handle, bufs);
+        this.stream.handle.poll_op_poll(cx, &mut op)
+    }
+
+    #[inline]
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    #[inline]
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(self.get_mut().shutdown(Shutdown::Write))
+    }
+}
+
+impl UnixStream {
+    #[inline]
+    pub fn from_std_poll(inner: StdUnixStream) -> Result<PollUnixStream, io::Error> {
         let handle = ManuallyDrop::new(InnerRawHandle::new(
             inner.as_raw_fd(),
             Interest::READABLE | Interest::WRITABLE,
         )?);
         inner.set_nonblocking(!handle.uses_completion())?;
-        Ok(Self { inner, handle })
+        Ok(PollUnixStream {
+            stream: Self { inner, handle },
+        })
     }
 }
 
