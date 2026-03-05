@@ -1,11 +1,9 @@
 use std::io;
 use std::task::{Context, Poll};
 
-use futures_util::future::LocalBoxFuture;
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{ERROR_IO_PENDING, HANDLE},
     Networking::WinSock::{self, MSG_PEEK, SOCKET, WSABUF, WSA_IO_PENDING},
     System::IO::OVERLAPPED,
 };
@@ -14,9 +12,48 @@ use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::{InnerRawHandle, RawOsHandle};
 use crate::op::io_util::poll_result_or_wait;
-#[cfg(windows)]
-use crate::op::io_util::socket_read;
 use crate::op::Op;
+
+#[cfg(windows)]
+#[inline]
+fn socket_recv(socket: SOCKET, buf: &mut [u8], peek: bool) -> io::Result<usize> {
+    use windows_sys::Win32::Networking::WinSock::{
+        self as WinSock, MSG_PEEK, SOCKET_ERROR, WSABUF,
+    };
+
+    let len = u32::try_from(buf.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "read buffer is too large for Windows socket I/O",
+        )
+    })?;
+
+    let mut wsabuf = WSABUF {
+        len,
+        buf: buf.as_mut_ptr().cast(),
+    };
+    let mut bytes: u32 = 0;
+    let mut flags: u32 = if peek { MSG_PEEK as u32 } else { 0 };
+
+    let recv_result = unsafe {
+        WinSock::WSARecv(
+            socket,
+            &mut wsabuf,
+            1,
+            &mut bytes,
+            &mut flags,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if recv_result == SOCKET_ERROR {
+        return Err(io::Error::from_raw_os_error(unsafe {
+            WinSock::WSAGetLastError()
+        }));
+    }
+
+    Ok(bytes as usize)
+}
 
 pub struct RecvOp<'a> {
     handle: &'a InnerRawHandle,
@@ -81,7 +118,7 @@ impl Op for RecvOp<'_> {
 
         #[cfg(windows)]
         let result = match self.handle.handle {
-            RawOsHandle::Socket(socket) => socket_read(socket as SOCKET, self.buf),
+            RawOsHandle::Socket(socket) => socket_recv(socket as SOCKET, self.buf, self.peek),
             RawOsHandle::Handle(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "poll-based recv currently supports sockets only on Windows",

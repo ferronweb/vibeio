@@ -18,9 +18,46 @@ use crate::fd_inner::{InnerRawHandle, RawOsHandle};
 #[cfg(unix)]
 use crate::op::io_util::poll_blocking_result;
 use crate::op::io_util::poll_result_or_wait;
-#[cfg(windows)]
-use crate::op::io_util::socket_read;
 use crate::op::Op;
+
+#[cfg(windows)]
+#[inline]
+fn socket_read(socket: SOCKET, buf: &mut [u8]) -> io::Result<usize> {
+    use windows_sys::Win32::Networking::WinSock::{self as WinSock, SOCKET_ERROR, WSABUF};
+
+    let len = u32::try_from(buf.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "read buffer is too large for Windows socket I/O",
+        )
+    })?;
+
+    let mut wsabuf = WSABUF {
+        len,
+        buf: buf.as_mut_ptr().cast(),
+    };
+    let mut bytes: u32 = 0;
+    let mut flags: u32 = 0;
+
+    let recv_result = unsafe {
+        WinSock::WSARecv(
+            socket,
+            &mut wsabuf,
+            1,
+            &mut bytes,
+            &mut flags,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if recv_result == SOCKET_ERROR {
+        return Err(io::Error::from_raw_os_error(unsafe {
+            WinSock::WSAGetLastError()
+        }));
+    }
+
+    Ok(bytes as usize)
+}
 
 pub struct ReadOp<'a> {
     handle: &'a InnerRawHandle,

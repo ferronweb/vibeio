@@ -18,9 +18,45 @@ use crate::fd_inner::{InnerRawHandle, RawOsHandle};
 #[cfg(unix)]
 use crate::op::io_util::poll_blocking_result;
 use crate::op::io_util::poll_result_or_wait;
-#[cfg(windows)]
-use crate::op::io_util::socket_write;
 use crate::op::Op;
+
+#[cfg(windows)]
+#[inline]
+fn socket_write(socket: SOCKET, buf: &[u8]) -> io::Result<usize> {
+    use windows_sys::Win32::Networking::WinSock::{self as WinSock, SOCKET_ERROR, WSABUF};
+
+    let len = u32::try_from(buf.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "write buffer is too large for Windows socket I/O",
+        )
+    })?;
+
+    let mut wsabuf = WSABUF {
+        len,
+        buf: buf.as_ptr().cast_mut().cast(),
+    };
+    let mut bytes: u32 = 0;
+
+    let send_result = unsafe {
+        WinSock::WSASend(
+            socket,
+            &mut wsabuf,
+            1,
+            &mut bytes,
+            0,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if send_result == SOCKET_ERROR {
+        return Err(io::Error::from_raw_os_error(unsafe {
+            WinSock::WSAGetLastError()
+        }));
+    }
+
+    Ok(bytes as usize)
+}
 
 pub struct WriteOp<'a> {
     handle: &'a InnerRawHandle,

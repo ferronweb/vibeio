@@ -18,8 +18,6 @@ use crate::fd_inner::{InnerRawHandle, RawOsHandle};
 #[cfg(unix)]
 use crate::op::io_util::poll_blocking_result;
 use crate::op::io_util::poll_result_or_wait;
-#[cfg(windows)]
-use crate::op::io_util::socket_write_vectored;
 use crate::op::Op;
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
@@ -38,6 +36,46 @@ fn iovec_to_system(bufs: &[IoSlice<'_>]) -> Box<[libc::iovec]> {
     }
     // SAFETY: The boxed slice would have all values initialized after interating over original array
     unsafe { iovecs_maybeuninit.assume_init() }
+}
+
+#[cfg(windows)]
+#[inline]
+fn socket_write_vectored(socket: SOCKET, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+    use windows_sys::Win32::Networking::WinSock::{self as WinSock, SOCKET_ERROR, WSABUF};
+
+    let mut wsabufs = Vec::with_capacity(bufs.len());
+    for buf in bufs.iter() {
+        let len = u32::try_from(buf.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "writev buffer is too large for Windows socket I/O",
+            )
+        })?;
+        wsabufs.push(WSABUF {
+            len,
+            buf: buf.as_ptr().cast_mut().cast(),
+        });
+    }
+
+    let mut bytes: u32 = 0;
+    let send_result = unsafe {
+        WinSock::WSASend(
+            socket,
+            wsabufs.as_mut_ptr(),
+            wsabufs.len() as u32,
+            &mut bytes,
+            0,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if send_result == SOCKET_ERROR {
+        return Err(io::Error::from_raw_os_error(unsafe {
+            WinSock::WSAGetLastError()
+        }));
+    }
+
+    Ok(bytes as usize)
 }
 
 pub struct WritevOp<'a, 'b> {
