@@ -103,7 +103,7 @@ impl Task {
         if task
             .waiting
             .upgrade()
-            .map_or(false, |waiting| waiting.load(Ordering::Relaxed))
+            .map_or(false, |waiting| waiting.load(Ordering::Acquire))
         {
             // Interrupt the driver if the waker is not on the same thread as the runtime
             task.interruptor.interrupt();

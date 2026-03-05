@@ -360,23 +360,14 @@ impl Runtime {
             });
 
             if batch.is_empty() {
-                // Double-check pattern: set waiting flag before checking queue again
-                // This prevents a race condition where a waker enqueues a task between
-                // our drain and the wait, then checks waiting before we set it to true.
-                inner.waiting.store(true, Ordering::Relaxed);
-                // Fast path wouldn't be possible, since it would be executed for wakers
-                // that are on the same thread as the executor, and we already hold the lock.
-                inner.drain_ready(&mut batch);
+                inner.waiting.store(true, Ordering::Release);
 
-                if batch.is_empty() {
-                    // Queue is still empty after setting waiting flag, safe to wait
-                    #[cfg(feature = "time")]
-                    inner.driver.wait(deadline);
-                    #[cfg(not(feature = "time"))]
-                    inner.driver.wait(None);
-                }
+                #[cfg(feature = "time")]
+                inner.driver.wait(deadline);
+                #[cfg(not(feature = "time"))]
+                inner.driver.wait(None);
 
-                inner.waiting.store(false, Ordering::Relaxed);
+                inner.waiting.store(false, Ordering::Release);
                 continue;
             }
 
