@@ -6,7 +6,7 @@ use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{ERROR_IO_PENDING, HANDLE},
-    Networking::WinSock::{self, SOCKET, WSABUF, WSA_IO_PENDING},
+    Networking::WinSock::{self, MSG_PEEK, SOCKET, WSABUF, WSA_IO_PENDING},
     System::IO::OVERLAPPED,
 };
 
@@ -152,7 +152,7 @@ impl Op for RecvOp<'_> {
         wsabuf.len = read_len;
         wsabuf.buf = self.buf.as_mut_ptr().cast();
 
-        let mut flags: u32 = if self.peek { MSG_PEEK } else { 0 };
+        let mut flags: u32 = if self.peek { MSG_PEEK as u32 } else { 0 };
         let recv_result = unsafe {
             WinSock::WSARecv(
                 socket as SOCKET,

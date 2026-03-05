@@ -133,7 +133,7 @@ pub(crate) fn socket_recv(
         buf: buf.as_mut_ptr().cast(),
     };
     let mut bytes: u32 = 0;
-    let mut flags: u32 = if peek { MSG_PEEK } else { 0 };
+    let mut flags: u32 = if peek { MSG_PEEK as u32 } else { 0 };
 
     let recv_result = unsafe {
         WinSock::WSARecv(
