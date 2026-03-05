@@ -347,7 +347,12 @@ impl Runtime {
                 if batch.is_empty() {
                     // Spin the timing wheel
                     let deadline = timer.spin_and_get_deadline();
-                    inner.drain_ready(&mut batch);
+                    if let Some(next_task) = inner.take_next_task() {
+                        // Fast path: if there's a task ready, run it immediately
+                        batch.push(next_task);
+                    } else {
+                        inner.drain_ready(&mut batch);
+                    }
                     deadline
                 } else {
                     None
@@ -359,6 +364,8 @@ impl Runtime {
                 // This prevents a race condition where a waker enqueues a task between
                 // our drain and the wait, then checks waiting before we set it to true.
                 inner.waiting.store(true, Ordering::Relaxed);
+                // Fast path wouldn't be possible, since it would be executed for wakers
+                // that are on the same thread as the executor, and we already hold the lock.
                 inner.drain_ready(&mut batch);
 
                 if batch.is_empty() {
