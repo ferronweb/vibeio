@@ -19,7 +19,9 @@ use windows_sys::Win32::System::IO::OVERLAPPED;
 
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
-use crate::fd_inner::{InnerRawHandle, RawOsHandle};
+use crate::fd_inner::InnerRawHandle;
+#[cfg(windows)]
+use crate::fd_inner::RawOsHandle;
 use crate::op::Op;
 
 #[cfg(unix)]

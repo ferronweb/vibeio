@@ -10,7 +10,9 @@ use windows_sys::Win32::{
 
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
-use crate::fd_inner::{InnerRawHandle, RawOsHandle};
+use crate::fd_inner::InnerRawHandle;
+#[cfg(windows)]
+use crate::fd_inner::RawOsHandle;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
 

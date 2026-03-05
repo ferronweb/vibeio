@@ -17,7 +17,9 @@ use windows_sys::Win32::{
 use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
-use crate::fd_inner::{InnerRawHandle, RawOsHandle};
+use crate::fd_inner::InnerRawHandle;
+#[cfg(windows)]
+use crate::fd_inner::RawOsHandle;
 #[cfg(unix)]
 use crate::op::io_util::poll_blocking_result;
 use crate::op::io_util::poll_result_or_wait;
