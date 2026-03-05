@@ -176,6 +176,46 @@ impl File {
         Ok(())
     }
 
+    #[inline]
+    pub async fn sync_all(&self) -> io::Result<()> {
+        if let Some(handle) = self.completion_handle() {
+            #[cfg(target_os = "linux")]
+            {
+                let mut op = crate::op::FsyncOp::new(handle, false);
+                poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = handle;
+                sync_all_in_blocking_pool(&self.inner).await
+            }
+        } else if current_driver().is_some() {
+            sync_all_in_blocking_pool(&self.inner).await
+        } else {
+            sync_all_blocking(&self.inner)
+        }
+    }
+
+    #[inline]
+    pub async fn sync_data(&self) -> io::Result<()> {
+        if let Some(handle) = self.completion_handle() {
+            #[cfg(target_os = "linux")]
+            {
+                let mut op = crate::op::FsyncOp::new(handle, true);
+                poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = handle;
+                sync_data_in_blocking_pool(&self.inner).await
+            }
+        } else if current_driver().is_some() {
+            sync_data_in_blocking_pool(&self.inner).await
+        } else {
+            sync_data_blocking(&self.inner)
+        }
+    }
+
     // TODO: metadata-related methods (`metadata`, `set_permissions`, timestamps, etc.).
 }
 
@@ -205,6 +245,16 @@ fn write_at_blocking(file: &std::fs::File, buf: &[u8], offset: u64) -> io::Resul
 fn write_at_blocking(file: &std::fs::File, buf: &[u8], offset: u64) -> io::Result<usize> {
     use std::os::windows::fs::FileExt;
     file.seek_write(buf, offset)
+}
+
+#[inline]
+fn sync_all_blocking(file: &std::fs::File) -> io::Result<()> {
+    file.sync_all()
+}
+
+#[inline]
+fn sync_data_blocking(file: &std::fs::File) -> io::Result<()> {
+    file.sync_data()
 }
 
 #[inline]
@@ -243,6 +293,22 @@ async fn write_at_in_blocking_pool(
         .map_err(|_| blocking_pool_io_error())?
 }
 
+#[cfg(unix)]
+async fn sync_all_in_blocking_pool(file: &std::fs::File) -> io::Result<()> {
+    let file = file.try_clone()?;
+    crate::spawn_blocking(move || sync_all_blocking(&file))
+        .await
+        .map_err(|_| blocking_pool_io_error())?
+}
+
+#[cfg(unix)]
+async fn sync_data_in_blocking_pool(file: &std::fs::File) -> io::Result<()> {
+    let file = file.try_clone()?;
+    crate::spawn_blocking(move || sync_data_blocking(&file))
+        .await
+        .map_err(|_| blocking_pool_io_error())?
+}
+
 impl AsyncRead for File {
     #[inline]
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
@@ -262,7 +328,6 @@ impl AsyncWrite for File {
 
     #[inline]
     async fn flush(&mut self) -> Result<(), io::Error> {
-        // TODO: use fsync (Unix) or FlushFileBuffers (Windows)
         Ok(())
     }
 }

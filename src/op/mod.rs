@@ -2,6 +2,8 @@ mod accept;
 #[cfg(unix)]
 mod accept_unix;
 mod connect;
+#[cfg(target_os = "linux")]
+mod fsync;
 mod io_util;
 #[cfg(target_os = "linux")]
 mod open;
@@ -24,6 +26,8 @@ pub use accept::AcceptOp;
 #[cfg(unix)]
 pub use accept_unix::AcceptUnixOp;
 pub use connect::ConnectOp;
+#[cfg(target_os = "linux")]
+pub use fsync::FsyncOp;
 #[cfg(target_os = "linux")]
 pub use open::OpenOp;
 pub use read::ReadOp;
