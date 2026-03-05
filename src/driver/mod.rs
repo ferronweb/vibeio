@@ -1,3 +1,5 @@
+#[cfg(windows)]
+mod iocp;
 #[cfg(unix)]
 mod mio;
 mod mock;
@@ -9,6 +11,8 @@ use std::{io, time::Duration};
 
 use ::mio::{Interest, Token};
 
+#[cfg(windows)]
+use crate::driver::iocp::{IocpDriver, IocpInterruptor};
 #[cfg(unix)]
 use crate::driver::mio::{MioDriver, MioInterruptor};
 use crate::driver::mock::MockInterruptor;
@@ -53,6 +57,8 @@ pub trait Interruptor {
 
 pub enum AnyInterruptor {
     Mock(MockInterruptor),
+    #[cfg(windows)]
+    Iocp(IocpInterruptor),
     #[cfg(unix)]
     Mio(MioInterruptor),
     #[cfg(target_os = "linux")]
@@ -63,6 +69,8 @@ impl AnyInterruptor {
     pub(crate) fn interrupt(&self) {
         match self {
             AnyInterruptor::Mock(interruptor) => interruptor.interrupt(),
+            #[cfg(windows)]
+            AnyInterruptor::Iocp(interruptor) => interruptor.interrupt(),
             #[cfg(unix)]
             AnyInterruptor::Mio(interruptor) => interruptor.interrupt(),
             #[cfg(target_os = "linux")]
@@ -150,6 +158,8 @@ pub trait Driver {
 
 pub enum AnyDriver {
     Mock(MockDriver),
+    #[cfg(windows)]
+    Iocp(IocpDriver),
     #[cfg(unix)]
     Mio(MioDriver),
     #[cfg(target_os = "linux")]
@@ -166,6 +176,12 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn new_mock() -> Self {
         AnyDriver::Mock(MockDriver::new())
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    pub(crate) fn new_iocp() -> Result<Self, io::Error> {
+        Ok(AnyDriver::Iocp(IocpDriver::new()?))
     }
 
     #[cfg(target_os = "linux")]
@@ -190,7 +206,7 @@ impl AnyDriver {
         #[cfg(unix)]
         let driver = Self::new_mio()?;
         #[cfg(windows)]
-        let driver = Self::new_mock(); // TODO: add real IOCP driver for Windows
+        let driver = Self::new_iocp()?;
 
         Ok(driver)
     }
@@ -198,6 +214,8 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn flush(&self) {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.flush(),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.flush(),
             AnyDriver::Mock(driver) => driver.flush(),
@@ -209,6 +227,8 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn wait(&self, timeout: Option<Duration>) {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.wait(timeout),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.wait(timeout),
             AnyDriver::Mock(driver) => driver.wait(timeout),
@@ -224,6 +244,8 @@ impl AnyDriver {
         interest: Interest,
     ) -> Result<Token, std::io::Error> {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.register_handle(handle, interest),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.register_handle(handle, interest),
             AnyDriver::Mock(driver) => driver.register_handle(handle, interest),
@@ -240,6 +262,8 @@ impl AnyDriver {
         mode: RegistrationMode,
     ) -> Result<Token, io::Error> {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.register_handle_with_mode(handle, interest, mode),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.register_handle_with_mode(handle, interest, mode),
             AnyDriver::Mock(driver) => driver.register_handle_with_mode(handle, interest, mode),
@@ -255,6 +279,8 @@ impl AnyDriver {
         interest: Interest,
     ) -> Result<(), std::io::Error> {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.reregister_handle(handle, interest),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.reregister_handle(handle, interest),
             AnyDriver::Mock(driver) => driver.reregister_handle(handle, interest),
@@ -266,6 +292,8 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), std::io::Error> {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.deregister_handle(handle),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.deregister_handle(handle),
             AnyDriver::Mock(driver) => driver.deregister_handle(handle),
@@ -277,6 +305,8 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn supports_completion(&self) -> bool {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.supports_completion(),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.supports_completion(),
             AnyDriver::Mock(driver) => driver.supports_completion(),
@@ -291,6 +321,8 @@ impl AnyDriver {
         O: Op,
     {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.submit_completion(op, waker),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.submit_completion(op, waker),
             AnyDriver::Mock(driver) => driver.submit_completion(op, waker),
@@ -307,6 +339,8 @@ impl AnyDriver {
         interest: Interest,
     ) -> Result<(), io::Error> {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.submit_poll(handle, waker, interest),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.submit_poll(handle, waker, interest),
             AnyDriver::Mock(driver) => driver.submit_poll(handle, waker, interest),
@@ -318,6 +352,8 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn get_completion_result(&self, token: usize) -> Option<i32> {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.get_completion_result(token),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.get_completion_result(token),
             AnyDriver::Mock(driver) => driver.get_completion_result(token),
@@ -329,6 +365,8 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn set_completion_waker(&self, token: usize, waker: Waker) {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.set_completion_waker(token, waker),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => driver.set_completion_waker(token, waker),
             AnyDriver::Mock(driver) => driver.set_completion_waker(token, waker),
@@ -340,6 +378,8 @@ impl AnyDriver {
     #[inline]
     pub(crate) fn get_interruptor(&self) -> AnyInterruptor {
         match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => AnyInterruptor::Iocp(driver.get_interruptor()),
             #[cfg(unix)]
             AnyDriver::Mio(driver) => AnyInterruptor::Mio(driver.get_interruptor()),
             AnyDriver::Mock(driver) => AnyInterruptor::Mock(driver.get_interruptor()),
@@ -392,6 +432,18 @@ mod tests {
         interruptor.interrupt();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn test_iocp_driver_interrupt_basic() {
+        let driver = AnyDriver::new_iocp().expect("Failed to create IocpDriver");
+        let interruptor = driver.get_interruptor();
+
+        // Test that interrupt doesn't panic and can be called multiple times
+        interruptor.interrupt();
+        interruptor.interrupt();
+        interruptor.interrupt();
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_interrupt_mio() {
@@ -421,6 +473,30 @@ mod tests {
     fn test_interruptor_uring() {
         let runtime = crate::executor::Runtime::new(
             AnyDriver::new_uring().expect("Failed to create UringDriver"),
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let waker: Waker = rx.recv().unwrap();
+            drop(rx); // Drop the receiver before waking the task
+            waker.wake();
+        });
+
+        runtime.block_on(poll_fn(move |cx| {
+            if tx.send(cx.waker().clone()).is_ok() {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_interrupt_iocp() {
+        let runtime = crate::executor::Runtime::new(
+            AnyDriver::new_iocp().expect("Failed to create IocpDriver"),
         );
 
         let (tx, rx) = std::sync::mpsc::channel();

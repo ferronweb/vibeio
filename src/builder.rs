@@ -10,6 +10,9 @@ pub enum DriverKind {
     /// Uses the Mio driver for I/O operations (Unix only).
     #[cfg(unix)]
     Mio,
+    /// Uses the IOCP driver for completion-based I/O operations (Windows only).
+    #[cfg(windows)]
+    Iocp,
     /// Uses the mock driver for testing purposes.
     Mock,
     /// Uses the io_uring driver (Linux only).
@@ -27,6 +30,8 @@ impl DriverKind {
         match self {
             #[cfg(unix)]
             DriverKind::Mio => AnyDriver::new_mio(),
+            #[cfg(windows)]
+            DriverKind::Iocp => AnyDriver::new_iocp(),
             DriverKind::Mock => Ok(AnyDriver::new_mock()),
             #[cfg(target_os = "linux")]
             DriverKind::IoUring => AnyDriver::new_uring(),

@@ -2,18 +2,28 @@ use std::io;
 use std::task::{Context, Poll};
 
 use futures_util::future::LocalBoxFuture;
+#[cfg(unix)]
 use mio::Interest;
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{ERROR_IO_PENDING, HANDLE},
+    Networking::WinSock::{self, SOCKET, WSABUF, WSA_IO_PENDING},
+    Storage::FileSystem::ReadFile,
+    System::IO::OVERLAPPED,
+};
 
 use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
-use crate::fd_inner::InnerRawHandle;
+use crate::fd_inner::{InnerRawHandle, RawOsHandle};
 use crate::op::Op;
 
 pub struct ReadOp<'a> {
     handle: &'a InnerRawHandle,
     buf: &'a mut [u8],
     completion_token: Option<usize>,
+    #[cfg(windows)]
+    socket_buf: Option<WSABUF>,
     blocking: bool,
     blocking_future: Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
 }
@@ -25,6 +35,8 @@ impl<'a> ReadOp<'a> {
             handle,
             buf,
             completion_token: None,
+            #[cfg(windows)]
+            socket_buf: None,
             blocking: false,
             blocking_future: None,
         }
@@ -36,6 +48,8 @@ impl<'a> ReadOp<'a> {
             handle: inner,
             buf,
             completion_token: None,
+            #[cfg(windows)]
+            socket_buf: None,
             blocking: true,
             blocking_future: None,
         }
@@ -102,8 +116,7 @@ impl Op for ReadOp<'_> {
         Poll::Ready(Ok(read as usize))
     }
 
-    // TODO: support Windows
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[inline]
     fn poll_completion(
         &mut self,
@@ -138,6 +151,81 @@ impl Op for ReadOp<'_> {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
         Poll::Ready(Ok(result as usize))
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        match self.handle.handle {
+            RawOsHandle::Socket(socket) => {
+                let read_len = u32::try_from(self.buf.len()).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "read buffer is too large for Windows socket I/O",
+                    )
+                })?;
+
+                let wsabuf = self.socket_buf.get_or_insert(WSABUF {
+                    len: 0,
+                    buf: std::ptr::null_mut(),
+                });
+                wsabuf.len = read_len;
+                wsabuf.buf = self.buf.as_mut_ptr().cast();
+
+                let mut flags: u32 = 0;
+                let recv_result = unsafe {
+                    WinSock::WSARecv(
+                        socket as SOCKET,
+                        wsabuf as *mut WSABUF,
+                        1,
+                        std::ptr::null_mut(),
+                        &mut flags,
+                        overlapped,
+                        None,
+                    )
+                };
+
+                if recv_result == 0 {
+                    return Ok(());
+                }
+
+                let err = unsafe { WinSock::WSAGetLastError() };
+                if err == WSA_IO_PENDING {
+                    Ok(())
+                } else {
+                    Err(io::Error::from_raw_os_error(err))
+                }
+            }
+            RawOsHandle::Handle(handle) => {
+                let read_len = u32::try_from(self.buf.len()).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "read buffer is too large for Windows file I/O",
+                    )
+                })?;
+
+                let read_result = unsafe {
+                    ReadFile(
+                        handle as HANDLE,
+                        self.buf.as_mut_ptr().cast(),
+                        read_len,
+                        std::ptr::null_mut(),
+                        overlapped,
+                    )
+                };
+
+                if read_result != 0 {
+                    return Ok(());
+                }
+
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(ERROR_IO_PENDING as i32) {
+                    Ok(())
+                } else {
+                    Err(err)
+                }
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]

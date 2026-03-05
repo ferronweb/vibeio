@@ -1,17 +1,26 @@
+#[cfg(windows)]
+use std::ffi::c_void;
 use std::io;
+#[cfg(unix)]
 use std::mem;
+#[cfg(unix)]
 use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
+#[cfg(unix)]
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{
-    self, SOCKADDR, SOCKET, WSAEALREADY, WSAEINPROGRESS, WSAEWOULDBLOCK,
+    self as WinSock, AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKET, SOL_SOCKET,
+    SO_UPDATE_CONNECT_CONTEXT, WSAEADDRINUSE, WSAEALREADY, WSAEINPROGRESS, WSAEINVAL,
+    WSAEWOULDBLOCK, WSAID_CONNECTEX, WSA_IO_PENDING,
 };
+#[cfg(windows)]
+use windows_sys::Win32::System::IO::OVERLAPPED;
 
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
-use crate::fd_inner::InnerRawHandle;
+use crate::fd_inner::{InnerRawHandle, RawOsHandle};
 use crate::op::Op;
 
 #[cfg(unix)]
@@ -56,13 +65,119 @@ fn start_nonblocking_connect(
     Ok(())
 }
 
+#[cfg(windows)]
+fn ensure_connectex_bound(socket: SOCKET, addr: *const SOCKADDR) -> Result<(), io::Error> {
+    let family = unsafe { (*addr).sa_family as i32 };
+    let bind_result = match family {
+        x if x == AF_INET as i32 => {
+            let local = SOCKADDR_IN {
+                sin_family: AF_INET as u16,
+                ..Default::default()
+            };
+            unsafe {
+                WinSock::bind(
+                    socket,
+                    (&local as *const SOCKADDR_IN).cast::<SOCKADDR>(),
+                    std::mem::size_of::<SOCKADDR_IN>() as i32,
+                )
+            }
+        }
+        x if x == AF_INET6 as i32 => {
+            let local = SOCKADDR_IN6 {
+                sin6_family: AF_INET6 as u16,
+                ..Default::default()
+            };
+            unsafe {
+                WinSock::bind(
+                    socket,
+                    (&local as *const SOCKADDR_IN6).cast::<SOCKADDR>(),
+                    std::mem::size_of::<SOCKADDR_IN6>() as i32,
+                )
+            }
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported socket family for ConnectEx",
+            ))
+        }
+    };
+
+    if bind_result == WinSock::SOCKET_ERROR {
+        let err_code = unsafe { WinSock::WSAGetLastError() };
+        if !matches!(err_code, WSAEINVAL | WSAEADDRINUSE) {
+            return Err(io::Error::from_raw_os_error(err_code));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn load_connect_ex(socket: SOCKET) -> Result<WinSock::LPFN_CONNECTEX, io::Error> {
+    let mut bytes_returned: u32 = 0;
+    let mut connect_ex: WinSock::LPFN_CONNECTEX = None;
+    let mut guid = WSAID_CONNECTEX;
+
+    let ioctl_result = unsafe {
+        WinSock::WSAIoctl(
+            socket,
+            WinSock::SIO_GET_EXTENSION_FUNCTION_POINTER,
+            (&mut guid as *mut _) as *mut c_void,
+            std::mem::size_of_val(&guid) as u32,
+            (&mut connect_ex as *mut _) as *mut c_void,
+            std::mem::size_of_val(&connect_ex) as u32,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+
+    if ioctl_result == WinSock::SOCKET_ERROR {
+        let err_code = unsafe { WinSock::WSAGetLastError() };
+        return Err(io::Error::from_raw_os_error(err_code));
+    }
+
+    if connect_ex.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "ConnectEx extension function is unavailable",
+        ));
+    }
+
+    Ok(connect_ex)
+}
+
+#[cfg(windows)]
+fn set_connect_context(socket: SOCKET) -> Result<(), io::Error> {
+    let result = unsafe {
+        WinSock::setsockopt(
+            socket,
+            SOL_SOCKET as i32,
+            SO_UPDATE_CONNECT_CONTEXT as i32,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if result == WinSock::SOCKET_ERROR {
+        let err_code = unsafe { WinSock::WSAGetLastError() };
+        return Err(io::Error::from_raw_os_error(err_code));
+    }
+    Ok(())
+}
+
 pub struct ConnectOp<'a> {
     handle: &'a InnerRawHandle,
     #[cfg(unix)]
     addr: (*const libc::sockaddr, libc::socklen_t),
     #[cfg(windows)]
     addr: (*const SOCKADDR, i32),
+    #[cfg(windows)]
+    connect_ex: Option<WinSock::LPFN_CONNECTEX>,
+    #[cfg(windows)]
+    completion_bound: bool,
     completion_token: Option<usize>,
+    #[cfg(unix)]
     poll_connect_started: bool,
 }
 
@@ -78,6 +193,10 @@ impl<'a> ConnectOp<'a> {
             handle,
             addr: (addr, addrlen),
             completion_token: None,
+            #[cfg(windows)]
+            connect_ex: None,
+            #[cfg(windows)]
+            completion_bound: false,
             poll_connect_started: false,
         }
     }
@@ -89,6 +208,9 @@ impl<'a> ConnectOp<'a> {
             handle,
             addr: (addr, addrlen),
             completion_token: None,
+            connect_ex: None,
+            completion_bound: false,
+            #[cfg(unix)]
             poll_connect_started: false,
         }
     }
@@ -197,8 +319,7 @@ impl Op for ConnectOp<'_> {
         Poll::Ready(Ok(()))
     }
 
-    // TODO: support Windows
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[inline]
     fn poll_completion(
         &mut self,
@@ -232,7 +353,78 @@ impl Op for ConnectOp<'_> {
         if result < 0 {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
+
+        #[cfg(windows)]
+        {
+            let RawOsHandle::Socket(socket) = self.handle.handle else {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "ConnectEx can be used only with socket handles",
+                )));
+            };
+
+            if let Err(err) = set_connect_context(socket as SOCKET) {
+                return Poll::Ready(Err(err));
+            }
+        }
+
         Poll::Ready(Ok(()))
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        let RawOsHandle::Socket(socket) = self.handle.handle else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ConnectEx can be used only with socket handles",
+            ));
+        };
+
+        let socket = socket as SOCKET;
+
+        if !self.completion_bound {
+            ensure_connectex_bound(socket, self.addr.0)?;
+            self.completion_bound = true;
+        }
+
+        let connect_ex = if let Some(connect_ex) = self.connect_ex {
+            connect_ex
+        } else {
+            let connect_ex = load_connect_ex(socket)?;
+            self.connect_ex = Some(connect_ex);
+            connect_ex
+        };
+
+        let Some(connect_ex_fn) = connect_ex else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "ConnectEx extension function is unavailable",
+            ));
+        };
+
+        let connect_result = unsafe {
+            connect_ex_fn(
+                socket,
+                self.addr.0,
+                self.addr.1,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                overlapped,
+            )
+        };
+
+        if connect_result != 0 {
+            return Ok(());
+        }
+
+        let err = unsafe { WinSock::WSAGetLastError() };
+        if err == WSA_IO_PENDING {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(err))
+        }
     }
 
     #[cfg(target_os = "linux")]

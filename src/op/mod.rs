@@ -71,6 +71,19 @@ pub trait Op {
             "operation does not support completion-based submission",
         ))
     }
+
+    /// Submits a Windows overlapped I/O operation for this operation.
+    #[cfg(windows)]
+    #[inline]
+    fn submit_windows(
+        &mut self,
+        _overlapped: *mut windows_sys::Win32::System::IO::OVERLAPPED,
+    ) -> Result<(), io::Error> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "operation does not support completion-based submission",
+        ))
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
