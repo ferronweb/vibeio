@@ -6,6 +6,9 @@ mod io_util;
 mod read;
 mod readv;
 mod recv;
+mod recvfrom;
+mod send;
+mod sendto;
 mod write;
 mod writev;
 
@@ -20,6 +23,9 @@ pub use connect::ConnectOp;
 pub use read::ReadOp;
 pub use readv::ReadvOp;
 pub use recv::RecvOp;
+pub use recvfrom::RecvfromOp;
+pub use send::SendOp;
+pub use sendto::SendtoOp;
 pub use write::WriteOp;
 pub use writev::WritevOp;
 
