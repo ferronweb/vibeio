@@ -5,7 +5,6 @@ use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
 use futures_util::future::LocalBoxFuture;
-#[cfg(unix)]
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -19,6 +18,11 @@ use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::{InnerRawHandle, RawOsHandle};
+#[cfg(unix)]
+use crate::op::io_util::poll_blocking_result;
+use crate::op::io_util::poll_result_or_wait;
+#[cfg(windows)]
+use crate::op::io_util::socket_read_vectored;
 use crate::op::Op;
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
@@ -90,58 +94,70 @@ impl<'a, 'b> ReadvOp<'a, 'b> {
 impl Op for ReadvOp<'_, '_> {
     type Output = usize;
 
-    // TODO: support Windows
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[inline]
     fn poll_poll(
         &mut self,
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let read = if !self.blocking {
-            let mut iovecs = iovec_to_system(self.bufs);
-            unsafe { libc::readv(self.handle.handle, iovecs.as_mut_ptr(), iovecs.len() as _) }
-        } else {
-            use futures_util::FutureExt;
-            use std::task::ready;
-
-            let mut blocking_future = if let Some(blocking_future) = self.blocking_future.take() {
-                blocking_future
-            } else {
-                let bufs: &mut [IoSliceMut] = unsafe {
-                    std::mem::transmute::<&mut [IoSliceMut], &mut [IoSliceMut]>(self.bufs)
+        if self.blocking {
+            #[cfg(unix)]
+            {
+                let read = match poll_blocking_result(&mut self.blocking_future, cx, || {
+                    let bufs: &mut [IoSliceMut] = unsafe {
+                        std::mem::transmute::<&mut [IoSliceMut], &mut [IoSliceMut]>(self.bufs)
+                    };
+                    let handle = self.handle.handle;
+                    Box::pin(crate::spawn_blocking(move || {
+                        let mut iovecs = iovec_to_system(bufs);
+                        unsafe { libc::readv(handle, iovecs.as_mut_ptr(), iovecs.len() as _) }
+                    }))
+                }) {
+                    Poll::Ready(Ok(read)) => read,
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
                 };
-                let handle = self.handle.handle;
-                Box::pin(crate::spawn_blocking(move || {
-                    let mut iovecs = iovec_to_system(bufs);
-                    unsafe { libc::readv(handle, iovecs.as_mut_ptr(), iovecs.len() as _) }
-                }))
-            };
-            match ready!(blocking_future.poll_unpin(cx)) {
-                Ok(read) => read,
-                Err(_) => {
-                    return Poll::Ready(Err(std::io::Error::new(
-                        io::ErrorKind::Other,
-                        "can't spawn blocking task for I/O",
-                    )))
-                }
+
+                let result = if read == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(read as usize)
+                };
+                return poll_result_or_wait(result, self.handle, cx, driver, Interest::READABLE);
+            }
+
+            #[cfg(windows)]
+            {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "blocking poll-based readv is unsupported on Windows",
+                )));
+            }
+        }
+
+        #[cfg(unix)]
+        let result = {
+            let mut iovecs = iovec_to_system(self.bufs);
+            let read =
+                unsafe { libc::readv(self.handle.handle, iovecs.as_mut_ptr(), iovecs.len() as _) };
+            if read == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(read as usize)
             }
         };
 
-        if read == -1 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::WouldBlock {
-                if let Err(err) =
-                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE)
-                {
-                    return Poll::Ready(Err(err));
-                }
-                return Poll::Pending;
-            }
-            return Poll::Ready(Err(error));
-        }
+        #[cfg(windows)]
+        let result = match self.handle.handle {
+            RawOsHandle::Socket(socket) => socket_read_vectored(socket as SOCKET, self.bufs),
+            RawOsHandle::Handle(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "poll-based readv currently supports sockets only on Windows",
+            )),
+        };
 
-        Poll::Ready(Ok(read as usize))
+        poll_result_or_wait(result, self.handle, cx, driver, Interest::READABLE)
     }
 
     #[cfg(any(unix, windows))]

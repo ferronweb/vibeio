@@ -14,8 +14,8 @@ use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, Read
 
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{
-    self, AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_STORAGE, SOCKET,
-    SOCK_STREAM, WSADATA, WSAEALREADY, WSAEINPROGRESS, WSAEWOULDBLOCK,
+    self, AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_STORAGE, SOCK_STREAM,
+    WSADATA,
 };
 
 use crate::op::{ConnectOp, ReadOp, ReadvOp, WriteOp, WritevOp};

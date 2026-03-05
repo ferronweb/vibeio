@@ -2,7 +2,6 @@ use std::io::{self, IoSlice};
 use std::task::{Context, Poll};
 
 use futures_util::future::LocalBoxFuture;
-#[cfg(unix)]
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -16,6 +15,11 @@ use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::{InnerRawHandle, RawOsHandle};
+#[cfg(unix)]
+use crate::op::io_util::poll_blocking_result;
+use crate::op::io_util::poll_result_or_wait;
+#[cfg(windows)]
+use crate::op::io_util::socket_write_vectored;
 use crate::op::Op;
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
@@ -89,67 +93,76 @@ impl<'a, 'b> WritevOp<'a, 'b> {
 impl Op for WritevOp<'_, '_> {
     type Output = usize;
 
-    // TODO: support Windows
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[inline]
     fn poll_poll(
         &mut self,
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let written = if !self.blocking {
-            // Build a temporary iovec array for the syscall.
-            let iovecs = iovec_to_system(self.bufs);
+        if self.blocking {
+            #[cfg(unix)]
+            {
+                let written = match poll_blocking_result(&mut self.blocking_future, cx, || {
+                    let bufs: &[IoSlice] =
+                        unsafe { std::mem::transmute::<&[IoSlice], &[IoSlice]>(self.bufs) };
+                    let handle = self.handle.handle;
+                    Box::pin(crate::spawn_blocking(move || {
+                        let iovecs = iovec_to_system(bufs);
+                        unsafe {
+                            libc::writev(handle, iovecs.as_ptr(), iovecs.len() as libc::c_int)
+                        }
+                    }))
+                }) {
+                    Poll::Ready(Ok(written)) => written,
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
+                };
 
-            unsafe {
+                let result = if written == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(written as usize)
+                };
+                return poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE);
+            }
+
+            #[cfg(windows)]
+            {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "blocking poll-based writev is unsupported on Windows",
+                )));
+            }
+        }
+
+        #[cfg(unix)]
+        let result = {
+            let iovecs = iovec_to_system(self.bufs);
+            let written = unsafe {
                 libc::writev(
                     self.handle.handle,
                     iovecs.as_ptr(),
                     iovecs.len() as libc::c_int,
                 )
-            }
-        } else {
-            use futures_util::FutureExt;
-            use std::task::ready;
-
-            let mut blocking_future = if let Some(blocking_future) = self.blocking_future.take() {
-                blocking_future
-            } else {
-                let bufs: &[IoSlice] =
-                    unsafe { std::mem::transmute::<&[IoSlice], &[IoSlice]>(self.bufs) };
-                let handle = self.handle.handle;
-                Box::pin(crate::spawn_blocking(move || {
-                    // Build a temporary iovec array for the syscall.
-                    let iovecs = iovec_to_system(bufs);
-
-                    unsafe { libc::writev(handle, iovecs.as_ptr(), iovecs.len() as libc::c_int) }
-                }))
             };
-            match ready!(blocking_future.poll_unpin(cx)) {
-                Ok(written) => written,
-                Err(_) => {
-                    return Poll::Ready(Err(std::io::Error::new(
-                        io::ErrorKind::Other,
-                        "can't spawn blocking task for I/O",
-                    )))
-                }
+            if written == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(written as usize)
             }
         };
 
-        if written == -1 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::WouldBlock {
-                if let Err(err) =
-                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
-                {
-                    return Poll::Ready(Err(err));
-                }
-                return Poll::Pending;
-            }
-            return Poll::Ready(Err(error));
-        }
+        #[cfg(windows)]
+        let result = match self.handle.handle {
+            RawOsHandle::Socket(socket) => socket_write_vectored(socket as SOCKET, self.bufs),
+            RawOsHandle::Handle(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "poll-based writev currently supports sockets only on Windows",
+            )),
+        };
 
-        Poll::Ready(Ok(written as usize))
+        poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE)
     }
 
     #[cfg(any(unix, windows))]

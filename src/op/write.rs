@@ -2,7 +2,6 @@ use std::io;
 use std::task::{Context, Poll};
 
 use futures_util::future::LocalBoxFuture;
-#[cfg(unix)]
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -16,6 +15,11 @@ use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::{InnerRawHandle, RawOsHandle};
+#[cfg(unix)]
+use crate::op::io_util::poll_blocking_result;
+use crate::op::io_util::poll_result_or_wait;
+#[cfg(windows)]
+use crate::op::io_util::socket_write;
 use crate::op::Op;
 
 pub struct WriteOp<'a> {
@@ -59,60 +63,71 @@ impl<'a> WriteOp<'a> {
 impl Op for WriteOp<'_> {
     type Output = usize;
 
-    // TODO: support Windows
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[inline]
     fn poll_poll(
         &mut self,
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let written = if !self.blocking {
-            unsafe {
+        if self.blocking {
+            #[cfg(unix)]
+            {
+                let written = match poll_blocking_result(&mut self.blocking_future, cx, || {
+                    let buf: &[u8] = unsafe { std::mem::transmute::<&[u8], &[u8]>(self.buf) };
+                    let handle = self.handle.handle;
+                    Box::pin(crate::spawn_blocking(move || unsafe {
+                        libc::write(handle, buf.as_ptr().cast::<libc::c_void>(), buf.len())
+                    }))
+                }) {
+                    Poll::Ready(Ok(written)) => written,
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
+                };
+
+                let result = if written == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(written as usize)
+                };
+                return poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE);
+            }
+
+            #[cfg(windows)]
+            {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "blocking poll-based write is unsupported on Windows",
+                )));
+            }
+        }
+
+        #[cfg(unix)]
+        let result = {
+            let written = unsafe {
                 libc::write(
                     self.handle.handle,
                     self.buf.as_ptr().cast::<libc::c_void>(),
                     self.buf.len(),
                 )
-            }
-        } else {
-            use futures_util::FutureExt;
-            use std::task::ready;
-
-            let mut blocking_future = if let Some(blocking_future) = self.blocking_future.take() {
-                blocking_future
-            } else {
-                let buf: &[u8] = unsafe { std::mem::transmute::<&[u8], &[u8]>(self.buf) };
-                let handle = self.handle.handle;
-                Box::pin(crate::spawn_blocking(move || unsafe {
-                    libc::write(handle, buf.as_ptr().cast::<libc::c_void>(), buf.len())
-                }))
             };
-            match ready!(blocking_future.poll_unpin(cx)) {
-                Ok(written) => written,
-                Err(_) => {
-                    return Poll::Ready(Err(std::io::Error::new(
-                        io::ErrorKind::Other,
-                        "can't spawn blocking task for I/O",
-                    )))
-                }
+            if written == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(written as usize)
             }
         };
 
-        if written == -1 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::WouldBlock {
-                if let Err(err) =
-                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
-                {
-                    return Poll::Ready(Err(err));
-                }
-                return Poll::Pending;
-            }
-            return Poll::Ready(Err(error));
-        }
+        #[cfg(windows)]
+        let result = match self.handle.handle {
+            RawOsHandle::Socket(socket) => socket_write(socket as SOCKET, self.buf),
+            RawOsHandle::Handle(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "poll-based write currently supports sockets only on Windows",
+            )),
+        };
 
-        Poll::Ready(Ok(written as usize))
+        poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE)
     }
 
     #[cfg(any(unix, windows))]

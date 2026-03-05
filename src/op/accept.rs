@@ -10,7 +10,6 @@ use std::os::fd::RawFd;
 use std::ptr;
 use std::task::{Context, Poll};
 
-#[cfg(unix)]
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -248,68 +247,124 @@ impl<'a> AcceptOp<'a> {
 impl Op for AcceptOp<'_> {
     type Output = (RawOsHandle, SocketAddr);
 
-    // TODO: support Windows
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[inline]
     fn poll_poll(
         &mut self,
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let accepted_fd = unsafe {
-            libc::accept(
-                self.handle.handle,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
-        if accepted_fd == -1 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::WouldBlock {
-                if let Err(err) =
-                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE)
-                {
+        #[cfg(unix)]
+        {
+            let accepted_fd = unsafe {
+                libc::accept(
+                    self.handle.handle,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if accepted_fd == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
+                }
+                return Poll::Ready(Err(error));
+            }
+
+            let fd = accepted_fd as RawFd;
+
+            // Ensure close-on-exec for the accepted fd
+            if let Err(err) = set_cloexec(fd) {
+                return Poll::Ready(Err(err));
+            }
+
+            // Obtain peer address via getpeername into a sockaddr_storage
+            let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
+            let mut peer_len = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            let getpeername_result = unsafe {
+                libc::getpeername(
+                    fd,
+                    peer.as_mut_ptr().cast::<libc::sockaddr>(),
+                    &mut peer_len,
+                )
+            };
+
+            if getpeername_result == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
+                }
+                return Poll::Ready(Err(error));
+            }
+
+            let peer = unsafe { peer.assume_init() };
+            let address = sockaddr_storage_to_socketaddr(&peer)?;
+            Poll::Ready(Ok((fd as RawOsHandle, address)))
+        }
+
+        #[cfg(windows)]
+        {
+            let RawOsHandle::Socket(listener_socket) = self.handle.handle else {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid raw handle",
+                )));
+            };
+
+            let accepted_socket = unsafe {
+                WinSock::accept(listener_socket as SOCKET, ptr::null_mut(), ptr::null_mut())
+            };
+            if accepted_socket == INVALID_SOCKET {
+                let error = io::Error::from_raw_os_error(unsafe { WinSock::WSAGetLastError() });
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
+                }
+                return Poll::Ready(Err(error));
+            }
+
+            let mut peer = SOCKADDR_STORAGE::default();
+            let mut peer_len = std::mem::size_of::<SOCKADDR_STORAGE>() as i32;
+            let getpeername_result = unsafe {
+                WinSock::getpeername(
+                    accepted_socket,
+                    (&mut peer as *mut SOCKADDR_STORAGE).cast::<SOCKADDR>(),
+                    &mut peer_len,
+                )
+            };
+            if getpeername_result == WinSock::SOCKET_ERROR {
+                let error = io::Error::from_raw_os_error(unsafe { WinSock::WSAGetLastError() });
+                unsafe { WinSock::closesocket(accepted_socket) };
+                return Poll::Ready(Err(error));
+            }
+
+            let address = match sockaddr_storage_to_socketaddr(&peer) {
+                Ok(address) => address,
+                Err(err) => {
+                    unsafe { WinSock::closesocket(accepted_socket) };
                     return Poll::Ready(Err(err));
                 }
-                return Poll::Pending;
-            }
-            return Poll::Ready(Err(error));
+            };
+
+            Poll::Ready(Ok((
+                RawOsHandle::Socket(accepted_socket as std::os::windows::io::RawSocket),
+                address,
+            )))
         }
-
-        let fd = accepted_fd as RawFd;
-
-        // Ensure close-on-exec for the accepted fd
-        if let Err(err) = set_cloexec(fd) {
-            return Poll::Ready(Err(err));
-        }
-
-        // Obtain peer address via getpeername into a sockaddr_storage
-        let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
-        let mut peer_len = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-        let getpeername_result = unsafe {
-            libc::getpeername(
-                fd,
-                peer.as_mut_ptr().cast::<libc::sockaddr>(),
-                &mut peer_len,
-            )
-        };
-
-        if getpeername_result == -1 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::WouldBlock {
-                if let Err(err) =
-                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE)
-                {
-                    return Poll::Ready(Err(err));
-                }
-                return Poll::Pending;
-            }
-            return Poll::Ready(Err(error));
-        }
-
-        let peer = unsafe { peer.assume_init() };
-        let address = sockaddr_storage_to_socketaddr(&peer)?;
-        Poll::Ready(Ok((fd as RawOsHandle, address)))
     }
 
     #[cfg(any(unix, windows))]

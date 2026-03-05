@@ -19,8 +19,12 @@ libc = "0.2.176"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_IO",
     "Win32_Networking_WinSock",
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_System_IO",
     "Win32_Storage_FileSystem",
 ] }

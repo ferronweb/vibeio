@@ -7,13 +7,12 @@ use std::mem;
 use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
-#[cfg(unix)]
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{
-    self as WinSock, AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKET, SOL_SOCKET,
-    SO_UPDATE_CONNECT_CONTEXT, WSAEADDRINUSE, WSAEALREADY, WSAEINPROGRESS, WSAEINVAL,
-    WSAEWOULDBLOCK, WSAID_CONNECTEX, WSA_IO_PENDING,
+    self as WinSock, AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_STORAGE,
+    SOCKET, SOCKET_ERROR, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, WSAEADDRINUSE, WSAEALREADY,
+    WSAEINPROGRESS, WSAEINVAL, WSAENOTCONN, WSAEWOULDBLOCK, WSAID_CONNECTEX, WSA_IO_PENDING,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::IO::OVERLAPPED;
@@ -53,12 +52,9 @@ fn start_nonblocking_connect(
     let connect_result = unsafe { WinSock::connect(socket as SOCKET, raw_addr, raw_addr_len) };
 
     if connect_result == WinSock::SOCKET_ERROR {
-        let err = io::Error::last_os_error();
-        if !matches!(
-            err.raw_os_error(),
-            Some(WSAEINPROGRESS) | Some(WSAEWOULDBLOCK) | Some(WSAEALREADY)
-        ) {
-            return Err(err);
+        let err_code = unsafe { WinSock::WSAGetLastError() };
+        if !matches!(err_code, WSAEINPROGRESS | WSAEWOULDBLOCK | WSAEALREADY) {
+            return Err(io::Error::from_raw_os_error(err_code));
         }
     }
 
@@ -177,7 +173,7 @@ pub struct ConnectOp<'a> {
     #[cfg(windows)]
     completion_bound: bool,
     completion_token: Option<usize>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     poll_connect_started: bool,
 }
 
@@ -210,7 +206,6 @@ impl<'a> ConnectOp<'a> {
             completion_token: None,
             connect_ex: None,
             completion_bound: false,
-            #[cfg(unix)]
             poll_connect_started: false,
         }
     }
@@ -219,8 +214,7 @@ impl<'a> ConnectOp<'a> {
 impl Op for ConnectOp<'_> {
     type Output = ();
 
-    // TODO: support Windows
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[inline]
     fn poll_poll(
         &mut self,
@@ -246,77 +240,155 @@ impl Op for ConnectOp<'_> {
             self.poll_connect_started = true;
         }
 
-        // TODO: support Windows in the code below
-        let mut socket_error: libc::c_int = 0;
-        let mut socket_error_len = mem::size_of::<libc::c_int>() as libc::socklen_t;
-        let getsockopt_result = unsafe {
-            libc::getsockopt(
-                self.handle.handle,
-                libc::SOL_SOCKET,
-                libc::SO_ERROR,
-                (&mut socket_error as *mut libc::c_int).cast(),
-                &mut socket_error_len,
-            )
-        };
-        if getsockopt_result == -1 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::WouldBlock {
-                if let Err(err) =
-                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
-                {
-                    return Poll::Ready(Err(err));
+        #[cfg(unix)]
+        {
+            let mut socket_error: libc::c_int = 0;
+            let mut socket_error_len = mem::size_of::<libc::c_int>() as libc::socklen_t;
+            let getsockopt_result = unsafe {
+                libc::getsockopt(
+                    self.handle.handle,
+                    libc::SOL_SOCKET,
+                    libc::SO_ERROR,
+                    (&mut socket_error as *mut libc::c_int).cast(),
+                    &mut socket_error_len,
+                )
+            };
+            if getsockopt_result == -1 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
                 }
-                return Poll::Pending;
-            }
-            return Poll::Ready(Err(error));
-        }
-
-        if socket_error != 0 {
-            if matches!(
-                socket_error,
-                libc::EINPROGRESS | libc::EALREADY | libc::EWOULDBLOCK
-            ) {
-                if let Err(err) =
-                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
-                {
-                    return Poll::Ready(Err(err));
-                }
-                return Poll::Pending;
-            }
-            return Poll::Ready(Err(io::Error::from_raw_os_error(socket_error)));
-        }
-
-        let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
-        let mut peer_len = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-        let getpeername_result = unsafe {
-            libc::getpeername(
-                self.handle.handle,
-                peer.as_mut_ptr().cast::<libc::sockaddr>(),
-                &mut peer_len,
-            )
-        };
-
-        if getpeername_result == -1 {
-            let err = io::Error::last_os_error();
-            if matches!(
-                err.raw_os_error(),
-                Some(libc::EINPROGRESS)
-                    | Some(libc::EALREADY)
-                    | Some(libc::EWOULDBLOCK)
-                    | Some(libc::ENOTCONN)
-            ) {
-                if let Err(err) =
-                    driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
-                {
-                    return Poll::Ready(Err(err));
-                }
-                return Poll::Pending;
+                return Poll::Ready(Err(error));
             }
 
-            return Poll::Ready(Err(err));
+            if socket_error != 0 {
+                if matches!(
+                    socket_error,
+                    libc::EINPROGRESS | libc::EALREADY | libc::EWOULDBLOCK
+                ) {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
+                }
+                return Poll::Ready(Err(io::Error::from_raw_os_error(socket_error)));
+            }
+
+            let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
+            let mut peer_len = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            let getpeername_result = unsafe {
+                libc::getpeername(
+                    self.handle.handle,
+                    peer.as_mut_ptr().cast::<libc::sockaddr>(),
+                    &mut peer_len,
+                )
+            };
+
+            if getpeername_result == -1 {
+                let err = io::Error::last_os_error();
+                if matches!(
+                    err.raw_os_error(),
+                    Some(libc::EINPROGRESS)
+                        | Some(libc::EALREADY)
+                        | Some(libc::EWOULDBLOCK)
+                        | Some(libc::ENOTCONN)
+                ) {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
+                }
+
+                return Poll::Ready(Err(err));
+            }
+
+            Poll::Ready(Ok(()))
         }
 
-        Poll::Ready(Ok(()))
+        #[cfg(windows)]
+        {
+            let RawOsHandle::Socket(socket) = self.handle.handle else {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid raw handle",
+                )));
+            };
+            let socket = socket as SOCKET;
+
+            let mut socket_error: i32 = 0;
+            let mut socket_error_len = std::mem::size_of::<i32>() as i32;
+            let getsockopt_result = unsafe {
+                WinSock::getsockopt(
+                    socket,
+                    SOL_SOCKET as i32,
+                    WinSock::SO_ERROR as i32,
+                    (&mut socket_error as *mut i32).cast(),
+                    &mut socket_error_len,
+                )
+            };
+            if getsockopt_result == SOCKET_ERROR {
+                let error = io::Error::from_raw_os_error(unsafe { WinSock::WSAGetLastError() });
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
+                }
+                return Poll::Ready(Err(error));
+            }
+
+            if socket_error != 0 {
+                if matches!(socket_error, WSAEINPROGRESS | WSAEALREADY | WSAEWOULDBLOCK) {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
+                }
+                return Poll::Ready(Err(io::Error::from_raw_os_error(socket_error)));
+            }
+
+            let mut peer = SOCKADDR_STORAGE::default();
+            let mut peer_len = std::mem::size_of::<SOCKADDR_STORAGE>() as i32;
+            let getpeername_result = unsafe {
+                WinSock::getpeername(
+                    socket,
+                    (&mut peer as *mut SOCKADDR_STORAGE).cast::<SOCKADDR>(),
+                    &mut peer_len,
+                )
+            };
+
+            if getpeername_result == SOCKET_ERROR {
+                let err_code = unsafe { WinSock::WSAGetLastError() };
+                if matches!(
+                    err_code,
+                    WSAEINPROGRESS | WSAEALREADY | WSAEWOULDBLOCK | WSAENOTCONN
+                ) {
+                    if let Err(err) =
+                        driver.submit_poll(self.handle, cx.waker().clone(), Interest::WRITABLE)
+                    {
+                        return Poll::Ready(Err(err));
+                    }
+                    return Poll::Pending;
+                }
+
+                return Poll::Ready(Err(io::Error::from_raw_os_error(err_code)));
+            }
+
+            Poll::Ready(Ok(()))
+        }
     }
 
     #[cfg(any(unix, windows))]

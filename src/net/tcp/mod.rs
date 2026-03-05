@@ -28,7 +28,6 @@ mod tests {
 
     #[test]
     fn tcp_listener_and_stream_exchange_data() {
-        // TODO: support Windows
         let runtime = crate::executor::Runtime::new(
             #[cfg(unix)]
             AnyDriver::new_mio().expect("mio driver should initialize"),
@@ -82,7 +81,6 @@ mod tests {
 
     #[test]
     fn tcp_stream_implements_custom_async_io_traits() {
-        // TODO: support Windows
         let runtime = crate::executor::Runtime::new(
             #[cfg(unix)]
             AnyDriver::new_mio().expect("mio driver should initialize"),
@@ -196,12 +194,13 @@ mod tests {
         });
     }
 
-    // TODO: support Windows (IOCP + \Device\Afd)
-    #[cfg(unix)]
     #[test]
     fn poll_tcp_stream_uses_readiness_path() {
         let runtime = crate::executor::Runtime::new(
+            #[cfg(unix)]
             AnyDriver::new_mio().expect("mio driver should initialize"),
+            #[cfg(windows)]
+            AnyDriver::new_iocp().expect("iocp driver should initialize"),
         );
         runtime.block_on(async {
             let address = "127.0.0.1:0"
