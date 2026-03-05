@@ -13,7 +13,8 @@ use windows_sys::Win32::Foundation::{
     ERROR_ABANDONED_WAIT_0, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::IO::{
-    CreateIoCompletionPort, GetQueuedCompletionStatus, PostQueuedCompletionStatus, OVERLAPPED,
+    CreateIoCompletionPort, GetQueuedCompletionStatusEx, PostQueuedCompletionStatus, OVERLAPPED,
+    OVERLAPPED_ENTRY,
 };
 
 use crate::driver::{CompletionIoResult, Interruptor};
@@ -24,6 +25,11 @@ use crate::{
 };
 
 const INTERRUPT_KEY: usize = usize::MAX;
+const IOCP_BATCH_SIZE: usize = 128;
+
+unsafe extern "system" {
+    fn RtlNtStatusToDosError(status: i32) -> u32;
+}
 
 pub struct IocpInterruptor {
     port: std::sync::Weak<OwnedHandle>,
@@ -114,68 +120,87 @@ impl IocpDriver {
     }
 
     #[inline]
-    fn process_one(&self, timeout_ms: u32) -> Result<bool, io::Error> {
-        let mut transferred: u32 = 0;
-        let mut completion_key: usize = 0;
-        let mut overlapped: *mut OVERLAPPED = ptr::null_mut();
+    fn completion_result_from_entry(entry: &OVERLAPPED_ENTRY) -> i32 {
+        if entry.Internal == 0 {
+            return entry.dwNumberOfBytesTransferred as i32;
+        }
+
+        let ntstatus = entry.Internal as i32;
+        let win32_error = unsafe { RtlNtStatusToDosError(ntstatus) } as i32;
+        let mapped_error = if win32_error == 0 {
+            ntstatus
+        } else {
+            win32_error
+        };
+        -mapped_error
+    }
+
+    #[inline]
+    fn process_entries(&self, entries: &[OVERLAPPED_ENTRY]) {
+        let mut state = self.state.borrow_mut();
+        for entry in entries {
+            if entry.lpOverlapped.is_null() {
+                // Posted interrupt packet.
+                continue;
+            }
+            if entry.lpCompletionKey == INTERRUPT_KEY {
+                continue;
+            }
+
+            let completion_token = state
+                .overlapped_to_completion
+                .remove(&(entry.lpOverlapped as usize));
+            if let Some(completion_token) = completion_token {
+                if let Some(completion) = state.completions.get_mut(completion_token) {
+                    completion.completed = Some(Self::completion_result_from_entry(entry));
+                    completion.overlapped = None;
+                    if let Some(waiter) = completion.waiter.take() {
+                        waiter.wake();
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn process_batch(&self, timeout_ms: u32) -> Result<usize, io::Error> {
+        let mut entries = [OVERLAPPED_ENTRY::default(); IOCP_BATCH_SIZE];
+        let mut entries_removed: u32 = 0;
 
         let success = unsafe {
-            GetQueuedCompletionStatus(
+            GetQueuedCompletionStatusEx(
                 self.iocp_handle(),
-                &mut transferred,
-                &mut completion_key,
-                &mut overlapped,
+                entries.as_mut_ptr(),
+                entries.len() as u32,
+                &mut entries_removed,
                 timeout_ms,
+                0,
             )
         } != 0;
 
-        if overlapped.is_null() {
-            if success {
-                // Posted interrupt packet.
-                return Ok(true);
-            }
-
+        if !success {
             let err = io::Error::last_os_error();
             if matches!(
                 err.raw_os_error(),
                 Some(code) if code == WAIT_TIMEOUT as i32 || code == ERROR_ABANDONED_WAIT_0 as i32
             ) {
-                return Ok(false);
+                return Ok(0);
             }
             return Err(err);
         }
 
-        if completion_key == INTERRUPT_KEY {
-            return Ok(true);
+        if entries_removed == 0 {
+            return Ok(0);
         }
 
-        let completion_result = if success {
-            transferred as i32
-        } else {
-            let err_code = io::Error::last_os_error().raw_os_error().unwrap_or(1);
-            -err_code
-        };
+        self.process_entries(&entries[..entries_removed as usize]);
 
-        let mut state = self.state.borrow_mut();
-        let completion_token = state
-            .overlapped_to_completion
-            .remove(&(overlapped as usize));
-        if let Some(completion_token) = completion_token {
-            if let Some(completion) = state.completions.get_mut(completion_token) {
-                completion.completed = Some(completion_result);
-                completion.overlapped = None;
-                if let Some(waiter) = completion.waiter.take() {
-                    waiter.wake();
-                }
-            }
-        }
-
-        Ok(true)
+        Ok(entries_removed as usize)
     }
 
     #[inline]
     fn process_ready_completions(&self) -> Result<(), io::Error> {
-        while self.process_one(0)? {}
+        while self.process_batch(0)? > 0 {}
         Ok(())
     }
 }
@@ -194,13 +219,13 @@ impl Driver for IocpDriver {
     #[inline]
     fn wait(&self, timeout: Option<Duration>) {
         let timeout_ms = Self::duration_to_timeout_ms(timeout);
-        match self.process_one(timeout_ms) {
-            Ok(true) => {
+        match self.process_batch(timeout_ms) {
+            Ok(processed) if processed > 0 => {
                 if let Err(err) = self.process_ready_completions() {
                     panic!("iocp drain failed while waiting for I/O: {err}");
                 }
             }
-            Ok(false) => {}
+            Ok(_) => {}
             Err(err) => panic!("iocp wait failed while waiting for I/O: {err}"),
         }
     }
