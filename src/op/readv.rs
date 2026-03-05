@@ -134,7 +134,10 @@ impl Op for ReadvOp<'_, '_> {
         let result = if let Some(completion_token) = self.completion_token {
             // Get the completion result
             match driver.get_completion_result(completion_token) {
-                Some(result) => result,
+                Some(result) => {
+                    self.completion_token = None;
+                    result
+                }
                 None => {
                     // The completion is not ready yet
                     return Poll::Pending;

@@ -68,18 +68,10 @@ impl Op for WriteOp<'_> {
             let mut blocking_future = if let Some(blocking_future) = self.blocking_future.take() {
                 blocking_future
             } else {
-                let buf: &[u8] = unsafe {
-                    std::mem::transmute::<&[u8], &[u8]>(self.buf)
-                };
+                let buf: &[u8] = unsafe { std::mem::transmute::<&[u8], &[u8]>(self.buf) };
                 let handle = self.handle.handle;
-                Box::pin(crate::spawn_blocking(move || {
-                    unsafe {
-                        libc::write(
-                            handle,
-                            buf.as_ptr().cast::<libc::c_void>(),
-                            buf.len(),
-                        )
-                    }
+                Box::pin(crate::spawn_blocking(move || unsafe {
+                    libc::write(handle, buf.as_ptr().cast::<libc::c_void>(), buf.len())
                 }))
             };
             match ready!(blocking_future.poll_unpin(cx)) {
@@ -120,7 +112,10 @@ impl Op for WriteOp<'_> {
         let result = if let Some(completion_token) = self.completion_token {
             // Get the completion result
             match driver.get_completion_result(completion_token) {
-                Some(result) => result,
+                Some(result) => {
+                    self.completion_token = None;
+                    result
+                }
                 None => {
                     // The completion is not ready yet
                     return Poll::Pending;

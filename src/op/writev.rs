@@ -95,21 +95,14 @@ impl Op for WritevOp<'_, '_> {
             let mut blocking_future = if let Some(blocking_future) = self.blocking_future.take() {
                 blocking_future
             } else {
-                let bufs: &[IoSlice] = unsafe {
-                    std::mem::transmute::<&[IoSlice], &[IoSlice]>(self.bufs)
-                };
+                let bufs: &[IoSlice] =
+                    unsafe { std::mem::transmute::<&[IoSlice], &[IoSlice]>(self.bufs) };
                 let handle = self.handle.handle;
                 Box::pin(crate::spawn_blocking(move || {
                     // Build a temporary iovec array for the syscall.
                     let iovecs = iovec_to_system(bufs);
 
-                    unsafe {
-                        libc::writev(
-                            handle,
-                            iovecs.as_ptr(),
-                            iovecs.len() as libc::c_int,
-                        )
-                    }
+                    unsafe { libc::writev(handle, iovecs.as_ptr(), iovecs.len() as libc::c_int) }
                 }))
             };
             match ready!(blocking_future.poll_unpin(cx)) {
@@ -150,7 +143,10 @@ impl Op for WritevOp<'_, '_> {
         let result = if let Some(completion_token) = self.completion_token {
             // Get the completion result
             match driver.get_completion_result(completion_token) {
-                Some(result) => result,
+                Some(result) => {
+                    self.completion_token = None;
+                    result
+                }
                 None => {
                     // The completion is not ready yet
                     return Poll::Pending;
