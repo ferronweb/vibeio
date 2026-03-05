@@ -3,13 +3,17 @@ mod accept;
 mod accept_unix;
 mod connect;
 mod io_util;
+#[cfg(target_os = "linux")]
+mod open;
 mod read;
+mod readat;
 mod readv;
 mod recv;
 mod recvfrom;
 mod send;
 mod sendto;
 mod write;
+mod writeat;
 mod writev;
 
 use std::io;
@@ -20,13 +24,17 @@ pub use accept::AcceptOp;
 #[cfg(unix)]
 pub use accept_unix::AcceptUnixOp;
 pub use connect::ConnectOp;
+#[cfg(target_os = "linux")]
+pub use open::OpenOp;
 pub use read::ReadOp;
+pub use readat::ReadAtOp;
 pub use readv::ReadvOp;
 pub use recv::RecvOp;
 pub use recvfrom::RecvfromOp;
 pub use send::SendOp;
 pub use sendto::SendtoOp;
 pub use write::WriteOp;
+pub use writeat::WriteAtOp;
 pub use writev::WritevOp;
 
 use crate::driver::AnyDriver;

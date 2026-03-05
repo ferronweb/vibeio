@@ -1,14 +1,8 @@
 use std::io;
 use std::task::{Context, Poll};
 
-#[cfg(unix)]
-use futures_util::future::LocalBoxFuture;
-#[cfg(unix)]
-use futures_util::FutureExt;
 use mio::Interest;
 
-#[cfg(unix)]
-use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::fd_inner::InnerRawHandle;
 
@@ -30,34 +24,5 @@ pub(crate) fn poll_result_or_wait(
             }
         }
         Err(err) => Poll::Ready(Err(err)),
-    }
-}
-
-#[inline]
-#[cfg(unix)]
-pub(crate) fn poll_blocking_result<'a, F>(
-    blocking_future: &mut Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
-    cx: &mut Context<'_>,
-    make_future: F,
-) -> Poll<io::Result<isize>>
-where
-    F: FnOnce() -> LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>,
-{
-    let mut future = if let Some(future) = blocking_future.take() {
-        future
-    } else {
-        make_future()
-    };
-
-    match future.poll_unpin(cx) {
-        Poll::Ready(Ok(value)) => Poll::Ready(Ok(value)),
-        Poll::Ready(Err(_)) => Poll::Ready(Err(io::Error::new(
-            io::ErrorKind::Other,
-            "can't spawn blocking task for I/O",
-        ))),
-        Poll::Pending => {
-            *blocking_future = Some(future);
-            Poll::Pending
-        }
     }
 }

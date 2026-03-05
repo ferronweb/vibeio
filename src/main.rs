@@ -3,6 +3,7 @@ mod builder;
 mod driver;
 mod executor;
 mod fd_inner;
+pub mod fs;
 pub mod io;
 pub mod net;
 mod op;
