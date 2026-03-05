@@ -118,6 +118,7 @@ impl Op for WriteOp<'_> {
                 }
                 None => {
                     // The completion is not ready yet
+                    driver.set_completion_waker(completion_token, cx.waker().clone());
                     return Poll::Pending;
                 }
             }

@@ -537,4 +537,12 @@ impl Driver for UringDriver {
         }
         completed
     }
+
+    #[inline]
+    fn set_completion_waker(&self, token: usize, waker: Waker) {
+        let mut state = self.state.borrow_mut();
+        if let Some(c) = state.completions.get_mut(token) {
+            c.waiter = Some(waker);
+        }
+    }
 }

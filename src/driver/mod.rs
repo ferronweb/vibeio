@@ -140,6 +140,10 @@ pub trait Driver {
         None
     }
 
+    /// Sets the waker for a completion-based I/O operation.
+    #[inline]
+    fn set_completion_waker(&self, _token: usize, _waker: Waker) {}
+
     /// Interrupts a waiting I/O operation.
     fn get_interruptor(&self) -> Self::Interruptor;
 }
@@ -319,6 +323,17 @@ impl AnyDriver {
             AnyDriver::Mock(driver) => driver.get_completion_result(token),
             #[cfg(target_os = "linux")]
             AnyDriver::IoUring(driver) => driver.get_completion_result(token),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn set_completion_waker(&self, token: usize, waker: Waker) {
+        match self {
+            #[cfg(unix)]
+            AnyDriver::Mio(driver) => driver.set_completion_waker(token, waker),
+            AnyDriver::Mock(driver) => driver.set_completion_waker(token, waker),
+            #[cfg(target_os = "linux")]
+            AnyDriver::IoUring(driver) => driver.set_completion_waker(token, waker),
         }
     }
 
