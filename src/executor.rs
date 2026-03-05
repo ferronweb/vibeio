@@ -25,6 +25,7 @@ thread_local! {
 
 pub(crate) struct RuntimeInner {
     queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
+    next_task: Rc<RefCell<Option<Arc<Task>>>>,
     remote_queue: Arc<SegQueue<usize>>,
     token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
@@ -194,6 +195,7 @@ impl RuntimeInner {
         let task = Arc::new(Task {
             future: RefCell::new(Some(future)),
             queue: Rc::downgrade(&self.queue),
+            next_task: Rc::downgrade(&self.next_task),
             remote_queue: Arc::downgrade(&self.remote_queue),
             queued: AtomicBool::new(true),
             thread_id: std::thread::current().id(),
@@ -246,6 +248,15 @@ impl RuntimeInner {
             batch.push(task);
         }
     }
+
+    #[inline]
+    fn take_next_task(&self) -> Option<Arc<Task>> {
+        let task = self.next_task.take();
+        if let Some(task) = &task {
+            task.mark_dequeued();
+        }
+        task
+    }
 }
 
 impl Runtime {
@@ -270,6 +281,7 @@ impl Runtime {
         Runtime {
             inner: Some(Rc::new(RuntimeInner {
                 queue: ready_queue,
+                next_task: Rc::new(RefCell::new(None)),
                 remote_queue: Arc::new(SegQueue::new()),
                 token_to_task: RefCell::new(Slab::with_capacity(4096)),
                 driver: Rc::new(driver),
@@ -323,7 +335,12 @@ impl Runtime {
             }
 
             batch.clear();
-            inner.drain_ready(&mut batch);
+            if let Some(next_task) = inner.take_next_task() {
+                // Fast path: if there's a task ready, run it immediately
+                batch.push(next_task);
+            } else {
+                inner.drain_ready(&mut batch);
+            }
 
             #[cfg(feature = "time")]
             let deadline = inner.timer.as_ref().and_then(|timer| {
@@ -351,6 +368,7 @@ impl Runtime {
                     #[cfg(not(feature = "time"))]
                     inner.driver.wait(None);
                 }
+
                 inner.waiting.store(false, Ordering::Relaxed);
                 continue;
             }

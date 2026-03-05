@@ -13,6 +13,7 @@ use crate::driver::AnyInterruptor;
 pub struct Task {
     pub future: RefCell<Option<LocalBoxFuture<'static, ()>>>,
     pub queue: Weak<UnsafeCell<VecDeque<Arc<Task>>>>,
+    pub next_task: Weak<RefCell<Option<Arc<Task>>>>,
     pub remote_queue: std::sync::Weak<SegQueue<usize>>,
     pub interruptor: AnyInterruptor,
     pub queued: AtomicBool,
@@ -70,12 +71,22 @@ impl Task {
     fn enqueue_if_needed(task: &Arc<Self>) {
         if std::thread::current().id() == task.thread_id {
             if !task.queued.swap(true, Ordering::Relaxed) {
-                if let Some(queue) = task.queue.upgrade() {
-                    // SAFETY: the runtime is single-threaded and only mutates the ready
-                    // queue from that thread. We also never hold a mutable queue borrow
-                    // while polling task futures, so re-entrant wakes do not alias.
-                    unsafe {
-                        (&mut *queue.get()).push_back(Arc::clone(task));
+                let mut pushed_next = false;
+                if let Some(next_task) = task.next_task.upgrade() {
+                    let mut next_task = next_task.borrow_mut();
+                    if next_task.is_none() {
+                        *next_task = Some(Arc::clone(task));
+                        pushed_next = true;
+                    }
+                }
+                if !pushed_next {
+                    if let Some(queue) = task.queue.upgrade() {
+                        // SAFETY: the runtime is single-threaded and only mutates the ready
+                        // queue from that thread. We also never hold a mutable queue borrow
+                        // while polling task futures, so re-entrant wakes do not alias.
+                        unsafe {
+                            (&mut *queue.get()).push_back(Arc::clone(task));
+                        }
                     }
                 }
             }
