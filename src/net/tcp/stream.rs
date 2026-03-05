@@ -18,7 +18,7 @@ use windows_sys::Win32::Networking::WinSock::{
     WSADATA,
 };
 
-use crate::op::{ConnectOp, ReadOp, ReadvOp, WriteOp, WritevOp};
+use crate::op::{ConnectOp, ReadOp, ReadvOp, RecvOp, WriteOp, WritevOp};
 use crate::{
     driver::RegistrationMode,
     fd_inner::InnerRawHandle,
@@ -249,6 +249,13 @@ impl TcpStream {
     }
 
     #[inline]
+    pub async fn peek(&self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        let handle = &self.handle;
+        let mut op = RecvOp::new_peek(handle, buf);
+        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+    }
+
+    #[inline]
     pub fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
         Self::from_std_with_mode(inner, RegistrationMode::Completion)
     }
@@ -361,6 +368,13 @@ impl PollTcpStream {
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.stream.shutdown(how)
+    }
+
+    #[inline]
+    pub async fn peek(&self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        let handle = &self.stream.handle;
+        let mut op = RecvOp::new_peek(handle, buf);
+        poll_fn(move |cx| handle.poll_op_poll(cx, &mut op)).await
     }
 }
 

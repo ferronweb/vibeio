@@ -112,6 +112,49 @@ pub(crate) fn socket_read(
 
 #[cfg(windows)]
 #[inline]
+pub(crate) fn socket_recv(
+    socket: windows_sys::Win32::Networking::WinSock::SOCKET,
+    buf: &mut [u8],
+    peek: bool,
+) -> io::Result<usize> {
+    use windows_sys::Win32::Networking::WinSock::{
+        self as WinSock, MSG_PEEK, SOCKET_ERROR, WSABUF,
+    };
+
+    let len = u32::try_from(buf.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "read buffer is too large for Windows socket I/O",
+        )
+    })?;
+
+    let mut wsabuf = WSABUF {
+        len,
+        buf: buf.as_mut_ptr().cast(),
+    };
+    let mut bytes: u32 = 0;
+    let mut flags: u32 = if peek { MSG_PEEK } else { 0 };
+
+    let recv_result = unsafe {
+        WinSock::WSARecv(
+            socket,
+            &mut wsabuf,
+            1,
+            &mut bytes,
+            &mut flags,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if recv_result == SOCKET_ERROR {
+        return Err(winsock_last_error());
+    }
+
+    Ok(bytes as usize)
+}
+
+#[cfg(windows)]
+#[inline]
 pub(crate) fn socket_write(
     socket: windows_sys::Win32::Networking::WinSock::SOCKET,
     buf: &[u8],
