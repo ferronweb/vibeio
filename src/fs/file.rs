@@ -262,6 +262,7 @@ impl AsyncWrite for File {
 
     #[inline]
     async fn flush(&mut self) -> Result<(), io::Error> {
+        // TODO: use fsync (Unix) or FlushFileBuffers (Windows)
         Ok(())
     }
 }
