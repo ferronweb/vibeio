@@ -65,6 +65,7 @@ pub struct WriteOp<'a> {
     #[cfg(windows)]
     socket_buf: Option<WSABUF>,
     blocking: bool,
+    #[cfg(unix)]
     blocking_future: Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
 }
 
@@ -78,6 +79,7 @@ impl<'a> WriteOp<'a> {
             #[cfg(windows)]
             socket_buf: None,
             blocking: false,
+            #[cfg(unix)]
             blocking_future: None,
         }
     }
@@ -91,6 +93,7 @@ impl<'a> WriteOp<'a> {
             #[cfg(windows)]
             socket_buf: None,
             blocking: true,
+            #[cfg(unix)]
             blocking_future: None,
         }
     }

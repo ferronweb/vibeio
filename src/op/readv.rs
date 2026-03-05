@@ -91,6 +91,7 @@ pub struct ReadvOp<'a, 'b> {
     #[cfg(target_os = "linux")]
     completion_system_iovecs: Option<Box<[libc::iovec]>>,
     blocking: bool,
+    #[cfg(unix)]
     blocking_future: Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
 }
 
@@ -108,6 +109,7 @@ impl<'a, 'b> ReadvOp<'a, 'b> {
             #[cfg(target_os = "linux")]
             completion_system_iovecs: None,
             blocking: false,
+            #[cfg(unix)]
             blocking_future: None,
         }
     }
@@ -125,6 +127,7 @@ impl<'a, 'b> ReadvOp<'a, 'b> {
             #[cfg(target_os = "linux")]
             completion_system_iovecs: None,
             blocking: true,
+            #[cfg(unix)]
             blocking_future: None,
         }
     }
