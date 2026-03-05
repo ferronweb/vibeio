@@ -2,12 +2,20 @@ use std::io::{self, IoSlice};
 use std::task::{Context, Poll};
 
 use futures_util::future::LocalBoxFuture;
+#[cfg(unix)]
 use mio::Interest;
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{ERROR_IO_PENDING, HANDLE},
+    Networking::WinSock::{self as WinSock, SOCKET, WSABUF, WSA_IO_PENDING},
+    Storage::FileSystem::WriteFile,
+    System::IO::OVERLAPPED,
+};
 
 use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
-use crate::fd_inner::InnerRawHandle;
+use crate::fd_inner::{InnerRawHandle, RawOsHandle};
 use crate::op::Op;
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
@@ -32,6 +40,10 @@ pub struct WritevOp<'a, 'b> {
     handle: &'a InnerRawHandle,
     bufs: &'a [IoSlice<'b>],
     completion_token: Option<usize>,
+    #[cfg(windows)]
+    completion_wsabufs: Option<Box<[WSABUF]>>,
+    #[cfg(windows)]
+    completion_staging: Option<Vec<u8>>,
     #[cfg(target_os = "linux")]
     completion_system_iovecs: Option<Box<[libc::iovec]>>,
     blocking: bool,
@@ -45,6 +57,10 @@ impl<'a, 'b> WritevOp<'a, 'b> {
             handle,
             bufs,
             completion_token: None,
+            #[cfg(windows)]
+            completion_wsabufs: None,
+            #[cfg(windows)]
+            completion_staging: None,
             #[cfg(target_os = "linux")]
             completion_system_iovecs: None,
             blocking: false,
@@ -58,6 +74,10 @@ impl<'a, 'b> WritevOp<'a, 'b> {
             handle: inner,
             bufs,
             completion_token: None,
+            #[cfg(windows)]
+            completion_wsabufs: None,
+            #[cfg(windows)]
+            completion_staging: None,
             #[cfg(target_os = "linux")]
             completion_system_iovecs: None,
             blocking: true,
@@ -132,8 +152,7 @@ impl Op for WritevOp<'_, '_> {
         Poll::Ready(Ok(written as usize))
     }
 
-    // TODO: support Windows
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[inline]
     fn poll_completion(
         &mut self,
@@ -165,9 +184,118 @@ impl Op for WritevOp<'_, '_> {
             }
         };
         if result < 0 {
+            #[cfg(windows)]
+            {
+                self.completion_wsabufs = None;
+                self.completion_staging = None;
+            }
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
+
+        #[cfg(windows)]
+        {
+            self.completion_wsabufs = None;
+            self.completion_staging = None;
+        }
+
         Poll::Ready(Ok(result as usize))
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        match self.handle.handle {
+            RawOsHandle::Socket(socket) => {
+                let mut wsabufs = Vec::with_capacity(self.bufs.len());
+                for buf in self.bufs.iter() {
+                    let len = u32::try_from(buf.len()).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "writev buffer is too large for Windows socket I/O",
+                        )
+                    })?;
+                    wsabufs.push(WSABUF {
+                        len,
+                        buf: buf.as_ptr().cast_mut().cast(),
+                    });
+                }
+
+                let mut wsabufs = wsabufs.into_boxed_slice();
+                let send_result = unsafe {
+                    WinSock::WSASend(
+                        socket as SOCKET,
+                        wsabufs.as_mut_ptr(),
+                        wsabufs.len() as u32,
+                        std::ptr::null_mut(),
+                        0,
+                        overlapped,
+                        None,
+                    )
+                };
+
+                if send_result == 0 {
+                    self.completion_wsabufs = Some(wsabufs);
+                    self.completion_staging = None;
+                    return Ok(());
+                }
+
+                let err = unsafe { WinSock::WSAGetLastError() };
+                if err == WSA_IO_PENDING {
+                    self.completion_wsabufs = Some(wsabufs);
+                    self.completion_staging = None;
+                    Ok(())
+                } else {
+                    self.completion_wsabufs = None;
+                    self.completion_staging = None;
+                    Err(io::Error::from_raw_os_error(err))
+                }
+            }
+            RawOsHandle::Handle(handle) => {
+                let total_len = self.bufs.iter().try_fold(0usize, |acc, buf| {
+                    acc.checked_add(buf.len()).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "writev buffer length overflow")
+                    })
+                })?;
+                let total_len_u32 = u32::try_from(total_len).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "writev total length is too large for Windows file I/O",
+                    )
+                })?;
+
+                let mut staging = Vec::with_capacity(total_len);
+                for buf in self.bufs.iter() {
+                    staging.extend_from_slice(buf);
+                }
+
+                let write_result = unsafe {
+                    WriteFile(
+                        handle as HANDLE,
+                        staging.as_ptr().cast(),
+                        total_len_u32,
+                        std::ptr::null_mut(),
+                        overlapped,
+                    )
+                };
+
+                if write_result != 0 {
+                    self.completion_wsabufs = None;
+                    self.completion_staging = Some(staging);
+                    return Ok(());
+                }
+
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(ERROR_IO_PENDING as i32) {
+                    self.completion_wsabufs = None;
+                    self.completion_staging = Some(staging);
+                    Ok(())
+                } else {
+                    self.completion_wsabufs = None;
+                    self.completion_staging = None;
+                    Err(err)
+                }
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
