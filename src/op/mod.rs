@@ -1,4 +1,6 @@
 mod accept;
+#[cfg(unix)]
+mod accept_unix;
 mod connect;
 mod io_util;
 mod read;
@@ -11,6 +13,8 @@ use std::task::Context;
 use std::task::Poll;
 
 pub use accept::AcceptOp;
+#[cfg(unix)]
+pub use accept_unix::AcceptUnixOp;
 pub use connect::ConnectOp;
 pub use read::ReadOp;
 pub use readv::ReadvOp;
