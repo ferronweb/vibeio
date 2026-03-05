@@ -4,7 +4,6 @@ use std::io::IoSliceMut;
 use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
-use futures_util::future::LocalBoxFuture;
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -14,14 +13,11 @@ use windows_sys::Win32::{
     System::IO::OVERLAPPED,
 };
 
-use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
-#[cfg(unix)]
-use crate::op::io_util::poll_blocking_result;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
 
@@ -92,9 +88,6 @@ pub struct ReadvOp<'a, 'b> {
     completion_staging: Option<Vec<u8>>,
     #[cfg(target_os = "linux")]
     completion_system_iovecs: Option<Box<[libc::iovec]>>,
-    blocking: bool,
-    #[cfg(unix)]
-    blocking_future: Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
 }
 
 impl<'a, 'b> ReadvOp<'a, 'b> {
@@ -110,27 +103,6 @@ impl<'a, 'b> ReadvOp<'a, 'b> {
             completion_staging: None,
             #[cfg(target_os = "linux")]
             completion_system_iovecs: None,
-            blocking: false,
-            #[cfg(unix)]
-            blocking_future: None,
-        }
-    }
-
-    #[inline]
-    pub fn new_blocking(inner: &'a InnerRawHandle, bufs: &'a mut [IoSliceMut<'b>]) -> Self {
-        Self {
-            handle: inner,
-            bufs,
-            completion_token: None,
-            #[cfg(windows)]
-            completion_wsabufs: None,
-            #[cfg(windows)]
-            completion_staging: None,
-            #[cfg(target_os = "linux")]
-            completion_system_iovecs: None,
-            blocking: true,
-            #[cfg(unix)]
-            blocking_future: None,
         }
     }
 }
@@ -145,41 +117,6 @@ impl Op for ReadvOp<'_, '_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        if self.blocking {
-            #[cfg(unix)]
-            {
-                let read = match poll_blocking_result(&mut self.blocking_future, cx, || {
-                    let bufs: &mut [IoSliceMut] = unsafe {
-                        std::mem::transmute::<&mut [IoSliceMut], &mut [IoSliceMut]>(self.bufs)
-                    };
-                    let handle = self.handle.handle;
-                    Box::pin(crate::spawn_blocking(move || {
-                        let mut iovecs = iovec_to_system(bufs);
-                        unsafe { libc::readv(handle, iovecs.as_mut_ptr(), iovecs.len() as _) }
-                    }))
-                }) {
-                    Poll::Ready(Ok(read)) => read,
-                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                    Poll::Pending => return Poll::Pending,
-                };
-
-                let result = if read == -1 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(read as usize)
-                };
-                return poll_result_or_wait(result, self.handle, cx, driver, Interest::READABLE);
-            }
-
-            #[cfg(windows)]
-            {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "blocking poll-based readv is unsupported on Windows",
-                )));
-            }
-        }
-
         #[cfg(unix)]
         let result = {
             let mut iovecs = iovec_to_system(self.bufs);

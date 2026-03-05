@@ -1,7 +1,6 @@
 use std::io;
 use std::task::{Context, Poll};
 
-use futures_util::future::LocalBoxFuture;
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -11,14 +10,11 @@ use windows_sys::Win32::{
     System::IO::OVERLAPPED,
 };
 
-use crate::blocking::SpawnBlockingError;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
-#[cfg(unix)]
-use crate::op::io_util::poll_blocking_result;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
 
@@ -66,9 +62,6 @@ pub struct WriteOp<'a> {
     completion_token: Option<usize>,
     #[cfg(windows)]
     socket_buf: Option<WSABUF>,
-    blocking: bool,
-    #[cfg(unix)]
-    blocking_future: Option<LocalBoxFuture<'a, Result<isize, SpawnBlockingError>>>,
 }
 
 impl<'a> WriteOp<'a> {
@@ -80,23 +73,6 @@ impl<'a> WriteOp<'a> {
             completion_token: None,
             #[cfg(windows)]
             socket_buf: None,
-            blocking: false,
-            #[cfg(unix)]
-            blocking_future: None,
-        }
-    }
-
-    #[inline]
-    pub fn new_blocking(inner: &'a InnerRawHandle, buf: &'a [u8]) -> Self {
-        Self {
-            handle: inner,
-            buf,
-            completion_token: None,
-            #[cfg(windows)]
-            socket_buf: None,
-            blocking: true,
-            #[cfg(unix)]
-            blocking_future: None,
         }
     }
 }
@@ -111,38 +87,6 @@ impl Op for WriteOp<'_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        if self.blocking {
-            #[cfg(unix)]
-            {
-                let written = match poll_blocking_result(&mut self.blocking_future, cx, || {
-                    let buf: &[u8] = unsafe { std::mem::transmute::<&[u8], &[u8]>(self.buf) };
-                    let handle = self.handle.handle;
-                    Box::pin(crate::spawn_blocking(move || unsafe {
-                        libc::write(handle, buf.as_ptr().cast::<libc::c_void>(), buf.len())
-                    }))
-                }) {
-                    Poll::Ready(Ok(written)) => written,
-                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                    Poll::Pending => return Poll::Pending,
-                };
-
-                let result = if written == -1 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(written as usize)
-                };
-                return poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE);
-            }
-
-            #[cfg(windows)]
-            {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "blocking poll-based write is unsupported on Windows",
-                )));
-            }
-        }
-
         #[cfg(unix)]
         let result = {
             let written = unsafe {
