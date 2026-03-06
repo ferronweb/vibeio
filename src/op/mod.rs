@@ -4,6 +4,8 @@ mod accept_unix;
 mod connect;
 #[cfg(target_os = "linux")]
 mod fsync;
+#[cfg(target_os = "linux")]
+mod hard_link;
 mod io_util;
 #[cfg(target_os = "linux")]
 mod open;
@@ -12,8 +14,14 @@ mod readat;
 mod readv;
 mod recv;
 mod recvfrom;
+#[cfg(target_os = "linux")]
+mod rename;
 mod send;
 mod sendto;
+#[cfg(target_os = "linux")]
+mod symlink;
+#[cfg(target_os = "linux")]
+mod unlink;
 mod write;
 mod writeat;
 mod writev;
@@ -29,14 +37,22 @@ pub use connect::ConnectOp;
 #[cfg(target_os = "linux")]
 pub use fsync::FsyncOp;
 #[cfg(target_os = "linux")]
+pub use hard_link::HardLinkOp;
+#[cfg(target_os = "linux")]
 pub use open::OpenOp;
 pub use read::ReadOp;
 pub use readat::ReadAtOp;
 pub use readv::ReadvOp;
 pub use recv::RecvOp;
 pub use recvfrom::RecvfromOp;
+#[cfg(target_os = "linux")]
+pub use rename::RenameOp;
 pub use send::SendOp;
 pub use sendto::SendtoOp;
+#[cfg(target_os = "linux")]
+pub use symlink::SymlinkOp;
+#[cfg(target_os = "linux")]
+pub use unlink::UnlinkOp;
 pub use write::WriteOp;
 pub use writeat::WriteAtOp;
 pub use writev::WritevOp;

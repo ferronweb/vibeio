@@ -293,7 +293,6 @@ async fn write_at_in_blocking_pool(
         .map_err(|_| blocking_pool_io_error())?
 }
 
-#[cfg(unix)]
 async fn sync_all_in_blocking_pool(file: &std::fs::File) -> io::Result<()> {
     let file = file.try_clone()?;
     crate::spawn_blocking(move || sync_all_blocking(&file))
@@ -301,7 +300,6 @@ async fn sync_all_in_blocking_pool(file: &std::fs::File) -> io::Result<()> {
         .map_err(|_| blocking_pool_io_error())?
 }
 
-#[cfg(unix)]
 async fn sync_data_in_blocking_pool(file: &std::fs::File) -> io::Result<()> {
     let file = file.try_clone()?;
     crate::spawn_blocking(move || sync_data_blocking(&file))

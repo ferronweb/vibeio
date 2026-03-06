@@ -1,16 +1,75 @@
 mod file;
 mod open_options;
 
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
+use std::path::PathBuf;
+
 pub use file::File;
 pub use open_options::OpenOptions;
 
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::CreateSymbolicLinkW;
+
 use crate::io::{AsyncRead, AsyncWrite};
+#[cfg(target_os = "linux")]
+use crate::op::HardLinkOp;
+#[cfg(target_os = "linux")]
+use crate::op::Op;
+#[cfg(target_os = "linux")]
+use crate::op::RenameOp;
+#[cfg(target_os = "linux")]
+use crate::op::SymlinkOp;
+#[cfg(target_os = "linux")]
+use crate::op::UnlinkOp;
+
+#[cfg(windows)]
+pub fn windows_symlink_dir(path: String, target: String) -> std::io::Result<()> {
+    let path_w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let target_w: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+
+    unsafe {
+        let res = CreateSymbolicLinkW(
+            path_w.as_ptr(),
+            target_w.as_ptr(),
+            1, // SYMBOLIC_LINK_FLAG_DIRECTORY
+        );
+        if !res {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn windows_symlink_file(path: String, target: String) -> std::io::Result<()> {
+    let path_w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let target_w: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+
+    unsafe {
+        let res = CreateSymbolicLinkW(
+            path_w.as_ptr(),
+            target_w.as_ptr(),
+            0, // SYMBOLIC_LINK_FLAG_FILE
+        );
+        if !res {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub async fn canonicalize<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<PathBuf> {
+    let path = path.as_ref().to_path_buf();
+    crate::spawn_blocking(move || path.canonicalize())
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
 
 pub async fn read(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>> {
-    let mut file: File = OpenOptions::new()
-        .read(true)
-        .open(path)
-        .await?;
+    let mut file: File = OpenOptions::new().read(true).open(path).await?;
     let mut bytes = Vec::new();
     let mut buf = [0u8; 8192];
 
@@ -27,10 +86,14 @@ pub async fn read(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>>
 
 pub async fn read_to_string(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
     let bytes = read(path).await?;
-    String::from_utf8(bytes).map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.utf8_error()))
+    String::from_utf8(bytes)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.utf8_error()))
 }
 
-pub async fn write(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+pub async fn write(
+    path: impl AsRef<std::path::Path>,
+    contents: impl AsRef<[u8]>,
+) -> std::io::Result<()> {
     let mut file: File = OpenOptions::new()
         .write(true)
         .create(true)
@@ -39,6 +102,292 @@ pub async fn write(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>
         .await?;
     file.write_all(contents.as_ref()).await?;
     file.flush().await
+}
+
+#[cfg(target_os = "linux")]
+pub async fn hard_link(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    let driver = crate::executor::current_driver();
+    if driver.as_ref().is_some_and(|d| d.supports_completion()) {
+        let src_cstr = CString::new(src.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let dst_cstr = CString::new(dst.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+
+        let driver = driver.expect("invalid driver state");
+        let mut op = HardLinkOp::new(src_cstr, dst_cstr);
+        std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
+    } else {
+        let src = src.to_owned();
+        let dst = dst.to_owned();
+        crate::spawn_blocking(move || std::fs::hard_link(src, dst))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn hard_link(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref().to_owned();
+    let dst = dst.as_ref().to_owned();
+    crate::spawn_blocking(move || std::fs::hard_link(src, dst))
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
+
+#[cfg(windows)]
+pub async fn symlink_dir(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    let src_str = src.to_string_lossy().to_string();
+    let dst_str = dst.to_string_lossy().to_string();
+    crate::spawn_blocking(move || windows_symlink_dir(src_str, dst_str))
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
+
+#[cfg(target_os = "linux")]
+pub async fn symlink_dir(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    let driver = crate::executor::current_driver();
+    if driver.as_ref().is_some_and(|d| d.supports_completion()) {
+        // On Linux with io_uring, use SymlinkOp
+        let src_cstr = CString::new(src.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let dst_cstr = CString::new(dst.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let driver = driver.expect("invalid driver state");
+        let mut op = SymlinkOp::new(src_cstr, dst_cstr);
+        std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
+    } else {
+        let src = src.to_owned();
+        let dst = dst.to_owned();
+        crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub async fn symlink_dir(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref().to_owned();
+    let dst = dst.as_ref().to_owned();
+    crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
+
+#[cfg(windows)]
+pub async fn symlink_file(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    let src_str = src.to_string_lossy().to_string();
+    let dst_str = dst.to_string_lossy().to_string();
+    crate::spawn_blocking(move || windows_symlink_file(src_str, dst_str))
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
+
+#[cfg(target_os = "linux")]
+pub async fn symlink_file(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    let driver = crate::executor::current_driver();
+    if driver.as_ref().is_some_and(|d| d.supports_completion()) {
+        // On Linux with io_uring, use SymlinkOp
+        let src_cstr = CString::new(src.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let dst_cstr = CString::new(dst.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let driver = driver.expect("invalid driver state");
+        let mut op = SymlinkOp::new(src_cstr, dst_cstr);
+        std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
+    } else {
+        let src = src.to_owned();
+        let dst = dst.to_owned();
+        crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub async fn symlink_file(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let src = src.as_ref().to_owned();
+    let dst = dst.as_ref().to_owned();
+    crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
+
+pub async fn symlink(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    symlink_file(src, dst).await
+}
+
+#[cfg(target_os = "linux")]
+pub async fn rename(
+    from: impl AsRef<std::path::Path>,
+    to: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+
+    let driver = crate::executor::current_driver();
+    if driver.as_ref().is_some_and(|d| d.supports_completion()) {
+        let from_cstr = CString::new(from.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let to_cstr = CString::new(to.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let driver = driver.expect("invalid driver state");
+        let mut op = RenameOp::new(from_cstr, to_cstr);
+        std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
+    } else {
+        let from = from.to_owned();
+        let to = to.to_owned();
+        crate::spawn_blocking(move || std::fs::rename(from, to))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn rename(
+    from: impl AsRef<std::path::Path>,
+    to: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    let from = from.as_ref().to_owned();
+    let to = to.as_ref().to_owned();
+    crate::spawn_blocking(move || std::fs::rename(from, to))
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
+
+#[cfg(target_os = "linux")]
+pub async fn remove_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    let path = path.as_ref();
+
+    let driver = crate::executor::current_driver();
+    if driver.as_ref().is_some_and(|d| d.supports_completion()) {
+        let path_cstr = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let driver = driver.expect("invalid driver state");
+        let mut op = UnlinkOp::new(path_cstr, true);
+        std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
+    } else {
+        let path = path.to_owned();
+        crate::spawn_blocking(move || std::fs::remove_dir(path))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn remove_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    let path = path.as_ref().to_owned();
+    crate::spawn_blocking(move || std::fs::remove_dir(path))
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
+
+#[cfg(target_os = "linux")]
+pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    let path = path.as_ref();
+
+    let driver = crate::executor::current_driver();
+    if driver.as_ref().is_some_and(|d| d.supports_completion()) {
+        let path_cstr = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let driver = driver.expect("invalid driver state");
+        let mut op = UnlinkOp::new(path_cstr, false);
+        std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
+    } else {
+        let path = path.to_owned();
+        crate::spawn_blocking(move || std::fs::remove_file(path))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    let path = path.as_ref().to_owned();
+    crate::spawn_blocking(move || std::fs::remove_file(path))
+        .await
+        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
 }
 
 #[cfg(test)]
