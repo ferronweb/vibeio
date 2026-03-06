@@ -431,12 +431,13 @@ pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Meta
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use crate::{
         driver::AnyDriver,
         executor::Runtime,
-        fs::{read, read_to_string, write, File, OpenOptions},
+        fs::{metadata, read, read_to_string, write, File, OpenOptions},
+        io::AsyncWrite,
     };
 
     fn unique_path(name: &str) -> PathBuf {
@@ -492,6 +493,120 @@ mod tests {
                 .await
                 .expect("read_exact_at should succeed");
             assert_eq!(&out, b"cdef");
+
+            let _ = std::fs::remove_file(path);
+        });
+    }
+
+    #[test]
+    fn metadata_basic_properties() {
+        let runtime = Runtime::new(AnyDriver::new_mock());
+        runtime.block_on(async {
+            let path = unique_path("metadata");
+            write(&path, b"test content")
+                .await
+                .expect("write should succeed");
+
+            let md = metadata(&path).await.expect("metadata should succeed");
+            assert_eq!(md.len(), 12);
+            assert!(md.is_file());
+            assert!(!md.is_dir());
+            assert!(!md.is_symlink());
+
+            let _ = std::fs::remove_file(path);
+        });
+    }
+
+    #[test]
+    fn metadata_directory() {
+        let runtime = Runtime::new(AnyDriver::new_mock());
+        runtime.block_on(async {
+            let path = unique_path("dir");
+            std::fs::create_dir(&path).expect("create_dir should succeed");
+
+            let md = metadata(&path).await.expect("metadata should succeed");
+            assert!(md.is_dir());
+            assert!(!md.is_file());
+
+            let _ = std::fs::remove_dir(path);
+        });
+    }
+
+    #[test]
+    fn metadata_timestamps() {
+        let runtime = Runtime::new(AnyDriver::new_mock());
+        runtime.block_on(async {
+            let path = unique_path("timestamps");
+            write(&path, b"test").await.expect("write should succeed");
+
+            let md = metadata(&path).await.expect("metadata should succeed");
+
+            // All timestamp methods should return valid SystemTime
+            let accessed = md.accessed().expect("accessed should succeed");
+            let modified = md.modified().expect("modified should succeed");
+            let created = md.created().expect("created should succeed");
+
+            // Timestamps should be reasonable (not in the far future)
+            let now = SystemTime::now();
+            assert!(accessed <= now || accessed + Duration::from_secs(1) >= now);
+            assert!(modified <= now || modified + Duration::from_secs(1) >= now);
+            assert!(created <= now || created + Duration::from_secs(1) >= now);
+
+            let _ = std::fs::remove_file(path);
+        });
+    }
+
+    #[test]
+    fn metadata_permissions() {
+        let runtime = Runtime::new(AnyDriver::new_mock());
+        runtime.block_on(async {
+            let path = unique_path("perms");
+            write(&path, b"test").await.expect("write should succeed");
+
+            let md = metadata(&path).await.expect("metadata should succeed");
+            let perms = md.permissions();
+
+            // Should be readable and writable by owner
+            assert!(!perms.readonly(), "file should be writable");
+
+            let _ = std::fs::remove_file(path);
+        });
+    }
+
+    #[test]
+    fn metadata_file_type() {
+        let runtime = Runtime::new(AnyDriver::new_mock());
+        runtime.block_on(async {
+            let path = unique_path("type");
+            write(&path, b"test").await.expect("write should succeed");
+
+            let md = metadata(&path).await.expect("metadata should succeed");
+            let file_type = md.file_type();
+
+            assert!(file_type.is_file());
+            assert!(!file_type.is_dir());
+            assert!(!file_type.is_symlink());
+
+            let _ = std::fs::remove_file(path);
+        });
+    }
+
+    #[test]
+    fn metadata_empty_file() {
+        let runtime = Runtime::new(AnyDriver::new_mock());
+        runtime.block_on(async {
+            let path = unique_path("empty");
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(&path)
+                .await
+                .expect("open should succeed");
+            file.flush().await.expect("flush should succeed");
+
+            let md = metadata(&path).await.expect("metadata should succeed");
+            assert_eq!(md.len(), 0);
+            assert!(md.is_file());
 
             let _ = std::fs::remove_file(path);
         });
