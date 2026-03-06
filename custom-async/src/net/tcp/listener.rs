@@ -273,7 +273,7 @@ pub struct TcpListener {
 impl TcpListener {
     #[inline]
     pub fn bind(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
-        let mut addresses = address.to_socket_addrs()?;
+        let addresses = address.to_socket_addrs()?;
         let mut last_error = None;
         for address in addresses {
             match bind_one(address) {

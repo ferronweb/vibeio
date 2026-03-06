@@ -205,7 +205,7 @@ impl UdpSocket {
 
     #[inline]
     pub async fn connect(&self, address: impl ToSocketAddrs) -> Result<(), io::Error> {
-        let mut addresses = address.to_socket_addrs()?;
+        let addresses = address.to_socket_addrs()?;
         let mut last_error = None;
         for address in addresses {
             match connect_one(&self.handle, address).await {
@@ -244,7 +244,7 @@ impl UdpSocket {
         buf: &[u8],
         address: impl ToSocketAddrs,
     ) -> Result<usize, io::Error> {
-        let mut addresses = address.to_socket_addrs()?;
+        let addresses = address.to_socket_addrs()?;
         let mut last_error = None;
 
         for address in addresses {
