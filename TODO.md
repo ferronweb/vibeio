@@ -8,3 +8,9 @@
   - Unix pipes
   - splice() (zero-copy)
 - Process signal utilities
+
+## Chores
+
+- Reduce boilerplate across:
+  - ops
+  - I/O wrapper structs
