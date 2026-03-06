@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use io_uring::types::{SubmitArgs, Timespec};
 use io_uring::{opcode, squeue, types, IoUring};
-use libc;
 use mio::{Interest, Token};
 use slab::Slab;
 
@@ -174,7 +173,7 @@ impl UringDriver {
         let mut sq = ring.submission();
         unsafe {
             sq.push(&entry).map_err(|_| {
-                io::Error::new(ErrorKind::Other, "io_uring submission queue is full")
+                io::Error::other("io_uring submission queue is full")
             })?;
         }
 
@@ -507,7 +506,6 @@ impl Driver for UringDriver {
         // Build the SQE. If this fails, return the error.
         let entry = match op
             .build_completion_entry(Self::encode_completion_key(token))
-            .map_err(|e| e)
         {
             Ok(entry) => entry,
             Err(err) => return CompletionIoResult::SubmitErr(err),

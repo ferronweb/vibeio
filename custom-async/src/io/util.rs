@@ -88,7 +88,7 @@ where
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         let mut guard = self.inner.lock().await;
         // Forward the call to the underlying object.
-        (&mut *guard).read(buf).await
+        (*guard).read(buf).await
     }
 }
 
@@ -98,12 +98,12 @@ where
 {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
         let mut guard = self.inner.lock().await;
-        (&mut *guard).write(buf).await
+        (*guard).write(buf).await
     }
 
     async fn flush(&mut self) -> Result<(), io::Error> {
         let mut guard = self.inner.lock().await;
-        (&mut *guard).flush().await
+        (*guard).flush().await
     }
 }
 

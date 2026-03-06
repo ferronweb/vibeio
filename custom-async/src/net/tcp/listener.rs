@@ -275,7 +275,7 @@ impl TcpListener {
     pub fn bind(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let mut addresses = address.to_socket_addrs()?;
         let mut last_error = None;
-        while let Some(address) = addresses.next() {
+        for address in addresses {
             match bind_one(address) {
                 Ok(inner) => return Self::from_std(inner),
                 Err(err) => last_error = Some(err),

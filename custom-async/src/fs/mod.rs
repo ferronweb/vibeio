@@ -406,7 +406,7 @@ pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Meta
         })?;
         let mut driver = driver.expect("invalid driver state");
         let mut op = crate::op::StatxOp::new(libc::AT_FDCWD, path_cstr, 0, libc::STATX_ALL);
-        let statx = std::future::poll_fn(move |cx| op.poll_completion(cx, &mut driver)).await?;
+        let statx = std::future::poll_fn(move |cx| op.poll_completion(cx, &driver)).await?;
         Ok(Metadata::from_statx(statx))
     } else {
         let path = path.to_owned();

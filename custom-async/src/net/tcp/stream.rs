@@ -197,7 +197,7 @@ impl TcpStream {
     pub async fn connect(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let mut addresses = address.to_socket_addrs()?;
         let mut last_error = None;
-        while let Some(address) = addresses.next() {
+        for address in addresses {
             match Self::connect_one(address).await {
                 Ok(stream) => return Ok(stream),
                 Err(err) => last_error = Some(err),
@@ -296,7 +296,7 @@ impl PollTcpStream {
     pub async fn connect(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let mut addresses = address.to_socket_addrs()?;
         let mut last_error = None;
-        while let Some(address) = addresses.next() {
+        for address in addresses {
             match Self::connect_one(address).await {
                 Ok(stream) => return Ok(stream),
                 Err(err) => last_error = Some(err),

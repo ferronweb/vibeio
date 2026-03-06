@@ -20,7 +20,7 @@ use crate::task::Task;
 use crate::timer::Timer;
 
 thread_local! {
-    static CURRENT_RUNTIME: RefCell<Option<Rc<RuntimeInner>>> = RefCell::new(None);
+    static CURRENT_RUNTIME: RefCell<Option<Rc<RuntimeInner>>> = const { RefCell::new(None) };
 }
 
 pub(crate) struct RuntimeInner {
@@ -171,7 +171,7 @@ where
 
 #[inline]
 pub fn supports_completion() -> bool {
-    current_driver().map_or(false, |driver| driver.supports_completion())
+    current_driver().is_some_and(|driver| driver.supports_completion())
 }
 
 impl RuntimeInner {

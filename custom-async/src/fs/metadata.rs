@@ -69,7 +69,7 @@ impl Metadata {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
             MetadataInner::Statx(st) => {
-                (st.stx_mode as u32 & libc::S_IFMT as u32) == libc::S_IFDIR as u32
+                (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFDIR
             }
             MetadataInner::Std(md) => md.is_dir(),
         }
@@ -80,7 +80,7 @@ impl Metadata {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
             MetadataInner::Statx(st) => {
-                (st.stx_mode as u32 & libc::S_IFMT as u32) == libc::S_IFREG as u32
+                (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFREG
             }
             MetadataInner::Std(md) => md.is_file(),
         }
@@ -91,7 +91,7 @@ impl Metadata {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
             MetadataInner::Statx(st) => {
-                (st.stx_mode as u32 & libc::S_IFMT as u32) == libc::S_IFLNK as u32
+                (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFLNK
             }
             MetadataInner::Std(md) => md.file_type().is_symlink(),
         }
@@ -128,8 +128,8 @@ impl Metadata {
 #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
 #[inline]
 fn statx_timestamp_to_system_time(ts: &libc::statx_timestamp) -> io::Result<SystemTime> {
-    let secs = ts.tv_sec as i64;
-    let nanos = ts.tv_nsec as u32;
+    let secs = ts.tv_sec;
+    let nanos = ts.tv_nsec;
 
     if secs >= 0 {
         Ok(UNIX_EPOCH + Duration::new(secs as u64, nanos))

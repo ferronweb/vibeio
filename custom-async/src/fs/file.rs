@@ -103,7 +103,7 @@ impl File {
     #[inline]
     fn completion_handle(&self) -> Option<&InnerRawHandle> {
         match &self.io {
-            FileIo::Completion(handle) => Some(&*handle),
+            FileIo::Completion(handle) => Some(handle),
             FileIo::Blocking => None,
         }
     }
@@ -291,7 +291,7 @@ fn metadata_blocking(file: &std::fs::File) -> io::Result<Metadata> {
 
 #[inline]
 pub(crate) fn blocking_pool_io_error() -> io::Error {
-    io::Error::new(ErrorKind::Other, "can't spawn blocking task for file I/O")
+    io::Error::other("can't spawn blocking task for file I/O")
 }
 
 #[inline]

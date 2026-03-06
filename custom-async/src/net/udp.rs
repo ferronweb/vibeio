@@ -207,7 +207,7 @@ impl UdpSocket {
     pub async fn connect(&self, address: impl ToSocketAddrs) -> Result<(), io::Error> {
         let mut addresses = address.to_socket_addrs()?;
         let mut last_error = None;
-        while let Some(address) = addresses.next() {
+        for address in addresses {
             match connect_one(&self.handle, address).await {
                 Ok(()) => return Ok(()),
                 Err(err) => last_error = Some(err),
@@ -247,7 +247,7 @@ impl UdpSocket {
         let mut addresses = address.to_socket_addrs()?;
         let mut last_error = None;
 
-        while let Some(address) = addresses.next() {
+        for address in addresses {
             let handle = &self.handle;
             let mut op = SendtoOp::new(handle, buf, address);
             match poll_fn(move |cx| handle.poll_op(cx, &mut op)).await {

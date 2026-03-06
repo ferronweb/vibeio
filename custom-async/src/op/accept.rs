@@ -432,7 +432,7 @@ impl Op for AcceptOp<'_> {
 
             let peer = unsafe { peer.assume_init() };
             let address = sockaddr_storage_to_socketaddr(&peer)?;
-            return Poll::Ready(Ok((fd as RawOsHandle, address)));
+            Poll::Ready(Ok((fd as RawOsHandle, address)))
         }
 
         #[cfg(windows)]
