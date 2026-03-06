@@ -9,9 +9,9 @@ use crate::op::Op;
 use crate::op::OpenOp;
 
 #[cfg(unix)]
-use std::os::fd::FromRawFd;
-#[cfg(unix)]
 use std::ffi::CString;
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 
@@ -149,6 +149,11 @@ impl OpenOptions {
         let create_new = self.create_new;
 
         crate::spawn_blocking(move || {
+            #[cfg(windows)]
+            use std::os::windows::fs::OpenOptionsExt;
+            #[cfg(windows)]
+            use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
             let mut options = std::fs::OpenOptions::new();
             options
                 .read(read)
@@ -157,6 +162,8 @@ impl OpenOptions {
                 .truncate(truncate)
                 .create(create)
                 .create_new(create_new);
+            #[cfg(windows)]
+            options.attributes(FILE_FLAG_OVERLAPPED);
             options.open(path)
         })
         .await
@@ -165,6 +172,11 @@ impl OpenOptions {
 
     #[inline]
     fn open_blocking(&self, path: &Path) -> io::Result<std::fs::File> {
+        #[cfg(windows)]
+        use std::os::windows::fs::OpenOptionsExt;
+        #[cfg(windows)]
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
         let mut options = std::fs::OpenOptions::new();
         options
             .read(self.read)
@@ -173,6 +185,8 @@ impl OpenOptions {
             .truncate(self.truncate)
             .create(self.create)
             .create_new(self.create_new);
+        #[cfg(windows)]
+        options.attributes(FILE_FLAG_OVERLAPPED);
         options.open(path)
     }
 
