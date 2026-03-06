@@ -169,6 +169,11 @@ where
     runtime.spawn_blocking(f).await
 }
 
+#[inline]
+pub fn supports_completion() -> bool {
+    current_driver().map_or(false, |driver| driver.supports_completion())
+}
+
 impl RuntimeInner {
     #[inline]
     pub(crate) fn spawn<T>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T>
