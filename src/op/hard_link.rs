@@ -1,6 +1,5 @@
 use std::ffi::CString;
 use std::io;
-use std::os::fd::RawFd;
 use std::task::{Context, Poll};
 
 use crate::driver::AnyDriver;
