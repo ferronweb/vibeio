@@ -30,8 +30,6 @@ pub enum ZeroBehavior {
 /// Sleep::new(Duration::from_millis(100)).await;
 /// ```
 pub struct Sleep {
-    /// Requested duration
-    duration: Duration,
     /// The timer handle returned by the timer driver when the timer was scheduled.
     /// `None` means we haven't scheduled yet.
     handle: Option<TimerHandle>,
@@ -42,6 +40,8 @@ pub struct Sleep {
     yield_scheduled: Cell<bool>,
     /// How to behave for durations below the timer resolution (less than 1ms).
     zero_behavior: ZeroBehavior,
+    /// The absolute deadline when this sleep should complete.
+    deadline: Instant,
 }
 
 impl Sleep {
@@ -49,11 +49,11 @@ impl Sleep {
     #[inline]
     pub fn new(duration: Duration) -> Self {
         Self {
-            duration,
             handle: None,
             fired: Cell::new(false),
             yield_scheduled: Cell::new(false),
             zero_behavior: ZeroBehavior::Immediate,
+            deadline: Instant::now() + duration,
         }
     }
 
@@ -61,11 +61,11 @@ impl Sleep {
     #[inline]
     pub fn new_with_zero_behavior(duration: Duration, zero_behavior: ZeroBehavior) -> Self {
         Self {
-            duration,
             handle: None,
             fired: Cell::new(false),
             yield_scheduled: Cell::new(false),
             zero_behavior,
+            deadline: Instant::now() + duration,
         }
     }
 
@@ -88,8 +88,7 @@ impl Sleep {
     #[inline]
     pub fn reset(&mut self, deadline: Instant) {
         // Compute relative duration until deadline and update state.
-        let duration = deadline.saturating_duration_since(Instant::now());
-        self.duration = duration;
+        self.deadline = deadline;
         self.fired.set(false);
         self.yield_scheduled.set(false);
 
@@ -114,9 +113,10 @@ impl Future for Sleep {
             return Poll::Ready(());
         }
 
+        let duration = this.deadline.saturating_duration_since(Instant::now());
         if this.handle.is_none() {
             // First poll: if duration resolution is below 1ms, handle specially.
-            let millis = this.duration.as_millis() as u64;
+            let millis = duration.as_millis() as u64;
             if millis < 1 {
                 match this.zero_behavior {
                     ZeroBehavior::Immediate => {
@@ -144,7 +144,7 @@ impl Future for Sleep {
 
             // The timer driver expects a task `Waker`. We clone the task waker here.
             let waker = cx.waker().clone();
-            match timer_rc.submit(this.duration, waker) {
+            match timer_rc.submit(duration, waker) {
                 Some(handle) => {
                     this.handle = Some(handle);
                     // Not fired yet.
@@ -159,12 +159,38 @@ impl Future for Sleep {
         } else {
             // We were previously scheduled, and now we've been polled again.
             // The runtime's timer driver will wake the task by calling the task
-            // waker when the timer expires. Being polled now means we assume the
-            // timer fired — mark fired and return Ready.
-            this.fired.set(true);
-            // Drop the handle (we'll also attempt to cancel it in Drop if it remains).
-            this.handle = None;
-            Poll::Ready(())
+            // waker when the timer expires.
+
+            // Check if the deadline has actually been reached
+            if Instant::now() >= this.deadline {
+                this.fired.set(true);
+                // Drop the handle (we'll also attempt to cancel it in Drop if it remains).
+                this.handle = None;
+                Poll::Ready(())
+            } else {
+                // Spurious wakeup, we need to wait more.
+                // The timer might have woken us up early, or another waker woke the task.
+                // Re-register the waker to ensure we get woken up again.
+                if let Some(handle) = this.handle.take() {
+                    if let Some(timer_rc) = current_timer() {
+                        timer_rc.cancel(handle);
+                        let waker = cx.waker().clone();
+                        match timer_rc.submit(duration, waker) {
+                            Some(handle) => {
+                                this.handle = Some(handle);
+                                // Not fired yet.
+                                return Poll::Pending;
+                            }
+                            None => {
+                                // Timer driver woke us immediately (duration rounded to 0 or similar).
+                                this.fired.set(true);
+                                return Poll::Ready(());
+                            }
+                        }
+                    }
+                }
+                Poll::Pending
+            }
         }
     }
 }

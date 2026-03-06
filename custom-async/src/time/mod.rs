@@ -12,16 +12,6 @@
 //!   panic (matching the library's general behavior for runtime-only APIs).
 //! - The `Timer` driver accepts a `Waker` and returns an optional `TimerHandle`.
 //!   We store the `TimerHandle` and cancel it if the Sleep is dropped before firing.
-//!
-//! Caveat:
-//! - The runtime's timer driver wakes the task's normal waker when the timer
-//!   expires. We do not have a separate firing notification; therefore when a
-//!   task is polled after scheduling a timeout/sleep we treat that poll as the
-//!   timer having fired. This is the same model used in a number of simple
-//!   runtimes and matches how the provided `Timer` driver integrates with the
-//!   task waker. It means a poll triggered by something else (rare) could
-//!   complete the sleep early; in practice this is uncommon for the intended
-//!   use-cases in this project.
 
 mod interval;
 mod sleep;
