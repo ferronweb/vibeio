@@ -18,6 +18,8 @@ mod recvfrom;
 mod rename;
 mod send;
 mod sendto;
+#[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
+mod statx; // musl libc 1.1.x doesn't support statx
 #[cfg(target_os = "linux")]
 mod symlink;
 #[cfg(target_os = "linux")]
@@ -49,6 +51,8 @@ pub use recvfrom::RecvfromOp;
 pub use rename::RenameOp;
 pub use send::SendOp;
 pub use sendto::SendtoOp;
+#[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
+pub use statx::StatxOp;
 #[cfg(target_os = "linux")]
 pub use symlink::SymlinkOp;
 #[cfg(target_os = "linux")]

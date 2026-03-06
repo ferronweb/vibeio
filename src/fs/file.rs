@@ -10,6 +10,7 @@ use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, IntoRawHandle, RawHandle};
 
+use crate::fs::Metadata;
 use crate::{
     driver::RegistrationMode,
     executor::current_driver,
@@ -216,7 +217,33 @@ impl File {
         }
     }
 
-    // TODO: metadata-related methods (`metadata`, `set_permissions`, timestamps, etc.).
+    #[inline]
+    pub async fn metadata(&self) -> io::Result<Metadata> {
+        if let Some(handle) = self.completion_handle() {
+            #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
+            {
+                use std::ffi::CString;
+
+                let mut op = crate::op::StatxOp::new(
+                    handle.handle,
+                    CString::new(b"").expect("invalid path"),
+                    libc::AT_EMPTY_PATH,
+                    libc::STATX_ALL,
+                );
+                let statx = poll_fn(move |cx| handle.poll_op(cx, &mut op)).await?;
+                Ok(Metadata::from_statx(statx))
+            }
+            #[cfg(not(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3))))]
+            {
+                let _ = handle;
+                metadata_in_blocking_pool(&self.inner).await
+            }
+        } else if current_driver().is_some() {
+            metadata_in_blocking_pool(&self.inner).await
+        } else {
+            metadata_blocking(&self.inner)
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -258,10 +285,16 @@ fn sync_data_blocking(file: &std::fs::File) -> io::Result<()> {
 }
 
 #[inline]
+fn metadata_blocking(file: &std::fs::File) -> io::Result<Metadata> {
+    Ok(Metadata::from_std(file.metadata()?))
+}
+
+#[inline]
 pub(crate) fn blocking_pool_io_error() -> io::Error {
     io::Error::new(ErrorKind::Other, "can't spawn blocking task for file I/O")
 }
 
+#[inline]
 async fn read_at_in_blocking_pool(
     file: &std::fs::File,
     buf: &mut [u8],
@@ -281,6 +314,7 @@ async fn read_at_in_blocking_pool(
     Ok(read)
 }
 
+#[inline]
 async fn write_at_in_blocking_pool(
     file: &std::fs::File,
     buf: &[u8],
@@ -293,6 +327,7 @@ async fn write_at_in_blocking_pool(
         .map_err(|_| blocking_pool_io_error())?
 }
 
+#[inline]
 async fn sync_all_in_blocking_pool(file: &std::fs::File) -> io::Result<()> {
     let file = file.try_clone()?;
     crate::spawn_blocking(move || sync_all_blocking(&file))
@@ -300,9 +335,18 @@ async fn sync_all_in_blocking_pool(file: &std::fs::File) -> io::Result<()> {
         .map_err(|_| blocking_pool_io_error())?
 }
 
+#[inline]
 async fn sync_data_in_blocking_pool(file: &std::fs::File) -> io::Result<()> {
     let file = file.try_clone()?;
     crate::spawn_blocking(move || sync_data_blocking(&file))
+        .await
+        .map_err(|_| blocking_pool_io_error())?
+}
+
+#[inline]
+async fn metadata_in_blocking_pool(file: &std::fs::File) -> io::Result<Metadata> {
+    let file = file.try_clone()?;
+    crate::spawn_blocking(move || metadata_blocking(&file))
         .await
         .map_err(|_| blocking_pool_io_error())?
 }

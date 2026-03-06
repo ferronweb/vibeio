@@ -1,4 +1,5 @@
 mod file;
+mod metadata;
 mod open_options;
 
 #[cfg(target_os = "linux")]
@@ -6,6 +7,7 @@ use std::ffi::CString;
 use std::path::PathBuf;
 
 pub use file::File;
+pub use metadata::Metadata;
 pub use open_options::OpenOptions;
 
 #[cfg(windows)]
@@ -388,6 +390,42 @@ pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<(
     crate::spawn_blocking(move || std::fs::remove_file(path))
         .await
         .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+}
+
+#[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
+pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Metadata> {
+    let path = path.as_ref();
+
+    let driver = crate::executor::current_driver();
+    if driver.as_ref().is_some_and(|d| d.supports_completion()) {
+        let path_cstr = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let mut driver = driver.expect("invalid driver state");
+        let mut op = crate::op::StatxOp::new(libc::AT_FDCWD, path_cstr, 0, libc::STATX_ALL);
+        let statx = std::future::poll_fn(move |cx| op.poll_completion(cx, &mut driver)).await?;
+        Ok(Metadata::from_statx(statx))
+    } else {
+        let path = path.to_owned();
+        Ok(Metadata::from_std(
+            crate::spawn_blocking(move || std::fs::metadata(path))
+                .await
+                .map_err(|_| crate::fs::file::blocking_pool_io_error())??,
+        ))
+    }
+}
+
+#[cfg(not(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3))))]
+pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Metadata> {
+    let path = path.as_ref().to_owned();
+    Ok(Metadata::from_std(
+        crate::spawn_blocking(move || std::fs::metadata(path))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())??,
+    ))
 }
 
 #[cfg(test)]
