@@ -68,9 +68,7 @@ impl Metadata {
     pub fn is_dir(&self) -> bool {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => {
-                (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFDIR
-            }
+            MetadataInner::Statx(st) => (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFDIR,
             MetadataInner::Std(md) => md.is_dir(),
         }
     }
@@ -79,9 +77,7 @@ impl Metadata {
     pub fn is_file(&self) -> bool {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => {
-                (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFREG
-            }
+            MetadataInner::Statx(st) => (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFREG,
             MetadataInner::Std(md) => md.is_file(),
         }
     }
@@ -90,9 +86,7 @@ impl Metadata {
     pub fn is_symlink(&self) -> bool {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => {
-                (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFLNK
-            }
+            MetadataInner::Statx(st) => (st.stx_mode as u32 & libc::S_IFMT) == libc::S_IFLNK,
             MetadataInner::Std(md) => md.file_type().is_symlink(),
         }
     }

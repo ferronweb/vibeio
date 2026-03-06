@@ -172,9 +172,8 @@ impl UringDriver {
 
         let mut sq = ring.submission();
         unsafe {
-            sq.push(&entry).map_err(|_| {
-                io::Error::other("io_uring submission queue is full")
-            })?;
+            sq.push(&entry)
+                .map_err(|_| io::Error::other("io_uring submission queue is full"))?;
         }
 
         Ok(())
@@ -504,9 +503,7 @@ impl Driver for UringDriver {
         let token = vacant_completion.key();
 
         // Build the SQE. If this fails, return the error.
-        let entry = match op
-            .build_completion_entry(Self::encode_completion_key(token))
-        {
+        let entry = match op.build_completion_entry(Self::encode_completion_key(token)) {
             Ok(entry) => entry,
             Err(err) => return CompletionIoResult::SubmitErr(err),
         };

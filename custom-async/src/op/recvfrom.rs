@@ -295,11 +295,7 @@ impl Op for RecvfromOp<'_> {
             let address = self
                 .completion_addr
                 .as_ref()
-                .ok_or_else(|| {
-                    io::Error::other(
-                        "recvfrom completion missing source address",
-                    )
-                })
+                .ok_or_else(|| io::Error::other("recvfrom completion missing source address"))
                 .and_then(sockaddr_storage_to_socketaddr);
             Poll::Ready(address.map(|address| (result as usize, address)))
         }
