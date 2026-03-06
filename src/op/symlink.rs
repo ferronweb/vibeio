@@ -79,31 +79,3 @@ impl Op for SymlinkOp {
         Ok(entry)
     }
 }
-
-#[cfg(windows)]
-pub struct SymlinkDirOp {
-    path: String,
-    target: String,
-}
-
-#[cfg(windows)]
-impl SymlinkDirOp {
-    #[inline]
-    pub fn new(path: String, target: String) -> Self {
-        Self { path, target }
-    }
-}
-
-#[cfg(windows)]
-pub struct SymlinkFileOp {
-    path: String,
-    target: String,
-}
-
-#[cfg(windows)]
-impl SymlinkFileOp {
-    #[inline]
-    pub fn new(path: String, target: String) -> Self {
-        Self { path, target }
-    }
-}
