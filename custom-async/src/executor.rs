@@ -354,29 +354,20 @@ impl Runtime {
                 inner.drain_ready(&mut batch);
             }
 
-            #[cfg(feature = "time")]
-            let deadline = inner.timer.as_ref().and_then(|timer| {
-                if batch.is_empty() {
-                    // Spin the timing wheel
-                    let deadline = timer.spin_and_get_deadline();
-                    if let Some(next_task) = inner.take_next_task() {
-                        // Fast path: if there's a task ready, run it immediately
-                        batch.push(next_task);
-                        next_task_taken = true;
-                    } else {
-                        inner.drain_ready(&mut batch);
-                    }
-                    deadline
-                } else {
-                    None
-                }
-            });
-
             if batch.is_empty() {
                 inner.waiting.store(true, Ordering::Release);
+                #[cfg(feature = "time")]
+                let (deadline, woken_up) = if let Some(timer) = inner.timer.as_ref() {
+                    // Spin the timing wheel
+                    timer.spin_and_get_deadline()
+                } else {
+                    (None, false)
+                };
 
                 #[cfg(feature = "time")]
-                inner.driver.wait(deadline);
+                if !woken_up {
+                    inner.driver.wait(deadline);
+                }
                 #[cfg(not(feature = "time"))]
                 inner.driver.wait(None);
 

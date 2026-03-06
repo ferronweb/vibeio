@@ -39,14 +39,16 @@ impl Timer {
         wheel.remove(handle);
     }
 
-    pub fn spin_and_get_deadline(&self) -> Option<Duration> {
+    pub fn spin_and_get_deadline(&self) -> (Option<Duration>, bool) {
         let mut instant = self.instant.borrow_mut();
         let mut wheel = self.wheel.borrow_mut();
+        let mut woken_up = false;
         if !wheel.is_empty() {
             // Advance the timer wheel, but only if not empty
             for waker in wheel.advance(instant.elapsed().as_millis() as u64) {
                 // Wake the pending tasks
                 waker.wake();
+                woken_up = true;
             }
         }
 
@@ -56,9 +58,12 @@ impl Timer {
         //   return NonZeroU64::new(now + bucket_offset * Self::time_units(level));
         // So we need to subtract the current time to get the relative deadline
         let now = wheel.now();
-        wheel
-            .nearest_wakeup()
-            .map(|deadline| Duration::from_millis(deadline.get() - now))
+        (
+            wheel
+                .nearest_wakeup()
+                .map(|deadline| Duration::from_millis(deadline.get() - now)),
+            woken_up,
+        )
     }
 }
 
@@ -99,7 +104,7 @@ mod tests {
         let _handle = timer.submit(Duration::from_millis(50), waker);
 
         // The deadline should be Some and close to 50 ms
-        let deadline = timer.spin_and_get_deadline();
+        let (deadline, _woken_up) = timer.spin_and_get_deadline();
         assert!(deadline.is_some());
         let ms = deadline.unwrap().as_millis();
         assert!(ms <= 50 && ms > 0, "Deadline should be <= 50ms, got {}", ms);
@@ -118,7 +123,7 @@ mod tests {
         timer.cancel(handle);
 
         // After cancel, deadline should be None
-        let deadline = timer.spin_and_get_deadline();
+        let (deadline, _woken_up) = timer.spin_and_get_deadline();
         assert!(deadline.is_none());
     }
 
