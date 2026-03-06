@@ -1,0 +1,40 @@
+name: Publish Crate
+
+on:
+  push:
+    tags:
+      - "*" # This triggers the action for tags like v1.0.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          override-file: rust-toolchain
+
+      - name: Install cargo-workspaces
+        shell: bash
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall --no-confirm cargo-workspaces --force
+
+      - name: Build
+        run: cargo build --release
+
+      #- name: Run Tests
+      #  run: cargo test --release
+
+      - name: Publish
+        run: |
+          git switch -c master
+          cargo workspaces publish --token ${{ secrets.CRATES_TOKEN }} --no-git-commit --publish-as-is
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}

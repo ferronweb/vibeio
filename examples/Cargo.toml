@@ -1,0 +1,23 @@
+[package]
+name = "custom-async-examples"
+version = "0.1.2"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "tcp-echo-server"
+path = "src/tcp-echo-server/main.rs"
+
+#[[bin]]
+#name = "lowlevel-cgi-client"
+#path = "src/lowlevel/client.rs"
+
+[dependencies]
+custom-async = { workspace = true }
+
+[dev-dependencies]
+shiba = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

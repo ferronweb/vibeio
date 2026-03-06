@@ -49,10 +49,19 @@ dependencies = [
  "libc",
  "mio",
  "oneshot",
+ "shiba",
  "slab",
  "tm-wheel",
  "tokio",
  "windows-sys",
+]
+
+[[package]]
+name = "custom-async-examples"
+version = "0.1.2"
+dependencies = [
+ "custom-async",
+ "shiba",
 ]
 
 [[package]]
@@ -154,6 +163,12 @@ checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "shiba"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46e999d3caafdbe07de20db4c787b3be9d669574ef397aa6efc6b19f7c8eef62"
 
 [[package]]
 name = "slab"

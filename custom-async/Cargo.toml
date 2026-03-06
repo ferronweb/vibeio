@@ -1,0 +1,45 @@
+[package]
+name = "custom-async"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+futures-util = "0.3.32"
+mio = "1.1.1"
+slab = "0.4.12"
+tm-wheel = { version = "0.1.1", optional = true }
+tokio = { version = "1.49.0", features = ["io-util"] }
+crossbeam-queue = "0.3"
+oneshot = { version = "0.2.1", features = ["async", "std"] }
+crossbeam-channel = { version = "0.5.15", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+mio = { version = "1.1.1", features = ["os-poll", "os-ext"] }
+libc = "0.2.176"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_IO",
+    "Win32_Networking_WinSock",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.6"
+
+[dev-dependencies]
+shiba = { workspace = true }
+
+[features]
+default = ["time", "blocking-default"]
+time = ["tm-wheel"]
+blocking-default = ["crossbeam-channel"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
