@@ -6,9 +6,9 @@ mod open_options;
 use std::ffi::CString;
 use std::path::PathBuf;
 
-pub use file::File;
-pub use metadata::Metadata;
-pub use open_options::OpenOptions;
+pub use file::*;
+pub use metadata::*;
+pub use open_options::*;
 
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::CreateSymbolicLinkW;
