@@ -241,7 +241,11 @@ impl RuntimeInner {
         let slab = self.token_to_task.borrow();
         while let Some(token) = self.remote_queue.pop() {
             if let Some(task) = slab.get(token) {
-                self.enqueue(task.clone());
+                // SAFETY: this runtime is single-threaded. All ready-queue mutation goes
+                // through runtime/task wake paths on the same thread.
+                unsafe {
+                    (&mut *self.queue.get()).push_front(task.clone());
+                }
             }
         }
 
@@ -339,10 +343,13 @@ impl Runtime {
                 return output;
             }
 
+            let mut next_task_taken = false;
+
             batch.clear();
             if let Some(next_task) = inner.take_next_task() {
                 // Fast path: if there's a task ready, run it immediately
                 batch.push(next_task);
+                next_task_taken = true;
             } else {
                 inner.drain_ready(&mut batch);
             }
@@ -355,6 +362,7 @@ impl Runtime {
                     if let Some(next_task) = inner.take_next_task() {
                         // Fast path: if there's a task ready, run it immediately
                         batch.push(next_task);
+                        next_task_taken = true;
                     } else {
                         inner.drain_ready(&mut batch);
                     }
@@ -393,7 +401,9 @@ impl Runtime {
                 }
             }
 
-            inner.driver.flush();
+            if !next_task_taken {
+                inner.driver.flush();
+            }
         }
     }
 }
