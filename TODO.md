@@ -1,7 +1,9 @@
 # TODO
 
 - Some I/O wrapper structs:
-  - File
+  - File (partially implemented)
+    - directory-related code
+    - metadata
   - stdio
   - std::process wrappers
   - Unix pipes
