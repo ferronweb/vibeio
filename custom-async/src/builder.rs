@@ -94,10 +94,10 @@ impl RuntimeBuilder {
 
     /// Sets the default blocking thread pool for the runtime with specified maximum number of threads.
     #[cfg(feature = "blocking-default")]
-    pub fn default_blocking_pool(mut self, max_threads: usize, wait_on_exit: bool) -> Self {
-        self.blocking_pool = Some(Box::new(
-            DefaultBlockingThreadPool::with_max_threads_and_wait_on_exit(max_threads, wait_on_exit),
-        ));
+    pub fn default_blocking_pool(mut self, max_threads: usize) -> Self {
+        self.blocking_pool = Some(Box::new(DefaultBlockingThreadPool::with_max_threads(
+            max_threads,
+        )));
         self
     }
 

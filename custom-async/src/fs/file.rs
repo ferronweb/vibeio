@@ -1,7 +1,9 @@
+use std::cell::{RefCell, UnsafeCell};
 use std::future::poll_fn;
 use std::io::{self, ErrorKind};
 use std::mem::ManuallyDrop;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use mio::Interest;
 
@@ -333,12 +335,29 @@ async fn read_at_in_blocking_pool<B: IoBufMut>(
     };
     let temp_slice: &'static mut [u8] =
         unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
-    (
-        crate::spawn_blocking(move || read_at_blocking(&file, temp_slice, offset))
-            .await
-            .unwrap_or_else(|_| Err(blocking_pool_io_error())),
-        buf,
-    )
+    let buf = Arc::new(Mutex::new(RefCell::new(Some(buf))));
+    let buf_clone = buf.clone();
+    crate::spawn_blocking(move || {
+        let result = read_at_blocking(&file, temp_slice, offset);
+        (
+            result,
+            buf_clone
+                .try_lock()
+                .ok()
+                .and_then(|rc| rc.take())
+                .expect("buf is none"),
+        )
+    })
+    .await
+    .unwrap_or_else(|_| {
+        (
+            Err(blocking_pool_io_error()),
+            buf.try_lock()
+                .ok()
+                .and_then(|rc| rc.take())
+                .expect("buf is none"),
+        )
+    })
 }
 
 #[inline]
@@ -353,12 +372,29 @@ async fn write_at_in_blocking_pool<B: IoBuf>(
     };
     let temp_slice: &'static [u8] =
         unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
-    (
-        crate::spawn_blocking(move || write_at_blocking(&file, temp_slice, offset))
-            .await
-            .unwrap_or_else(|_| Err(blocking_pool_io_error())),
-        buf,
-    )
+    let buf = Arc::new(Mutex::new(RefCell::new(Some(buf))));
+    let buf_clone = buf.clone();
+    crate::spawn_blocking(move || {
+        let result = write_at_blocking(&file, temp_slice, offset);
+        (
+            result,
+            buf_clone
+                .try_lock()
+                .ok()
+                .and_then(|rc| rc.take())
+                .expect("buf is none"),
+        )
+    })
+    .await
+    .unwrap_or_else(|_| {
+        (
+            Err(blocking_pool_io_error()),
+            buf.try_lock()
+                .ok()
+                .and_then(|rc| rc.take())
+                .expect("buf is none"),
+        )
+    })
 }
 
 #[inline]
