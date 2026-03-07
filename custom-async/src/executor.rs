@@ -265,9 +265,14 @@ impl RuntimeInner {
         // SAFETY: this runtime is single-threaded and we only hold this mutable
         // access while draining the queue before polling any task futures.
         let queue = unsafe { &mut *self.queue.get() };
+        let mut budget = 256;
         while let Some(task) = queue.pop_front() {
             task.mark_dequeued();
             batch.push(task);
+            budget -= 1;
+            if budget == 0 {
+                break;
+            }
         }
     }
 
@@ -351,7 +356,7 @@ impl Runtime {
         let _runtime_guard = CurrentRuntimeGuard::enter(inner.clone());
 
         let spawned_task = inner.spawn(future);
-        let mut batch = Vec::with_capacity(4096);
+        let mut batch = Vec::with_capacity(256);
 
         loop {
             if let Some(output) = spawned_task.try_take_output() {
