@@ -17,6 +17,7 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 
 use crate::fd_inner::InnerRawHandle;
+use crate::io::{IoBuf, IoBufMut};
 use crate::op::{ConnectOp, RecvOp, RecvfromOp, SendOp, SendtoOp};
 
 #[cfg(unix)]
@@ -218,60 +219,80 @@ impl UdpSocket {
     }
 
     #[inline]
-    pub async fn recv(&self, buf: &mut [u8]) -> Result<usize, io::Error> {
+    pub async fn recv<B: IoBufMut>(&self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
         let mut op = RecvOp::new(handle, buf);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 
     #[inline]
-    pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), io::Error> {
+    pub async fn recv_from<B: IoBufMut>(
+        &self,
+        buf: B,
+    ) -> (Result<(usize, SocketAddr), io::Error>, B) {
         let handle = &self.handle;
         let mut op = RecvfromOp::new(handle, buf);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 
     #[inline]
-    pub async fn send(&self, buf: &[u8]) -> Result<usize, io::Error> {
+    pub async fn send<B: IoBuf>(&self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
         let mut op = SendOp::new(handle, buf);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 
     #[inline]
-    pub async fn send_to(
+    pub async fn send_to<B: IoBuf>(
         &self,
-        buf: &[u8],
+        mut buf: B,
         address: impl ToSocketAddrs,
-    ) -> Result<usize, io::Error> {
-        let addresses = address.to_socket_addrs()?;
+    ) -> (Result<usize, io::Error>, B) {
+        let addresses = match address.to_socket_addrs() {
+            Ok(addresses) => addresses,
+            Err(err) => return (Err(err), buf),
+        };
         let mut last_error = None;
 
         for address in addresses {
             let handle = &self.handle;
             let mut op = SendtoOp::new(handle, buf, address);
-            match poll_fn(move |cx| handle.poll_op(cx, &mut op)).await {
-                Ok(sent) => return Ok(sent),
-                Err(err) => last_error = Some(err),
+            match poll_fn(|cx| handle.poll_op(cx, &mut op)).await {
+                Ok(sent) => return (Ok(sent), op.take_bufs()),
+                Err(err) => {
+                    buf = op.take_bufs();
+                    last_error = Some(err);
+                }
             }
         }
 
-        Err(last_error
-            .unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses")))
+        (
+            Err(last_error
+                .unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses"))),
+            buf,
+        )
     }
 
     #[inline]
-    pub async fn peek(&self, buf: &mut [u8]) -> Result<usize, io::Error> {
+    pub async fn peek<B: IoBufMut>(&self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
         let mut op = RecvOp::new_peek(handle, buf);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 
     #[inline]
-    pub async fn peek_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), io::Error> {
+    pub async fn peek_from<B: IoBufMut>(
+        &self,
+        buf: B,
+    ) -> (Result<(usize, SocketAddr), io::Error>, B) {
         let handle = &self.handle;
         let mut op = RecvfromOp::new_peek(handle, buf);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 
     #[inline]
@@ -471,24 +492,21 @@ mod tests {
             let client_addr = client.local_addr().expect("client local_addr should work");
 
             let sent = client
-                .send_to(b"ping", server_addr)
+                .send_to(b"ping".to_vec(), server_addr)
                 .await
+                .0
                 .expect("send_to should succeed");
             assert_eq!(sent, 4);
 
-            let mut peek_from_buf = [0u8; 16];
-            let (peeked, from_peek) = server
-                .peek_from(&mut peek_from_buf)
-                .await
-                .expect("peek_from should succeed");
+            let peek_from_buf = vec![0u8; 16];
+            let (data, peek_from_buf) = server.peek_from(peek_from_buf).await;
+            let (peeked, from_peek) = data.expect("peek_from should succeed");
             assert_eq!(&peek_from_buf[..peeked], b"ping");
             assert_eq!(from_peek, client_addr);
 
-            let mut recv_from_buf = [0u8; 16];
-            let (read, from_read) = server
-                .recv_from(&mut recv_from_buf)
-                .await
-                .expect("recv_from should succeed");
+            let recv_from_buf = vec![0u8; 16];
+            let (data, recv_from_buf) = server.recv_from(recv_from_buf).await;
+            let (read, from_read) = data.expect("recv_from should succeed");
             assert_eq!(&recv_from_buf[..read], b"ping");
             assert_eq!(from_read, client_addr);
 
@@ -501,21 +519,21 @@ mod tests {
                 .await
                 .expect("client connect should work");
 
-            let sent = client.send(b"echo").await.expect("send should succeed");
+            let sent = client
+                .send(b"echo".to_vec())
+                .await
+                .0
+                .expect("send should succeed");
             assert_eq!(sent, 4);
 
-            let mut peek_buf = [0u8; 16];
-            let peeked = server
-                .peek(&mut peek_buf)
-                .await
-                .expect("peek should succeed");
+            let peek_buf = vec![0u8; 16];
+            let (peeked, peek_buf) = server.peek(peek_buf).await;
+            let peeked = peeked.expect("peek should succeed");
             assert_eq!(&peek_buf[..peeked], b"echo");
 
-            let mut recv_buf = [0u8; 16];
-            let read = server
-                .recv(&mut recv_buf)
-                .await
-                .expect("recv should succeed");
+            let recv_buf = vec![0u8; 16];
+            let (read, recv_buf) = server.recv(recv_buf).await;
+            let read = read.expect("recv should succeed");
             assert_eq!(&recv_buf[..read], b"echo");
         });
     }

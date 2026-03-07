@@ -134,7 +134,6 @@ pub trait Op {
 #[cfg(all(test, target_os = "linux"))]
 mod vectored_uring_tests {
     use std::future::poll_fn;
-    use std::io::{IoSlice, IoSliceMut};
 
     use mio::Interest;
 
@@ -168,13 +167,22 @@ mod vectored_uring_tests {
             // Prepare vectored write buffers
             let a = b"hello ";
             let b = b"world!";
-            let bufs = [IoSlice::new(a), IoSlice::new(b)];
+            let bufs = vec![
+                libc::iovec {
+                    iov_base: a.as_ptr() as *mut libc::c_void,
+                    iov_len: a.len(),
+                },
+                libc::iovec {
+                    iov_base: b.as_ptr() as *mut libc::c_void,
+                    iov_len: b.len(),
+                },
+            ];
             let total_len = a.len() + b.len();
 
             // Submit vectored write. poll_writev will choose completion-path (io_uring)
             // for this handle because the driver supports completions.
             let whandle_ref = &whandle;
-            let mut writev_op = WritevOp::new(whandle_ref, &bufs);
+            let mut writev_op = WritevOp::new(whandle_ref, bufs);
             let write_res = poll_fn(move |cx| whandle_ref.poll_op(cx, &mut writev_op)).await;
             let written = write_res.expect("writev failed");
             assert!(
@@ -185,11 +193,20 @@ mod vectored_uring_tests {
             // Prepare vectored read buffers (split sizes arbitrarily)
             let mut dst1 = vec![0u8; 3]; // will receive "hel"
             let mut dst2 = vec![0u8; total_len - 3]; // rest
-            let mut rd_bufs = [IoSliceMut::new(&mut dst1), IoSliceMut::new(&mut dst2)];
+            let rd_bufs = vec![
+                libc::iovec {
+                    iov_base: dst1.as_mut_ptr() as *mut libc::c_void,
+                    iov_len: dst1.len(),
+                },
+                libc::iovec {
+                    iov_base: dst2.as_mut_ptr() as *mut libc::c_void,
+                    iov_len: dst2.len(),
+                },
+            ];
 
             // Read using vectored read. poll_readv will choose completion-path when available.
             let rhandle_ref = &rhandle;
-            let mut readv_op = ReadvOp::new(rhandle_ref, &mut rd_bufs);
+            let mut readv_op = ReadvOp::new(rhandle_ref, rd_bufs);
             let read_res = poll_fn(move |cx| rhandle_ref.poll_op(cx, &mut readv_op)).await;
             let read = read_res.expect("readv failed");
 

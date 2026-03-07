@@ -1,4 +1,4 @@
-use std::io::{self, IoSlice};
+use std::io::{self};
 use std::task::{Context, Poll};
 
 use mio::Interest;
@@ -16,20 +16,23 @@ use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
+#[cfg(unix)]
+use crate::io::IoVec;
+use crate::io::IoVectoredBuf;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
 #[cfg(unix)]
 #[inline]
-fn iovec_to_system(bufs: &[IoSlice<'_>]) -> Box<[libc::iovec]> {
+fn iovec_to_system(bufs: &[IoVec]) -> Box<[libc::iovec]> {
     use std::mem::MaybeUninit;
 
     let mut iovecs_maybeuninit: Box<[MaybeUninit<libc::iovec>]> = Box::new_uninit_slice(bufs.len());
     for (index, s) in bufs.iter().enumerate() {
         let iov = libc::iovec {
-            iov_base: s.as_ptr() as *mut libc::c_void,
-            iov_len: s.len(),
+            iov_base: s.ptr as *mut libc::c_void,
+            iov_len: s.len,
         };
         iovecs_maybeuninit[index].write(iov);
     }
@@ -39,12 +42,13 @@ fn iovec_to_system(bufs: &[IoSlice<'_>]) -> Box<[libc::iovec]> {
 
 #[cfg(windows)]
 #[inline]
-fn socket_write_vectored(socket: SOCKET, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+fn socket_write_vectored<B: IoVectoredBuf>(socket: SOCKET, bufs: &B) -> io::Result<usize> {
     use windows_sys::Win32::Networking::WinSock::{self as WinSock, SOCKET_ERROR, WSABUF};
 
-    let mut wsabufs = Vec::with_capacity(bufs.len());
-    for buf in bufs.iter() {
-        let len = u32::try_from(buf.len()).map_err(|_| {
+    let iovecs = bufs.as_iovecs();
+    let mut wsabufs = Vec::with_capacity(iovecs.len());
+    for iovec in iovecs {
+        let len = u32::try_from(iovec.len).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "writev buffer is too large for Windows socket I/O",
@@ -52,7 +56,7 @@ fn socket_write_vectored(socket: SOCKET, bufs: &[IoSlice<'_>]) -> io::Result<usi
         })?;
         wsabufs.push(WSABUF {
             len,
-            buf: buf.as_ptr().cast_mut().cast(),
+            buf: iovec.ptr as *mut _,
         });
     }
 
@@ -77,9 +81,9 @@ fn socket_write_vectored(socket: SOCKET, bufs: &[IoSlice<'_>]) -> io::Result<usi
     Ok(bytes as usize)
 }
 
-pub struct WritevOp<'a, 'b> {
+pub struct WritevOp<'a, B: IoVectoredBuf> {
     handle: &'a InnerRawHandle,
-    bufs: &'a [IoSlice<'b>],
+    bufs: Option<B>,
     completion_token: Option<usize>,
     #[cfg(windows)]
     completion_wsabufs: Option<Box<[WSABUF]>>,
@@ -89,12 +93,12 @@ pub struct WritevOp<'a, 'b> {
     completion_system_iovecs: Option<Box<[libc::iovec]>>,
 }
 
-impl<'a, 'b> WritevOp<'a, 'b> {
+impl<'a, B: IoVectoredBuf> WritevOp<'a, B> {
     #[inline]
-    pub fn new(handle: &'a InnerRawHandle, bufs: &'a [IoSlice<'b>]) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, bufs: B) -> Self {
         Self {
             handle,
-            bufs,
+            bufs: Some(bufs),
             completion_token: None,
             #[cfg(windows)]
             completion_wsabufs: None,
@@ -104,9 +108,14 @@ impl<'a, 'b> WritevOp<'a, 'b> {
             completion_system_iovecs: None,
         }
     }
+
+    #[inline]
+    pub fn take_bufs(mut self) -> B {
+        self.bufs.take().unwrap()
+    }
 }
 
-impl Op for WritevOp<'_, '_> {
+impl<B: IoVectoredBuf> Op for WritevOp<'_, B> {
     type Output = usize;
 
     #[cfg(any(unix, windows))]
@@ -116,14 +125,17 @@ impl Op for WritevOp<'_, '_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
+        let bufs = self.bufs.as_ref().unwrap();
+
         #[cfg(unix)]
         let result = {
-            let iovecs = iovec_to_system(self.bufs);
+            let mut iovecs = bufs.as_iovecs();
+            let iovecs_system = iovec_to_system(&mut iovecs);
             let written = unsafe {
                 libc::writev(
                     self.handle.handle,
-                    iovecs.as_ptr(),
-                    iovecs.len() as libc::c_int,
+                    iovecs_system.as_ptr(),
+                    iovecs_system.len() as libc::c_int,
                 )
             };
             if written == -1 {
@@ -135,14 +147,18 @@ impl Op for WritevOp<'_, '_> {
 
         #[cfg(windows)]
         let result = match self.handle.handle {
-            RawOsHandle::Socket(socket) => socket_write_vectored(socket as SOCKET, self.bufs),
+            RawOsHandle::Socket(socket) => socket_write_vectored(socket as SOCKET, bufs),
             RawOsHandle::Handle(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "poll-based writev currently supports sockets only on Windows",
             )),
         };
 
-        poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE)
+        match poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE) {
+            Poll::Ready(Ok(written)) => Poll::Ready(Ok(written)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     #[cfg(any(unix, windows))]
@@ -197,11 +213,13 @@ impl Op for WritevOp<'_, '_> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        let bufs = self.bufs.as_ref().unwrap();
         match self.handle.handle {
             RawOsHandle::Socket(socket) => {
-                let mut wsabufs = Vec::with_capacity(self.bufs.len());
-                for buf in self.bufs.iter() {
-                    let len = u32::try_from(buf.len()).map_err(|_| {
+                let iovecs = bufs.as_iovecs();
+                let mut wsabufs = Vec::with_capacity(iovecs.len());
+                for iovec in iovecs {
+                    let len = u32::try_from(iovec.len).map_err(|_| {
                         io::Error::new(
                             io::ErrorKind::InvalidInput,
                             "writev buffer is too large for Windows socket I/O",
@@ -209,7 +227,7 @@ impl Op for WritevOp<'_, '_> {
                     })?;
                     wsabufs.push(WSABUF {
                         len,
-                        buf: buf.as_ptr().cast_mut().cast(),
+                        buf: iovec.ptr as *mut _,
                     });
                 }
 
@@ -244,8 +262,9 @@ impl Op for WritevOp<'_, '_> {
                 }
             }
             RawOsHandle::Handle(handle) => {
-                let total_len = self.bufs.iter().try_fold(0usize, |acc, buf| {
-                    acc.checked_add(buf.len()).ok_or_else(|| {
+                let iovecs = bufs.as_iovecs();
+                let total_len = (iovecs.iter()).try_fold(0usize, |acc, iovec| {
+                    acc.checked_add(iovec.len).ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidInput, "writev buffer length overflow")
                     })
                 })?;
@@ -257,8 +276,9 @@ impl Op for WritevOp<'_, '_> {
                 })?;
 
                 let mut staging = Vec::with_capacity(total_len);
-                for buf in self.bufs.iter() {
-                    staging.extend_from_slice(buf);
+                for iovec in iovecs {
+                    let slice = unsafe { std::slice::from_raw_parts(iovec.ptr, iovec.len) };
+                    staging.extend_from_slice(slice);
                 }
 
                 let write_result = unsafe {
@@ -299,11 +319,13 @@ impl Op for WritevOp<'_, '_> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
+        let bufs = self.bufs.as_ref().unwrap();
+
         // Build a temporary iovec array for the syscall.
         let iovecs = if let Some(iovecs) = self.completion_system_iovecs.take() {
             iovecs
         } else {
-            iovec_to_system(self.bufs)
+            iovec_to_system(&mut bufs.as_iovecs())
         };
 
         let entry = opcode::Writev::new(
@@ -322,7 +344,7 @@ impl Op for WritevOp<'_, '_> {
     }
 }
 
-impl Drop for WritevOp<'_, '_> {
+impl<B: IoVectoredBuf> Drop for WritevOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
@@ -334,7 +356,7 @@ impl Drop for WritevOp<'_, '_> {
                 #[cfg(not(any(target_os = "linux", windows)))]
                 let bufs = ();
 
-                driver.ignore_completion(completion_token, Box::new(bufs));
+                driver.ignore_completion(completion_token, Box::new((bufs, self.bufs.take())));
             }
         }
     }

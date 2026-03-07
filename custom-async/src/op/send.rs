@@ -13,15 +13,16 @@ use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
+use crate::io::IoBuf;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
 
 #[cfg(windows)]
 #[inline]
-fn socket_send(socket: SOCKET, buf: &[u8]) -> io::Result<usize> {
+fn socket_send<B: IoBuf>(socket: SOCKET, buf: &B) -> io::Result<usize> {
     use windows_sys::Win32::Networking::WinSock::{self as WinSock, SOCKET_ERROR, WSABUF};
 
-    let len = u32::try_from(buf.len()).map_err(|_| {
+    let len = u32::try_from(buf.buf_len()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "write buffer is too large for Windows socket I/O",
@@ -30,7 +31,7 @@ fn socket_send(socket: SOCKET, buf: &[u8]) -> io::Result<usize> {
 
     let mut wsabuf = WSABUF {
         len,
-        buf: buf.as_ptr().cast_mut().cast(),
+        buf: buf.as_buf_ptr().cast_mut().cast(),
     };
     let mut bytes: u32 = 0;
 
@@ -54,28 +55,33 @@ fn socket_send(socket: SOCKET, buf: &[u8]) -> io::Result<usize> {
     Ok(bytes as usize)
 }
 
-pub struct SendOp<'a> {
+pub struct SendOp<'a, B: IoBuf> {
     handle: &'a InnerRawHandle,
-    buf: &'a [u8],
+    buf: Option<B>,
     completion_token: Option<usize>,
     #[cfg(windows)]
     socket_buf: Option<WSABUF>,
 }
 
-impl<'a> SendOp<'a> {
+impl<'a, B: IoBuf> SendOp<'a, B> {
     #[inline]
-    pub fn new(handle: &'a InnerRawHandle, buf: &'a [u8]) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, buf: B) -> Self {
         Self {
             handle,
-            buf,
+            buf: Some(buf),
             completion_token: None,
             #[cfg(windows)]
             socket_buf: None,
         }
     }
+
+    #[inline]
+    pub fn take_bufs(mut self) -> B {
+        self.buf.take().unwrap()
+    }
 }
 
-impl Op for SendOp<'_> {
+impl<B: IoBuf> Op for SendOp<'_, B> {
     type Output = usize;
 
     #[cfg(any(unix, windows))]
@@ -85,13 +91,15 @@ impl Op for SendOp<'_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
+        let buf = self.buf.as_ref().unwrap();
+
         #[cfg(unix)]
         let result = {
             let written = unsafe {
                 libc::send(
                     self.handle.handle,
-                    self.buf.as_ptr().cast::<libc::c_void>(),
-                    self.buf.len(),
+                    buf.as_buf_ptr().cast::<libc::c_void>(),
+                    buf.buf_len(),
                     0,
                 )
             };
@@ -104,14 +112,18 @@ impl Op for SendOp<'_> {
 
         #[cfg(windows)]
         let result = match self.handle.handle {
-            RawOsHandle::Socket(socket) => socket_send(socket as SOCKET, self.buf),
+            RawOsHandle::Socket(socket) => socket_send(socket as SOCKET, buf),
             RawOsHandle::Handle(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "poll-based send currently supports sockets only on Windows",
             )),
         };
 
-        poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE)
+        match poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE) {
+            Poll::Ready(Ok(written)) => Poll::Ready(Ok(written)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     #[cfg(any(unix, windows))]
@@ -145,12 +157,14 @@ impl Op for SendOp<'_> {
         if result < 0 {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
-        Poll::Ready(Ok(result as usize))
+        let written = result as usize;
+        Poll::Ready(Ok(written))
     }
 
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        let buf = self.buf.as_ref().unwrap();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -158,7 +172,7 @@ impl Op for SendOp<'_> {
             ));
         };
 
-        let write_len = u32::try_from(self.buf.len()).map_err(|_| {
+        let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "write buffer is too large for Windows socket I/O",
@@ -170,7 +184,7 @@ impl Op for SendOp<'_> {
             buf: std::ptr::null_mut(),
         });
         wsabuf.len = write_len;
-        wsabuf.buf = self.buf.as_ptr().cast_mut().cast();
+        wsabuf.buf = buf.as_buf_ptr().cast_mut().cast();
 
         let send_result = unsafe {
             WinSock::WSASend(
@@ -204,10 +218,11 @@ impl Op for SendOp<'_> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
+        let buf = self.buf.as_ref().unwrap();
         let entry = opcode::Send::new(
             types::Fd(self.handle.handle),
-            self.buf.as_ptr(),
-            self.buf.len() as _,
+            buf.as_buf_ptr(),
+            buf.buf_len() as _,
         )
         .build()
         .user_data(user_data);
@@ -216,12 +231,19 @@ impl Op for SendOp<'_> {
     }
 }
 
-impl Drop for SendOp<'_> {
+impl<B: IoBuf> Drop for SendOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                driver.ignore_completion(completion_token, Box::new(()));
+                // If the operation is still pending, we must ensure the buffer is not dropped
+                // while the kernel is still writing to it. We transfer ownership of the buffer
+                // to the driver to be dropped when the completion arrives.
+                if let Some(buf) = self.buf.take() {
+                    driver.ignore_completion(completion_token, Box::new(buf));
+                } else {
+                    driver.ignore_completion(completion_token, Box::new(()));
+                }
             }
         }
     }

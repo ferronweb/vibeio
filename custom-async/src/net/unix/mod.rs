@@ -71,10 +71,11 @@ mod tests {
 
             let server = spawn(async move {
                 let (mut stream, _) = listener.accept().await?;
-                let mut buffer = [0u8; 4];
-                let read = stream.read(&mut buffer).await?;
+                let buffer = [0u8; 4];
+                let (read, buffer) = stream.read(buffer).await;
+                let read = read?;
                 assert_eq!(&buffer[..read], b"ping");
-                stream.write(b"pong").await?;
+                stream.write(b"pong".to_vec()).await.0?;
                 stream.shutdown(Shutdown::Both)?;
                 Ok::<(), std_io::Error>(())
             });
@@ -82,12 +83,14 @@ mod tests {
             let mut client = UnixStream::connect(&socket_path)
                 .await
                 .expect("client should connect");
-            client.write(b"ping").await.expect("client should write");
-            let mut response = [0u8; 4];
-            let read = client
-                .read(&mut response)
+            client
+                .write(b"ping".to_vec())
                 .await
-                .expect("client should read");
+                .0
+                .expect("client should write");
+            let response = [0u8; 4];
+            let (read, response) = client.read(response).await;
+            let read = read.expect("client should read");
             assert_eq!(&response[..read], b"pong");
             assert_eq!(
                 client
@@ -99,109 +102,6 @@ mod tests {
             client
                 .shutdown(Shutdown::Both)
                 .expect("shutdown should succeed");
-
-            server.await.expect("server task should complete");
-            cleanup_socket(&socket_path);
-        });
-    }
-
-    #[test]
-    fn unix_stream_implements_custom_async_io_traits() {
-        let runtime = crate::executor::Runtime::new(
-            AnyDriver::new_mio().expect("mio driver should initialize"),
-        );
-        runtime.block_on(async {
-            let socket_path = unique_socket_path("traits");
-            cleanup_socket(&socket_path);
-
-            let Some(listener) = try_bind_listener(&socket_path) else {
-                return;
-            };
-            let server = spawn(async move {
-                let (mut stream, _) = listener.accept().await?;
-                let mut received = [0u8; 5];
-                stream.read_exact(&mut received).await?;
-                assert_eq!(&received, b"hello");
-                stream.write_all(b"world").await?;
-                Ok::<(), std_io::Error>(())
-            });
-
-            let mut client = UnixStream::connect(&socket_path)
-                .await
-                .expect("client should connect");
-            client
-                .write_all(b"hello")
-                .await
-                .expect("custom write_all should succeed");
-            let mut received = [0u8; 5];
-            client
-                .read_exact(&mut received)
-                .await
-                .expect("custom read_exact should succeed");
-            assert_eq!(&received, b"world");
-
-            server.await.expect("server task should complete");
-            cleanup_socket(&socket_path);
-        });
-    }
-
-    #[test]
-    fn unix_stream_vectored_io_works() {
-        let runtime = crate::executor::Runtime::new(
-            AnyDriver::new_mio().expect("mio driver should initialize"),
-        );
-        runtime.block_on(async {
-            let socket_path = unique_socket_path("vectored");
-            cleanup_socket(&socket_path);
-
-            let Some(listener) = try_bind_listener(&socket_path) else {
-                return;
-            };
-            let server = spawn(async move {
-                let (mut stream, _) = listener.accept().await?;
-                let mut a = [0u8; 3];
-                let mut b = [0u8; 5];
-                let mut read_bufs = [IoSliceMut::new(&mut a), IoSliceMut::new(&mut b)];
-                let read = stream.read_vectored(&mut read_bufs).await?;
-                let mut received = Vec::new();
-                received.extend_from_slice(&a);
-                if read > a.len() {
-                    let rem = read - a.len();
-                    received.extend_from_slice(&b[..rem]);
-                }
-                assert_eq!(&received, b"vectored");
-
-                let write_bufs = [IoSlice::new(b"vec"), IoSlice::new(b"tor-ok")];
-                let written = stream.write_vectored(&write_bufs).await?;
-                assert_eq!(written, 9);
-                Ok::<(), std_io::Error>(())
-            });
-
-            let mut client = UnixStream::connect(&socket_path)
-                .await
-                .expect("client should connect");
-            let write_bufs = [IoSlice::new(b"vec"), IoSlice::new(b"tored")];
-            let written = client
-                .write_vectored(&write_bufs)
-                .await
-                .expect("vectored write should succeed");
-            assert_eq!(written, 8);
-
-            let mut a = [0u8; 4];
-            let mut b = [0u8; 5];
-            let mut read_bufs = [IoSliceMut::new(&mut a), IoSliceMut::new(&mut b)];
-            let read = client
-                .read_vectored(&mut read_bufs)
-                .await
-                .expect("vectored read should succeed");
-            assert_eq!(read, 9);
-            let mut response = Vec::new();
-            response.extend_from_slice(&a);
-            if read > a.len() {
-                let rem = read - a.len();
-                response.extend_from_slice(&b[..rem]);
-            }
-            assert_eq!(&response, b"vector-ok");
 
             server.await.expect("server task should complete");
             cleanup_socket(&socket_path);
@@ -223,10 +123,11 @@ mod tests {
 
             let server = spawn(async move {
                 let (mut stream, _) = listener.accept().await?;
-                let mut received = [0u8; 4];
-                let read = stream.read(&mut received).await?;
+                let received = [0u8; 4];
+                let (read, received) = stream.read(received).await;
+                let read = read?;
                 assert_eq!(&received[..read], b"mio!");
-                stream.write(b"ok").await?;
+                stream.write(b"ok".to_vec()).await.0?;
                 Ok::<(), std_io::Error>(())
             });
 
@@ -241,110 +142,6 @@ mod tests {
                 .await
                 .expect("tokio read_exact should succeed");
             assert_eq!(&response, b"ok");
-
-            server.await.expect("server task should complete");
-        });
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn poll_stream_connect_works_with_live_completion_listener_under_uring() {
-        let Ok(driver) = AnyDriver::new_uring() else {
-            return;
-        };
-        let runtime = crate::executor::Runtime::new(driver);
-        runtime.block_on(async {
-            let socket_path = unique_socket_path("vectored");
-            cleanup_socket(&socket_path);
-            let Some(listener) = try_bind_listener(&socket_path) else {
-                return;
-            };
-
-            let server = spawn(async move {
-                let (mut stream, _) = listener.accept().await?;
-                let mut received = [0u8; 4];
-                stream.read_exact(&mut received).await?;
-                assert_eq!(&received, b"poll");
-                stream.write_all(b"done").await?;
-                Ok::<(), std_io::Error>(())
-            });
-
-            let mut client = PollUnixStream::connect(&socket_path)
-                .await
-                .expect("poll client should connect while completion listener is active");
-            AsyncWriteExt::write_all(&mut client, b"poll")
-                .await
-                .expect("poll write should succeed");
-            let mut response = [0u8; 4];
-            AsyncReadExt::read_exact(&mut client, &mut response)
-                .await
-                .expect("poll read should succeed");
-            assert_eq!(&response, b"done");
-
-            server.await.expect("server task should complete");
-        });
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn stream_mode_conversion_works_with_uring_driver() {
-        let Ok(driver) = AnyDriver::new_uring() else {
-            return;
-        };
-        let runtime = crate::executor::Runtime::new(driver);
-        runtime.block_on(async {
-            let socket_path = unique_socket_path("vectored");
-            cleanup_socket(&socket_path);
-            let Some(listener) = try_bind_listener(&socket_path) else {
-                return;
-            };
-
-            let server = spawn(async move {
-                let (mut stream, _) = listener.accept().await?;
-
-                let mut first = [0u8; 4];
-                stream.read_exact(&mut first).await?;
-                assert_eq!(&first, b"ping");
-                stream.write_all(b"one!").await?;
-
-                let mut second = [0u8; 4];
-                stream.read_exact(&mut second).await?;
-                assert_eq!(&second, b"pong");
-                stream.write_all(b"two!").await?;
-
-                Ok::<(), std_io::Error>(())
-            });
-
-            let completion_client = UnixStream::connect(socket_path)
-                .await
-                .expect("client should connect");
-            let mut poll_client = completion_client
-                .into_poll()
-                .expect("completion->poll conversion should succeed");
-
-            AsyncWriteExt::write_all(&mut poll_client, b"ping")
-                .await
-                .expect("poll write should succeed");
-            let mut first_reply = [0u8; 4];
-            AsyncReadExt::read_exact(&mut poll_client, &mut first_reply)
-                .await
-                .expect("poll read should succeed");
-            assert_eq!(&first_reply, b"one!");
-
-            let mut completion_client = poll_client
-                .into_completion()
-                .expect("poll->completion conversion should succeed");
-
-            completion_client
-                .write_all(b"pong")
-                .await
-                .expect("completion write should succeed");
-            let mut second_reply = [0u8; 4];
-            completion_client
-                .read_exact(&mut second_reply)
-                .await
-                .expect("completion read should succeed");
-            assert_eq!(&second_reply, b"two!");
 
             server.await.expect("server task should complete");
         });

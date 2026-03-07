@@ -13,28 +13,34 @@ use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
+use crate::io::IoBufMut;
 use crate::op::Op;
 
-pub struct ReadAtOp<'a> {
+pub struct ReadAtOp<'a, B: IoBufMut> {
     handle: &'a InnerRawHandle,
-    buf: &'a mut [u8],
+    buf: Option<B>,
     offset: u64,
     completion_token: Option<usize>,
 }
 
-impl<'a> ReadAtOp<'a> {
+impl<'a, B: IoBufMut> ReadAtOp<'a, B> {
     #[inline]
-    pub fn new(handle: &'a InnerRawHandle, buf: &'a mut [u8], offset: u64) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, buf: B, offset: u64) -> Self {
         Self {
             handle,
-            buf,
+            buf: Some(buf),
             offset,
             completion_token: None,
         }
     }
+
+    #[inline]
+    pub fn take_bufs(mut self) -> B {
+        self.buf.take().unwrap()
+    }
 }
 
-impl Op for ReadAtOp<'_> {
+impl<B: IoBufMut> Op for ReadAtOp<'_, B> {
     type Output = usize;
 
     #[cfg(any(unix, windows))]
@@ -68,12 +74,16 @@ impl Op for ReadAtOp<'_> {
         if result < 0 {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
-        Poll::Ready(Ok(result as usize))
+        let read = result as usize;
+        let buf = self.buf.as_mut().unwrap();
+        unsafe { buf.set_buf_init(read) };
+        Poll::Ready(Ok(read))
     }
 
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        let buf = self.buf.as_mut().unwrap();
         let RawOsHandle::Handle(handle) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -81,7 +91,7 @@ impl Op for ReadAtOp<'_> {
             ));
         };
 
-        let read_len = u32::try_from(self.buf.len()).map_err(|_| {
+        let read_len = u32::try_from(buf.buf_capacity()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "read buffer is too large for Windows file I/O",
@@ -96,7 +106,7 @@ impl Op for ReadAtOp<'_> {
         let read_result = unsafe {
             ReadFile(
                 handle as HANDLE,
-                self.buf.as_mut_ptr().cast(),
+                buf.as_buf_mut_ptr().cast(),
                 read_len,
                 std::ptr::null_mut(),
                 overlapped,
@@ -123,7 +133,8 @@ impl Op for ReadAtOp<'_> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let read_len = u32::try_from(self.buf.len()).map_err(|_| {
+        let buf = self.buf.as_mut().unwrap();
+        let read_len = u32::try_from(buf.buf_capacity()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "read buffer is too large for io_uring",
@@ -132,7 +143,7 @@ impl Op for ReadAtOp<'_> {
 
         let entry = opcode::Read::new(
             types::Fd(self.handle.handle),
-            self.buf.as_mut_ptr(),
+            buf.as_buf_mut_ptr(),
             read_len,
         )
         .offset(self.offset)
@@ -143,12 +154,19 @@ impl Op for ReadAtOp<'_> {
     }
 }
 
-impl Drop for ReadAtOp<'_> {
+impl<B: IoBufMut> Drop for ReadAtOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                driver.ignore_completion(completion_token, Box::new(()));
+                // If the operation is still pending, we must ensure the buffer is not dropped
+                // while the kernel is still writing to it. We transfer ownership of the buffer
+                // to the driver to be dropped when the completion arrives.
+                if let Some(buf) = self.buf.take() {
+                    driver.ignore_completion(completion_token, Box::new(buf));
+                } else {
+                    driver.ignore_completion(completion_token, Box::new(()));
+                }
             }
         }
     }

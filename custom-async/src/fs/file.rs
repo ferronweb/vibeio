@@ -11,6 +11,7 @@ use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
 use std::os::windows::io::{AsRawHandle, IntoRawHandle, RawHandle};
 
 use crate::fs::Metadata;
+use crate::io::{IoBuf, IoBufMut, IoBufWithCursor};
 use crate::{
     driver::RegistrationMode,
     executor::current_driver,
@@ -109,72 +110,98 @@ impl File {
     }
 
     #[inline]
-    pub async fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
+    pub async fn read_at<B: IoBufMut>(&self, mut buf: B, offset: u64) -> (io::Result<usize>, B) {
+        if buf.buf_len() == 0 {
+            return (Ok(0), buf);
         }
 
         if let Some(handle) = self.completion_handle() {
             let mut op = ReadAtOp::new(handle, buf, offset);
-            poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+            let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+            (result, op.take_bufs())
         } else if current_driver().is_some() {
             read_at_in_blocking_pool(&self.inner, buf, offset).await
         } else {
-            read_at_blocking(&self.inner, buf, offset)
+            let slice =
+                unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+            (read_at_blocking(&self.inner, slice, offset), buf)
         }
     }
 
     #[inline]
-    pub async fn read_exact_at(&self, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
-        while !buf.is_empty() {
-            let read = self.read_at(buf, offset).await?;
+    pub async fn read_exact_at<B: IoBufMut>(&self, buf: B, mut offset: u64) -> (io::Result<()>, B) {
+        let mut buf = IoBufWithCursor::new(buf);
+        while buf.buf_len() > 0 {
+            let (read, mut buf_returned) = self.read_at(buf, offset).await;
+            let read = match read {
+                Ok(read) => read,
+                Err(err) => {
+                    return (Err(err), buf_returned.into_inner());
+                }
+            };
             if read == 0 {
-                return Err(io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "failed to fill whole buffer",
-                ));
+                return (
+                    Err(io::Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "failed to fill whole buffer",
+                    )),
+                    buf_returned.into_inner(),
+                );
             }
 
             offset = offset.saturating_add(read as u64);
-            let (_, rest) = buf.split_at_mut(read);
-            buf = rest;
+            buf_returned.advance(read);
+            buf = buf_returned
         }
 
-        Ok(())
+        (Ok(()), buf.into_inner())
     }
 
     #[inline]
-    pub async fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
+    pub async fn write_at<B: IoBuf>(&self, buf: B, offset: u64) -> (io::Result<usize>, B) {
+        if buf.buf_len() == 0 {
+            return (Ok(0), buf);
         }
 
         if let Some(handle) = self.completion_handle() {
             let mut op = WriteAtOp::new(handle, buf, offset);
-            poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+            let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+            (result, op.take_bufs())
         } else if current_driver().is_some() {
             write_at_in_blocking_pool(&self.inner, buf, offset).await
         } else {
-            write_at_blocking(&self.inner, buf, offset)
+            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+            (write_at_blocking(&self.inner, slice, offset), buf)
         }
     }
 
     #[inline]
-    pub async fn write_exact_at(&self, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
-        while !buf.is_empty() {
-            let written = self.write_at(buf, offset).await?;
+    pub async fn write_exact_at<B: IoBuf>(&self, buf: B, mut offset: u64) -> (io::Result<()>, B) {
+        let mut buf = IoBufWithCursor::new(buf);
+        while buf.buf_len() > 0 {
+            let (written, mut buf_returned) = self.write_at(buf, offset).await;
+            let written = match written {
+                Ok(written) => written,
+                Err(err) => {
+                    return (Err(err), buf_returned.into_inner());
+                }
+            };
             if written == 0 {
-                return Err(io::Error::new(
-                    ErrorKind::WriteZero,
-                    "failed to write whole buffer",
-                ));
+                return (
+                    Err(io::Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "failed to write whole buffer",
+                    )),
+                    buf_returned.into_inner(),
+                );
             }
 
             offset = offset.saturating_add(written as u64);
-            buf = &buf[written..];
+            buf_returned.advance(written);
+            buf = buf_returned;
         }
 
-        Ok(())
+        (Ok(()), buf.into_inner())
     }
 
     #[inline]
@@ -295,36 +322,43 @@ pub(crate) fn blocking_pool_io_error() -> io::Error {
 }
 
 #[inline]
-async fn read_at_in_blocking_pool(
+async fn read_at_in_blocking_pool<B: IoBufMut>(
     file: &std::fs::File,
-    buf: &mut [u8],
+    mut buf: B,
     offset: u64,
-) -> io::Result<usize> {
-    let file = file.try_clone()?;
-    let len = buf.len();
-    let (read, tmp) = crate::spawn_blocking(move || {
-        let mut tmp = vec![0u8; len];
-        let read = read_at_blocking(&file, &mut tmp, offset)?;
-        Ok::<(usize, Vec<u8>), io::Error>((read, tmp))
-    })
-    .await
-    .map_err(|_| blocking_pool_io_error())??;
-
-    buf[..read].copy_from_slice(&tmp[..read]);
-    Ok(read)
+) -> (io::Result<usize>, B) {
+    let file = match file.try_clone() {
+        Ok(file) => file,
+        Err(e) => return (Err(e), buf),
+    };
+    let temp_slice: &'static mut [u8] =
+        unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+    (
+        crate::spawn_blocking(move || read_at_blocking(&file, temp_slice, offset))
+            .await
+            .unwrap_or_else(|_| Err(blocking_pool_io_error())),
+        buf,
+    )
 }
 
 #[inline]
-async fn write_at_in_blocking_pool(
+async fn write_at_in_blocking_pool<B: IoBuf>(
     file: &std::fs::File,
-    buf: &[u8],
+    buf: B,
     offset: u64,
-) -> io::Result<usize> {
-    let file = file.try_clone()?;
-    let tmp = buf.to_vec();
-    crate::spawn_blocking(move || write_at_blocking(&file, &tmp, offset))
-        .await
-        .map_err(|_| blocking_pool_io_error())?
+) -> (io::Result<usize>, B) {
+    let file = match file.try_clone() {
+        Ok(file) => file,
+        Err(e) => return (Err(e), buf),
+    };
+    let temp_slice: &'static [u8] =
+        unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+    (
+        crate::spawn_blocking(move || write_at_blocking(&file, temp_slice, offset))
+            .await
+            .unwrap_or_else(|_| Err(blocking_pool_io_error())),
+        buf,
+    )
 }
 
 #[inline]
@@ -352,20 +386,26 @@ async fn metadata_in_blocking_pool(file: &std::fs::File) -> io::Result<Metadata>
 }
 
 impl AsyncRead for File {
+    // TODO: use Readv and Read ops
     #[inline]
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        let read = self.read_at(buf, self.cursor).await?;
-        self.cursor = self.cursor.saturating_add(read as u64);
-        Ok(read)
+    async fn read<B: IoBufMut>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
+        let (read, buf) = self.read_at(buf, self.cursor).await;
+        if let Ok(read) = read {
+            self.cursor = self.cursor.saturating_add(read as u64);
+        }
+        (read, buf)
     }
 }
 
 impl AsyncWrite for File {
+    // TODO: use Writev and Write ops
     #[inline]
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-        let written = self.write_at(buf, self.cursor).await?;
-        self.cursor = self.cursor.saturating_add(written as u64);
-        Ok(written)
+    async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
+        let (written, buf) = self.write_at(buf, self.cursor).await;
+        if let Ok(written) = written {
+            self.cursor = self.cursor.saturating_add(written as u64);
+        }
+        (written, buf)
     }
 
     #[inline]

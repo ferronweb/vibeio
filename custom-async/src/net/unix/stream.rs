@@ -1,5 +1,5 @@
 use std::future::poll_fn;
-use std::io::{self, IoSlice, IoSliceMut};
+use std::io::{self, IoSlice};
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
@@ -12,6 +12,10 @@ use std::task::{Context, Poll};
 use mio::Interest;
 use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
+use crate::io::{
+    IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
+    IoVectoredBufTemporaryPoll,
+};
 use crate::op::{ConnectOp, ReadOp, ReadvOp, WriteOp, WritevOp};
 use crate::{
     driver::RegistrationMode,
@@ -229,7 +233,8 @@ impl TokioAsyncRead for PollUnixStream {
         let this = self.get_mut();
         // Equivalent to .assume_init_mut() in Rust 1.93.0+
         let unfilled = unsafe { &mut *(buf.unfilled_mut() as *mut [MaybeUninit<u8>] as *mut [u8]) };
-        let mut op = ReadOp::new(&this.stream.handle, unfilled);
+        let buf_temp = unsafe { IoBufTemporaryPoll::new(unfilled.as_mut_ptr(), unfilled.len()) };
+        let mut op = ReadOp::new(&this.stream.handle, buf_temp);
         match this.stream.handle.poll_op_poll(cx, &mut op) {
             Poll::Ready(Ok(read)) => {
                 unsafe {
@@ -252,6 +257,7 @@ impl TokioAsyncWrite for PollUnixStream {
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         let this = self.get_mut();
+        let buf = unsafe { IoBufTemporaryPoll::new(buf.as_ptr() as *mut u8, buf.len()) };
         let mut op = WriteOp::new(&this.stream.handle, buf);
         this.stream.handle.poll_op_poll(cx, &mut op)
     }
@@ -266,6 +272,7 @@ impl TokioAsyncWrite for PollUnixStream {
             return Poll::Ready(Ok(0));
         }
         let this = self.get_mut();
+        let bufs = unsafe { IoVectoredBufTemporaryPoll::new(bufs) };
         let mut op = WritevOp::new(&this.stream.handle, bufs);
         this.stream.handle.poll_op_poll(cx, &mut op)
     }
@@ -323,29 +330,35 @@ impl IntoRawFd for UnixStream {
 
 impl AsyncRead for UnixStream {
     #[inline]
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+    async fn read<B: IoBufMut>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
         let mut op = ReadOp::new(handle, buf);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 
     #[inline]
-    async fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> Result<usize, io::Error> {
+    async fn read_vectored<B: IoVectoredBufMut>(
+        &mut self,
+        bufs: B,
+    ) -> (Result<usize, io::Error>, B) {
         if bufs.is_empty() {
-            return Ok(0);
+            return (Ok(0), bufs);
         }
         let handle = &self.handle;
         let mut op = ReadvOp::new(handle, bufs);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 }
 
 impl AsyncWrite for UnixStream {
     #[inline]
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+    async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
         let mut op = WriteOp::new(handle, buf);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 
     #[inline]
@@ -354,13 +367,14 @@ impl AsyncWrite for UnixStream {
     }
 
     #[inline]
-    async fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
+    async fn write_vectored<B: IoVectoredBuf>(&mut self, bufs: B) -> (Result<usize, io::Error>, B) {
         if bufs.is_empty() {
-            return Ok(0);
+            return (Ok(0), bufs);
         }
         let handle = &self.handle;
         let mut op = WritevOp::new(handle, bufs);
-        poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+        let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+        (result, op.take_bufs())
     }
 }
 

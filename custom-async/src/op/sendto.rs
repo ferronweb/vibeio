@@ -19,6 +19,7 @@ use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
+use crate::io::IoBuf;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
 
@@ -139,10 +140,10 @@ fn socket_addr_to_raw(address: SocketAddr) -> (SOCKADDR_STORAGE, i32) {
 
 #[cfg(windows)]
 #[inline]
-fn socket_sendto(socket: SOCKET, buf: &[u8], addr: SocketAddr) -> io::Result<usize> {
+fn socket_sendto<B: IoBuf>(socket: SOCKET, buf: &B, addr: SocketAddr) -> io::Result<usize> {
     use windows_sys::Win32::Networking::WinSock::{self as WinSock, SOCKET_ERROR, WSABUF};
 
-    let len = u32::try_from(buf.len()).map_err(|_| {
+    let len = u32::try_from(buf.buf_len()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "write buffer is too large for Windows socket I/O",
@@ -151,7 +152,7 @@ fn socket_sendto(socket: SOCKET, buf: &[u8], addr: SocketAddr) -> io::Result<usi
 
     let mut wsabuf = WSABUF {
         len,
-        buf: buf.as_ptr().cast_mut().cast(),
+        buf: buf.as_buf_ptr().cast_mut().cast(),
     };
     let (raw_addr, raw_addr_len) = socket_addr_to_raw(addr);
     let mut bytes: u32 = 0;
@@ -178,9 +179,9 @@ fn socket_sendto(socket: SOCKET, buf: &[u8], addr: SocketAddr) -> io::Result<usi
     Ok(bytes as usize)
 }
 
-pub struct SendtoOp<'a> {
+pub struct SendtoOp<'a, B: IoBuf> {
     handle: &'a InnerRawHandle,
-    buf: &'a [u8],
+    buf: Option<B>,
     addr: SocketAddr,
     completion_token: Option<usize>,
     #[cfg(windows)]
@@ -199,12 +200,12 @@ pub struct SendtoOp<'a> {
     completion_msghdr: Option<libc::msghdr>,
 }
 
-impl<'a> SendtoOp<'a> {
+impl<'a, B: IoBuf> SendtoOp<'a, B> {
     #[inline]
-    pub fn new(handle: &'a InnerRawHandle, buf: &'a [u8], addr: SocketAddr) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, buf: B, addr: SocketAddr) -> Self {
         Self {
             handle,
-            buf,
+            buf: Some(buf),
             addr,
             completion_token: None,
             #[cfg(windows)]
@@ -223,9 +224,14 @@ impl<'a> SendtoOp<'a> {
             completion_msghdr: None,
         }
     }
+
+    #[inline]
+    pub fn take_bufs(mut self) -> B {
+        self.buf.take().unwrap()
+    }
 }
 
-impl Op for SendtoOp<'_> {
+impl<B: IoBuf> Op for SendtoOp<'_, B> {
     type Output = usize;
 
     #[cfg(any(unix, windows))]
@@ -235,14 +241,16 @@ impl Op for SendtoOp<'_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
+        let buf = self.buf.as_ref().unwrap();
+
         #[cfg(unix)]
         let result = {
             let (raw_addr, raw_addr_len) = socket_addr_to_raw(self.addr);
             let written = unsafe {
                 libc::sendto(
                     self.handle.handle,
-                    self.buf.as_ptr().cast::<libc::c_void>(),
-                    self.buf.len(),
+                    buf.as_buf_ptr().cast::<libc::c_void>(),
+                    buf.buf_len(),
                     0,
                     (&raw_addr as *const libc::sockaddr_storage).cast::<libc::sockaddr>(),
                     raw_addr_len,
@@ -257,14 +265,18 @@ impl Op for SendtoOp<'_> {
 
         #[cfg(windows)]
         let result = match self.handle.handle {
-            RawOsHandle::Socket(socket) => socket_sendto(socket as SOCKET, self.buf, self.addr),
+            RawOsHandle::Socket(socket) => socket_sendto(socket as SOCKET, buf, self.addr),
             RawOsHandle::Handle(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "poll-based sendto currently supports sockets only on Windows",
             )),
         };
 
-        poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE)
+        match poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE) {
+            Poll::Ready(Ok(written)) => Poll::Ready(Ok(written)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     #[cfg(any(unix, windows))]
@@ -298,12 +310,14 @@ impl Op for SendtoOp<'_> {
         if result < 0 {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
-        Poll::Ready(Ok(result as usize))
+        let written = result as usize;
+        Poll::Ready(Ok(written))
     }
 
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        let buf = self.buf.as_ref().unwrap();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -311,7 +325,7 @@ impl Op for SendtoOp<'_> {
             ));
         };
 
-        let write_len = u32::try_from(self.buf.len()).map_err(|_| {
+        let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "write buffer is too large for Windows socket I/O",
@@ -323,7 +337,7 @@ impl Op for SendtoOp<'_> {
             buf: std::ptr::null_mut(),
         });
         wsabuf.len = write_len;
-        wsabuf.buf = self.buf.as_ptr().cast_mut().cast();
+        wsabuf.buf = buf.as_buf_ptr().cast_mut().cast();
 
         let (raw_addr, raw_addr_len) = socket_addr_to_raw(self.addr);
         self.completion_addr = Some(raw_addr);
@@ -371,9 +385,10 @@ impl Op for SendtoOp<'_> {
         let (raw_addr, raw_addr_len) = socket_addr_to_raw(self.addr);
         self.completion_addr_storage = Some(raw_addr);
         self.completion_addr_len = raw_addr_len;
+        let buf = self.buf.as_ref().unwrap();
         self.completion_iovec = Some(libc::iovec {
-            iov_base: self.buf.as_ptr().cast_mut().cast::<libc::c_void>(),
-            iov_len: self.buf.len(),
+            iov_base: buf.as_buf_ptr().cast_mut().cast::<libc::c_void>(),
+            iov_len: buf.buf_len(),
         });
 
         let msg = libc::msghdr {
@@ -409,12 +424,19 @@ impl Op for SendtoOp<'_> {
     }
 }
 
-impl Drop for SendtoOp<'_> {
+impl<B: IoBuf> Drop for SendtoOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                driver.ignore_completion(completion_token, Box::new(()));
+                // If the operation is still pending, we must ensure the buffer is not dropped
+                // while the kernel is still writing to it. We transfer ownership of the buffer
+                // to the driver to be dropped when the completion arrives.
+                if let Some(buf) = self.buf.take() {
+                    driver.ignore_completion(completion_token, Box::new(buf));
+                } else {
+                    driver.ignore_completion(completion_token, Box::new(()));
+                }
             }
         }
     }

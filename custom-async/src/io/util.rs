@@ -4,22 +4,43 @@ use std::sync::Arc;
 use futures_util::lock::Mutex as AsyncMutex;
 
 use super::{AsyncRead, AsyncWrite};
+use crate::io::{IoBuf, IoBufMut, IoBufWithCursor};
 
 pub async fn copy<R, W>(reader: &mut R, writer: &mut W) -> Result<u64, io::Error>
 where
     R: AsyncRead + ?Sized,
     W: AsyncWrite + ?Sized,
 {
-    let mut buffer = [0u8; 8192];
+    let mut buffer = vec![0u8; 8192];
+    buffer.clear();
     let mut copied = 0u64;
 
     loop {
-        let read = reader.read(&mut buffer).await?;
+        let (read, returned_buf) = reader.read(buffer).await;
+        let read = read?;
+
         if read == 0 {
             break;
         }
 
-        writer.write_all(&buffer[..read]).await?;
+        let mut cursor_buf = IoBufWithCursor::new(returned_buf);
+        while cursor_buf.buf_len() > 0 {
+            let (w, mut returned_buf) = writer.write(cursor_buf).await;
+            let w = w?;
+            if w == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
+            returned_buf.advance(w);
+            cursor_buf = returned_buf;
+        }
+
+        buffer = cursor_buf.into_inner();
+        unsafe {
+            buffer.set_buf_init(0);
+        } // reset
         copied = copied.saturating_add(read as u64);
     }
 
@@ -85,7 +106,7 @@ impl<T> AsyncRead for ReadHalf<T>
 where
     T: AsyncRead + AsyncWrite + 'static,
 {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+    async fn read<B: crate::io::IoBufMut>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
         let mut guard = self.inner.lock().await;
         // Forward the call to the underlying object.
         (*guard).read(buf).await
@@ -96,7 +117,7 @@ impl<T> AsyncWrite for WriteHalf<T>
 where
     T: AsyncRead + AsyncWrite + 'static,
 {
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+    async fn write<B: crate::io::IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
         let mut guard = self.inner.lock().await;
         (*guard).write(buf).await
     }
@@ -104,6 +125,44 @@ where
     async fn flush(&mut self) -> Result<(), io::Error> {
         let mut guard = self.inner.lock().await;
         (*guard).flush().await
+    }
+}
+
+impl<R: AsyncRead + ?Sized> AsyncRead for Box<R> {
+    #[inline]
+    async fn read<B: crate::io::IoBufMut>(&mut self, buf: B) -> (Result<usize, std::io::Error>, B) {
+        (**self).read(buf).await
+    }
+}
+
+impl<R: AsyncRead + ?Sized> AsyncRead for &mut R {
+    #[inline]
+    async fn read<B: crate::io::IoBufMut>(&mut self, buf: B) -> (Result<usize, std::io::Error>, B) {
+        (**self).read(buf).await
+    }
+}
+
+impl<W: AsyncWrite + ?Sized> AsyncWrite for Box<W> {
+    #[inline]
+    async fn write<B: crate::io::IoBuf>(&mut self, buf: B) -> (Result<usize, std::io::Error>, B) {
+        (**self).write(buf).await
+    }
+
+    #[inline]
+    async fn flush(&mut self) -> Result<(), std::io::Error> {
+        (**self).flush().await
+    }
+}
+
+impl<W: AsyncWrite + ?Sized> AsyncWrite for &mut W {
+    #[inline]
+    async fn write<B: crate::io::IoBuf>(&mut self, buf: B) -> (Result<usize, std::io::Error>, B) {
+        (**self).write(buf).await
+    }
+
+    #[inline]
+    async fn flush(&mut self) -> Result<(), std::io::Error> {
+        (**self).flush().await
     }
 }
 
@@ -166,18 +225,27 @@ mod tests {
         }
     }
 
+    use crate::io::{IoBuf, IoBufMut};
+
     impl AsyncRead for SliceReader {
         #[inline]
-        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        async fn read<B: IoBufMut>(&mut self, mut buf: B) -> (Result<usize, io::Error>, B) {
             if self.offset >= self.data.len() {
-                return Ok(0);
+                return (Ok(0), buf);
             }
 
             let remaining = self.data.len() - self.offset;
-            let read_len = remaining.min(buf.len()).min(self.chunk_size.max(1));
-            buf[..read_len].copy_from_slice(&self.data[self.offset..self.offset + read_len]);
+            let cap = buf.buf_capacity();
+            let read_len = remaining.min(cap).min(self.chunk_size.max(1));
+
+            unsafe {
+                let ptr = buf.as_buf_mut_ptr().add(buf.buf_len());
+                std::ptr::copy_nonoverlapping(self.data[self.offset..].as_ptr(), ptr, read_len);
+                buf.set_buf_init(buf.buf_len() + read_len);
+            }
+
             self.offset += read_len;
-            Ok(read_len)
+            (Ok(read_len), buf)
         }
     }
 
@@ -200,13 +268,17 @@ mod tests {
 
     impl AsyncWrite for VecWriter {
         #[inline]
-        async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-            if buf.is_empty() {
-                return Ok(0);
+        async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
+            let len = buf.buf_len();
+            if len == 0 {
+                return (Ok(0), buf);
             }
-            let write_len = buf.len().min(self.chunk_size.max(1));
-            self.data.extend_from_slice(&buf[..write_len]);
-            Ok(write_len)
+            let write_len = len.min(self.chunk_size.max(1));
+
+            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), write_len) };
+            self.data.extend_from_slice(slice);
+
+            (Ok(write_len), buf)
         }
 
         #[inline]
@@ -233,22 +305,31 @@ mod tests {
     }
 
     impl AsyncRead for ReadWriteVec {
-        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        async fn read<B: IoBufMut>(&mut self, mut buf: B) -> (Result<usize, io::Error>, B) {
             if self.read_off >= self.read_data.len() {
-                return Ok(0);
+                return (Ok(0), buf);
             }
             let remaining = self.read_data.len() - self.read_off;
-            let n = remaining.min(buf.len());
-            buf[..n].copy_from_slice(&self.read_data[self.read_off..self.read_off + n]);
+            let cap = buf.buf_capacity();
+            let n = remaining.min(cap);
+
+            unsafe {
+                let ptr = buf.as_buf_mut_ptr().add(buf.buf_len());
+                std::ptr::copy_nonoverlapping(self.read_data[self.read_off..].as_ptr(), ptr, n);
+                buf.set_buf_init(buf.buf_len() + n);
+            }
+
             self.read_off += n;
-            Ok(n)
+            (Ok(n), buf)
         }
     }
 
     impl AsyncWrite for ReadWriteVec {
-        async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-            self.write_data.extend_from_slice(buf);
-            Ok(buf.len())
+        async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
+            let len = buf.buf_len();
+            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), len) };
+            self.write_data.extend_from_slice(slice);
+            (Ok(len), buf)
         }
 
         async fn flush(&mut self) -> Result<(), io::Error> {
@@ -279,11 +360,15 @@ mod tests {
             let rw = ReadWriteVec::new(b"abc");
             let (mut r, mut w) = split(rw);
 
-            let mut out = [0u8; 3];
-            r.read(&mut out).await.expect("read should succeed");
-            assert_eq!(&out, b"abc");
+            let mut out = vec![0u8; 3];
+            out.clear();
+            let (read, out) = r.read(out).await;
+            let read = read.expect("read should succeed");
+            assert_eq!(read, 3);
+            assert_eq!(&out[..], b"abc");
 
-            w.write_all(b"xyz").await.expect("write_all should succeed");
+            let buf = b"xyz".to_vec();
+            w.write(buf).await.0.expect("write should succeed");
 
             // Acquire the inner mutex to inspect the written data.
             let inner = r.into_inner();

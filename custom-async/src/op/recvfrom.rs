@@ -19,6 +19,7 @@ use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
+use crate::io::IoBufMut;
 use crate::op::Op;
 
 #[cfg(unix)]
@@ -129,9 +130,9 @@ fn socket_recvfrom(socket: SOCKET, buf: &mut [u8], peek: bool) -> io::Result<(us
     Ok((bytes as usize, address))
 }
 
-pub struct RecvfromOp<'a> {
+pub struct RecvfromOp<'a, B: IoBufMut> {
     handle: &'a InnerRawHandle,
-    buf: &'a mut [u8],
+    buf: Option<B>,
     completion_token: Option<usize>,
     #[cfg(windows)]
     socket_buf: Option<WSABUF>,
@@ -150,12 +151,12 @@ pub struct RecvfromOp<'a> {
     peek: bool,
 }
 
-impl<'a> RecvfromOp<'a> {
+impl<'a, B: IoBufMut> RecvfromOp<'a, B> {
     #[inline]
-    pub fn new(handle: &'a InnerRawHandle, buf: &'a mut [u8]) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, buf: B) -> Self {
         Self {
             handle,
-            buf,
+            buf: Some(buf),
             completion_token: None,
             #[cfg(windows)]
             socket_buf: None,
@@ -176,10 +177,10 @@ impl<'a> RecvfromOp<'a> {
     }
 
     #[inline]
-    pub fn new_peek(handle: &'a InnerRawHandle, buf: &'a mut [u8]) -> Self {
+    pub fn new_peek(handle: &'a InnerRawHandle, buf: B) -> Self {
         Self {
             handle,
-            buf,
+            buf: Some(buf),
             completion_token: None,
             #[cfg(windows)]
             socket_buf: None,
@@ -198,9 +199,14 @@ impl<'a> RecvfromOp<'a> {
             peek: true,
         }
     }
+
+    #[inline]
+    pub fn take_bufs(mut self) -> B {
+        self.buf.take().unwrap()
+    }
 }
 
-impl Op for RecvfromOp<'_> {
+impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
     type Output = (usize, SocketAddr);
 
     #[cfg(any(unix, windows))]
@@ -210,6 +216,8 @@ impl Op for RecvfromOp<'_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
+        let buf = self.buf.as_mut().unwrap();
+
         #[cfg(unix)]
         let result = {
             let mut addr = MaybeUninit::<libc::sockaddr_storage>::zeroed();
@@ -217,8 +225,8 @@ impl Op for RecvfromOp<'_> {
             let read = unsafe {
                 libc::recvfrom(
                     self.handle.handle,
-                    self.buf.as_mut_ptr().cast::<libc::c_void>(),
-                    self.buf.len(),
+                    buf.as_buf_mut_ptr().cast::<libc::c_void>(),
+                    buf.buf_capacity(),
                     if self.peek { libc::MSG_PEEK } else { 0 },
                     addr.as_mut_ptr().cast::<libc::sockaddr>(),
                     &mut addr_len,
@@ -235,7 +243,12 @@ impl Op for RecvfromOp<'_> {
 
         #[cfg(windows)]
         let result = match self.handle.handle {
-            RawOsHandle::Socket(socket) => socket_recvfrom(socket as SOCKET, self.buf, self.peek),
+            RawOsHandle::Socket(socket) => {
+                let slice = unsafe {
+                    std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_capacity())
+                };
+                socket_recvfrom(socket as SOCKET, slice, self.peek)
+            }
             RawOsHandle::Handle(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "poll-based recvfrom currently supports sockets only on Windows",
@@ -243,7 +256,10 @@ impl Op for RecvfromOp<'_> {
         };
 
         match result {
-            Ok(value) => Poll::Ready(Ok(value)),
+            Ok((read, address)) => {
+                unsafe { buf.set_buf_init(read) };
+                Poll::Ready(Ok((read, address)))
+            }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                 match driver.submit_poll(self.handle, cx.waker().clone(), Interest::READABLE) {
                     Ok(_) => Poll::Pending,
@@ -289,6 +305,7 @@ impl Op for RecvfromOp<'_> {
             }
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
+        let read = result as usize;
 
         #[cfg(target_os = "linux")]
         {
@@ -297,7 +314,9 @@ impl Op for RecvfromOp<'_> {
                 .as_ref()
                 .ok_or_else(|| io::Error::other("recvfrom completion missing source address"))
                 .and_then(sockaddr_storage_to_socketaddr);
-            Poll::Ready(address.map(|address| (result as usize, address)))
+            let buf = self.buf.as_mut().unwrap();
+            unsafe { buf.set_buf_init(read) };
+            Poll::Ready(address.map(|address| (read, address)))
         }
 
         #[cfg(all(unix, not(target_os = "linux")))]
@@ -321,13 +340,16 @@ impl Op for RecvfromOp<'_> {
                 })
                 .and_then(sockaddr_storage_to_socketaddr);
             self.completion_addr = None;
-            return Poll::Ready(address.map(|address| (result as usize, address)));
+            let mut buf = self.buf.as_mut().unwrap();
+            unsafe { buf.set_buf_init(read) };
+            return Poll::Ready(address.map(|address| (read, address)));
         }
     }
 
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        let buf = self.buf.as_mut().unwrap();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -335,7 +357,7 @@ impl Op for RecvfromOp<'_> {
             ));
         };
 
-        let read_len = u32::try_from(self.buf.len()).map_err(|_| {
+        let read_len = u32::try_from(buf.buf_capacity()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "read buffer is too large for Windows socket I/O",
@@ -347,7 +369,7 @@ impl Op for RecvfromOp<'_> {
             buf: std::ptr::null_mut(),
         });
         wsabuf.len = read_len;
-        wsabuf.buf = self.buf.as_mut_ptr().cast();
+        wsabuf.buf = buf.as_buf_mut_ptr().cast();
 
         if self.completion_addr.is_none() {
             self.completion_addr = Some(SOCKADDR_STORAGE::default());
@@ -395,9 +417,10 @@ impl Op for RecvfromOp<'_> {
         use io_uring::{opcode, types};
 
         self.completion_addr = Some(unsafe { std::mem::zeroed() });
+        let buf = self.buf.as_mut().unwrap();
         self.completion_iovec = Some(libc::iovec {
-            iov_base: self.buf.as_mut_ptr().cast::<libc::c_void>(),
-            iov_len: self.buf.len(),
+            iov_base: buf.as_buf_mut_ptr().cast::<libc::c_void>(),
+            iov_len: buf.buf_capacity(),
         });
         self.completion_msghdr = Some(libc::msghdr {
             msg_name: self
@@ -431,12 +454,19 @@ impl Op for RecvfromOp<'_> {
     }
 }
 
-impl Drop for RecvfromOp<'_> {
+impl<B: IoBufMut> Drop for RecvfromOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                driver.ignore_completion(completion_token, Box::new(()));
+                // If the operation is still pending, we must ensure the buffer is not dropped
+                // while the kernel is still writing to it. We transfer ownership of the buffer
+                // to the driver to be dropped when the completion arrives.
+                if let Some(buf) = self.buf.take() {
+                    driver.ignore_completion(completion_token, Box::new(buf));
+                } else {
+                    driver.ignore_completion(completion_token, Box::new(()));
+                }
             }
         }
     }

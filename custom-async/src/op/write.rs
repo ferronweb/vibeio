@@ -56,28 +56,35 @@ fn socket_write(socket: SOCKET, buf: &[u8]) -> io::Result<usize> {
     Ok(bytes as usize)
 }
 
-pub struct WriteOp<'a> {
+use crate::io::IoBuf;
+
+pub struct WriteOp<'a, B: IoBuf> {
     handle: &'a InnerRawHandle,
-    buf: &'a [u8],
+    buf: Option<B>,
     completion_token: Option<usize>,
     #[cfg(windows)]
     socket_buf: Option<WSABUF>,
 }
 
-impl<'a> WriteOp<'a> {
+impl<'a, B: IoBuf> WriteOp<'a, B> {
     #[inline]
-    pub fn new(handle: &'a InnerRawHandle, buf: &'a [u8]) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, buf: B) -> Self {
         Self {
             handle,
-            buf,
+            buf: Some(buf),
             completion_token: None,
             #[cfg(windows)]
             socket_buf: None,
         }
     }
+
+    #[inline]
+    pub fn take_bufs(mut self) -> B {
+        self.buf.take().unwrap()
+    }
 }
 
-impl Op for WriteOp<'_> {
+impl<B: IoBuf> Op for WriteOp<'_, B> {
     type Output = usize;
 
     #[cfg(any(unix, windows))]
@@ -87,13 +94,15 @@ impl Op for WriteOp<'_> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
+        let buf = self.buf.as_ref().unwrap();
+
         #[cfg(unix)]
         let result = {
             let written = unsafe {
                 libc::write(
                     self.handle.handle,
-                    self.buf.as_ptr().cast::<libc::c_void>(),
-                    self.buf.len(),
+                    buf.as_buf_ptr().cast::<libc::c_void>(),
+                    buf.buf_len(),
                 )
             };
             if written == -1 {
@@ -105,14 +114,21 @@ impl Op for WriteOp<'_> {
 
         #[cfg(windows)]
         let result = match self.handle.handle {
-            RawOsHandle::Socket(socket) => socket_write(socket as SOCKET, self.buf),
+            RawOsHandle::Socket(socket) => {
+                let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+                socket_write(socket as SOCKET, slice)
+            }
             RawOsHandle::Handle(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "poll-based write currently supports sockets only on Windows",
             )),
         };
 
-        poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE)
+        match poll_result_or_wait(result, self.handle, cx, driver, Interest::WRITABLE) {
+            Poll::Ready(Ok(written)) => Poll::Ready(Ok(written)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     #[cfg(any(unix, windows))]
@@ -155,9 +171,10 @@ impl Op for WriteOp<'_> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
+        let buf = self.buf.as_ref().unwrap();
         match self.handle.handle {
             RawOsHandle::Socket(socket) => {
-                let write_len = u32::try_from(self.buf.len()).map_err(|_| {
+                let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "write buffer is too large for Windows socket I/O",
@@ -169,7 +186,7 @@ impl Op for WriteOp<'_> {
                     buf: std::ptr::null_mut(),
                 });
                 wsabuf.len = write_len;
-                wsabuf.buf = self.buf.as_ptr().cast_mut().cast();
+                wsabuf.buf = buf.as_buf_ptr() as *mut _;
 
                 let send_result = unsafe {
                     WinSock::WSASend(
@@ -195,7 +212,7 @@ impl Op for WriteOp<'_> {
                 }
             }
             RawOsHandle::Handle(handle) => {
-                let write_len = u32::try_from(self.buf.len()).map_err(|_| {
+                let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "write buffer is too large for Windows file I/O",
@@ -205,7 +222,7 @@ impl Op for WriteOp<'_> {
                 let write_result = unsafe {
                     WriteFile(
                         handle as HANDLE,
-                        self.buf.as_ptr().cast(),
+                        buf.as_buf_ptr().cast(),
                         write_len,
                         std::ptr::null_mut(),
                         overlapped,
@@ -234,10 +251,11 @@ impl Op for WriteOp<'_> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
+        let buf = self.buf.as_ref().unwrap();
         let entry = opcode::Write::new(
             types::Fd(self.handle.handle),
-            self.buf.as_ptr(),
-            self.buf.len() as _,
+            buf.as_buf_ptr(),
+            buf.buf_len() as _,
         )
         .build()
         .user_data(user_data);
@@ -246,12 +264,16 @@ impl Op for WriteOp<'_> {
     }
 }
 
-impl Drop for WriteOp<'_> {
+impl<B: IoBuf> Drop for WriteOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                driver.ignore_completion(completion_token, Box::new(()));
+                if let Some(buf) = self.buf.take() {
+                    driver.ignore_completion(completion_token, Box::new(buf));
+                } else {
+                    driver.ignore_completion(completion_token, Box::new(()));
+                }
             }
         }
     }

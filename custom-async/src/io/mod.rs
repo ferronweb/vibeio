@@ -1,85 +1,47 @@
 #![allow(async_fn_in_trait)]
 
+mod buf;
 mod util;
 
+pub use self::buf::*;
 pub use self::util::*;
 
-use std::io::{self, ErrorKind, IoSlice, IoSliceMut};
+use std::io::{self, ErrorKind};
 
 pub trait AsyncRead {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error>;
-
-    /// Default vectored read implementation that falls back to a single-buffer
-    /// read using the first provided `IoSliceMut`.
-    #[inline]
-    async fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> Result<usize, io::Error> {
-        if bufs.is_empty() {
-            return Ok(0);
-        }
-        let first = &mut bufs[0];
-        // Safety: `first.as_mut_ptr()` and `first.len()` come from the IoSliceMut
-        // and are valid for the lifetime of `first`. We create a temporary slice
-        // to call the existing `read` API.
-        let ptr = first.as_mut_ptr();
-        let len = first.len();
-        let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
-        self.read(slice).await
-    }
+    async fn read<B: IoBufMut>(&mut self, buf: B) -> (Result<usize, io::Error>, B);
 
     #[inline]
-    async fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), io::Error> {
-        while !buf.is_empty() {
-            let read = self.read(buf).await?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "failed to fill whole buffer",
-                ));
-            }
-            let (_, rest) = buf.split_at_mut(read);
-            buf = rest;
-        }
-
-        Ok(())
+    async fn read_vectored<V: IoVectoredBufMut>(
+        &mut self,
+        bufs: V,
+    ) -> (Result<usize, io::Error>, V) {
+        (
+            Err(io::Error::new(
+                ErrorKind::Unsupported,
+                "readv not implemented",
+            )),
+            bufs,
+        )
     }
 }
 
 pub trait AsyncWrite {
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error>;
+    async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B);
 
-    /// Default vectored write implementation that falls back to a single-buffer
-    /// write using the first provided `IoSlice`.
     #[inline]
-    async fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize, io::Error> {
-        if bufs.is_empty() {
-            return Ok(0);
-        }
-        let first = &bufs[0];
-        // Safety: `first.as_ptr()` and `first.len()` come from the IoSlice and are valid.
-        let ptr = first.as_ptr();
-        let len = first.len();
-        let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
-        self.write(slice).await
+    async fn write_vectored<V: IoVectoredBuf>(&mut self, bufs: V) -> (Result<usize, io::Error>, V) {
+        (
+            Err(io::Error::new(
+                ErrorKind::Unsupported,
+                "readv not implemented",
+            )),
+            bufs,
+        )
     }
 
     #[inline]
     async fn flush(&mut self) -> Result<(), io::Error> {
-        Ok(())
-    }
-
-    #[inline]
-    async fn write_all(&mut self, mut buf: &[u8]) -> Result<(), io::Error> {
-        while !buf.is_empty() {
-            let written = self.write(buf).await?;
-            if written == 0 {
-                return Err(io::Error::new(
-                    ErrorKind::WriteZero,
-                    "failed to write whole buffer",
-                ));
-            }
-            buf = &buf[written..];
-        }
-
         Ok(())
     }
 }
@@ -88,10 +50,9 @@ pub trait AsyncWrite {
 mod tests {
     use std::io;
 
-    use crate::{
-        driver::AnyDriver,
-        io::{AsyncRead, AsyncWrite},
-    };
+    use crate::io::{AsyncRead, AsyncWrite};
+
+    use crate::io::{IoBuf, IoBufMut};
 
     struct SliceReader {
         data: Vec<u8>,
@@ -112,16 +73,23 @@ mod tests {
 
     impl AsyncRead for SliceReader {
         #[inline]
-        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        async fn read<B: IoBufMut>(&mut self, mut buf: B) -> (Result<usize, io::Error>, B) {
             if self.offset >= self.data.len() {
-                return Ok(0);
+                return (Ok(0), buf);
             }
 
             let remaining = self.data.len() - self.offset;
-            let read_len = remaining.min(buf.len()).min(self.chunk_size.max(1));
-            buf[..read_len].copy_from_slice(&self.data[self.offset..self.offset + read_len]);
+            let cap = buf.buf_capacity();
+            let read_len = remaining.min(cap).min(self.chunk_size.max(1));
+
+            unsafe {
+                let ptr = buf.as_buf_mut_ptr().add(buf.buf_len());
+                std::ptr::copy_nonoverlapping(self.data[self.offset..].as_ptr(), ptr, read_len);
+                buf.set_buf_init(buf.buf_len() + read_len);
+            }
+
             self.offset += read_len;
-            Ok(read_len)
+            (Ok(read_len), buf)
         }
     }
 
@@ -144,13 +112,17 @@ mod tests {
 
     impl AsyncWrite for VecWriter {
         #[inline]
-        async fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-            if buf.is_empty() {
-                return Ok(0);
+        async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
+            let len = buf.buf_len();
+            if len == 0 {
+                return (Ok(0), buf);
             }
-            let write_len = buf.len().min(self.chunk_size.max(1));
-            self.data.extend_from_slice(&buf[..write_len]);
-            Ok(write_len)
+            let write_len = len.min(self.chunk_size.max(1));
+
+            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), write_len) };
+            self.data.extend_from_slice(slice);
+
+            (Ok(write_len), buf)
         }
 
         #[inline]
@@ -158,26 +130,5 @@ mod tests {
             self.flushed = true;
             Ok(())
         }
-    }
-
-    #[test]
-    fn read_exact_and_write_all_work_for_partial_io() {
-        let runtime = crate::executor::Runtime::new(AnyDriver::new_mock());
-        runtime.block_on(async {
-            let mut reader = SliceReader::new(b"abcdef", 2);
-            let mut out = [0u8; 6];
-            reader
-                .read_exact(&mut out)
-                .await
-                .expect("read_exact should read full buffer");
-            assert_eq!(&out, b"abcdef");
-
-            let mut writer = VecWriter::new(2);
-            writer
-                .write_all(b"xyz123")
-                .await
-                .expect("write_all should write full buffer");
-            assert_eq!(writer.data, b"xyz123");
-        });
     }
 }

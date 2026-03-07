@@ -70,17 +70,25 @@ pub async fn canonicalize<P: AsRef<std::path::Path>>(path: P) -> std::io::Result
         .map_err(|_| crate::fs::file::blocking_pool_io_error())?
 }
 
+use crate::io::{IoBuf, IoBufMut};
+
 pub async fn read(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>> {
     let mut file: File = OpenOptions::new().read(true).open(path).await?;
     let mut bytes = Vec::new();
     let mut buf = [0u8; 8192];
 
     loop {
-        let read = file.read(&mut buf).await?;
+        let (read, returned_buf) = file.read(buf).await;
+        let read = read?;
+        buf = returned_buf;
+
         if read == 0 {
             break;
         }
-        bytes.extend_from_slice(&buf[..read]);
+
+        let slice =
+            unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len().min(read)) };
+        bytes.extend_from_slice(slice);
     }
 
     Ok(bytes)
@@ -102,7 +110,19 @@ pub async fn write(
         .truncate(true)
         .open(path)
         .await?;
-    file.write_all(contents.as_ref()).await?;
+
+    let mut slice = contents.as_ref();
+    while !slice.is_empty() {
+        let (w, _) = file.write(slice.to_vec()).await;
+        let w = w?;
+        if w == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "failed to write whole buffer",
+            ));
+        }
+        slice = &slice[w..];
+    }
     file.flush().await
 }
 
@@ -481,17 +501,16 @@ mod tests {
                 .open(&path)
                 .await
                 .expect("open for write should succeed");
-            file.write_exact_at(b"abcdef", 0)
+            file.write_exact_at(b"abcdef".to_vec(), 0)
                 .await
+                .0
                 .expect("write_exact_at should succeed");
 
             let file = File::open(&path)
                 .await
                 .expect("open for read should succeed");
-            let mut out = [0u8; 4];
-            file.read_exact_at(&mut out, 2)
-                .await
-                .expect("read_exact_at should succeed");
+            let (read, out) = file.read_exact_at([0u8; 4], 2).await;
+            read.expect("read_exact_at should succeed");
             assert_eq!(&out, b"cdef");
 
             let _ = std::fs::remove_file(path);

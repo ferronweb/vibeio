@@ -13,28 +13,34 @@ use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
+use crate::io::IoBuf;
 use crate::op::Op;
 
-pub struct WriteAtOp<'a> {
+pub struct WriteAtOp<'a, B: IoBuf> {
     handle: &'a InnerRawHandle,
-    buf: &'a [u8],
+    buf: Option<B>,
     offset: u64,
     completion_token: Option<usize>,
 }
 
-impl<'a> WriteAtOp<'a> {
+impl<'a, B: IoBuf> WriteAtOp<'a, B> {
     #[inline]
-    pub fn new(handle: &'a InnerRawHandle, buf: &'a [u8], offset: u64) -> Self {
+    pub fn new(handle: &'a InnerRawHandle, buf: B, offset: u64) -> Self {
         Self {
             handle,
-            buf,
+            buf: Some(buf),
             offset,
             completion_token: None,
         }
     }
+
+    #[inline]
+    pub fn take_bufs(mut self) -> B {
+        self.buf.take().unwrap()
+    }
 }
 
-impl Op for WriteAtOp<'_> {
+impl<B: IoBuf> Op for WriteAtOp<'_, B> {
     type Output = usize;
 
     #[cfg(any(unix, windows))]
@@ -68,7 +74,8 @@ impl Op for WriteAtOp<'_> {
         if result < 0 {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
-        Poll::Ready(Ok(result as usize))
+        let written = result as usize;
+        Poll::Ready(Ok(written))
     }
 
     #[cfg(windows)]
@@ -81,7 +88,8 @@ impl Op for WriteAtOp<'_> {
             ));
         };
 
-        let write_len = u32::try_from(self.buf.len()).map_err(|_| {
+        let buf = self.buf.as_ref().unwrap();
+        let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "write buffer is too large for Windows file I/O",
@@ -96,7 +104,7 @@ impl Op for WriteAtOp<'_> {
         let write_result = unsafe {
             WriteFile(
                 handle as HANDLE,
-                self.buf.as_ptr().cast(),
+                buf.as_buf_ptr().cast(),
                 write_len,
                 std::ptr::null_mut(),
                 overlapped,
@@ -123,14 +131,15 @@ impl Op for WriteAtOp<'_> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let write_len = u32::try_from(self.buf.len()).map_err(|_| {
+        let buf = self.buf.as_ref().unwrap();
+        let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "write buffer is too large for io_uring",
             )
         })?;
 
-        let entry = opcode::Write::new(types::Fd(self.handle.handle), self.buf.as_ptr(), write_len)
+        let entry = opcode::Write::new(types::Fd(self.handle.handle), buf.as_buf_ptr(), write_len)
             .offset(self.offset)
             .build()
             .user_data(user_data);
@@ -139,12 +148,16 @@ impl Op for WriteAtOp<'_> {
     }
 }
 
-impl Drop for WriteAtOp<'_> {
+impl<B: IoBuf> Drop for WriteAtOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                driver.ignore_completion(completion_token, Box::new(()));
+                if let Some(buf) = self.buf.take() {
+                    driver.ignore_completion(completion_token, Box::new(buf));
+                } else {
+                    driver.ignore_completion(completion_token, Box::new(()));
+                }
             }
         }
     }

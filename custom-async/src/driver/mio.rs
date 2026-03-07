@@ -281,7 +281,7 @@ mod tests {
         // Since the driver already has a waker, let's use an Unix pipe instead
         let (side1, mut side2) =
             std::os::unix::net::UnixStream::pair().expect("failed to create pipe");
-        let mut buffer = [0u8; 1];
+        let buffer = [0u8; 1];
         side1
             .set_nonblocking(true)
             .expect("failed to set non-blocking");
@@ -292,7 +292,7 @@ mod tests {
             crate::driver::RegistrationMode::Poll,
         )
         .expect("failed to register pipe");
-        let mut read_op = ReadOp::new(&inner_raw_handle, &mut buffer);
+        let mut read_op = ReadOp::new(&inner_raw_handle, buffer);
         match inner_raw_handle.poll_op(&mut Context::from_waker(&waker), &mut read_op) {
             Poll::Pending => {}
             Poll::Ready(Ok(_)) => panic!("unexpected success"),
