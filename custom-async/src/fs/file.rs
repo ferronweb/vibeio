@@ -333,20 +333,18 @@ async fn read_at_in_blocking_pool<B: IoBufMut>(
         Ok(file) => file,
         Err(e) => return (Err(e), buf),
     };
-    let temp_slice: &'static mut [u8] =
-        unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
     let buf = Arc::new(Mutex::new(RefCell::new(Some(buf))));
     let buf_clone = buf.clone();
     crate::spawn_blocking(move || {
+        let mut buf = buf_clone
+            .try_lock()
+            .ok()
+            .and_then(|rc| rc.take())
+            .expect("buf is none");
+        let temp_slice: &'static mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
         let result = read_at_blocking(&file, temp_slice, offset);
-        (
-            result,
-            buf_clone
-                .try_lock()
-                .ok()
-                .and_then(|rc| rc.take())
-                .expect("buf is none"),
-        )
+        (result, buf)
     })
     .await
     .unwrap_or_else(|_| {
@@ -370,20 +368,18 @@ async fn write_at_in_blocking_pool<B: IoBuf>(
         Ok(file) => file,
         Err(e) => return (Err(e), buf),
     };
-    let temp_slice: &'static [u8] =
-        unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
     let buf = Arc::new(Mutex::new(RefCell::new(Some(buf))));
     let buf_clone = buf.clone();
     crate::spawn_blocking(move || {
+        let buf = buf_clone
+            .try_lock()
+            .ok()
+            .and_then(|rc| rc.take())
+            .expect("buf is none");
+        let temp_slice: &'static [u8] =
+            unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
         let result = write_at_blocking(&file, temp_slice, offset);
-        (
-            result,
-            buf_clone
-                .try_lock()
-                .ok()
-                .and_then(|rc| rc.take())
-                .expect("buf is none"),
-        )
+        (result, buf)
     })
     .await
     .unwrap_or_else(|_| {
