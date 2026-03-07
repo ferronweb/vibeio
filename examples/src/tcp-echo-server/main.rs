@@ -1,7 +1,4 @@
-use custom_async::{
-    io::{AsyncRead, AsyncWrite},
-    RuntimeBuilder,
-};
+use custom_async::RuntimeBuilder;
 
 fn main() -> Result<(), std::io::Error> {
     let runtime = RuntimeBuilder::new().build()?;
