@@ -245,3 +245,14 @@ impl Op for WriteOp<'_> {
         Ok(entry)
     }
 }
+
+impl Drop for WriteOp<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(completion_token) = self.completion_token {
+            if let Some(driver) = crate::current_driver() {
+                driver.ignore_completion(completion_token, Box::new(()));
+            }
+        }
+    }
+}

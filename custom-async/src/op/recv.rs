@@ -236,3 +236,14 @@ impl Op for RecvOp<'_> {
         Ok(entry)
     }
 }
+
+impl Drop for RecvOp<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(completion_token) = self.completion_token {
+            if let Some(driver) = crate::current_driver() {
+                driver.ignore_completion(completion_token, Box::new(()));
+            }
+        }
+    }
+}

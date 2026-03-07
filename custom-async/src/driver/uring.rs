@@ -57,6 +57,7 @@ enum HandleRegistration {
 struct Completion {
     waiter: Option<Waker>,
     completed: Option<i32>,
+    ignored_data: Option<Box<dyn std::any::Any>>,
 }
 
 struct DriverState {
@@ -270,6 +271,9 @@ impl UringDriver {
                     completion.completed = Some(result);
                     if let Some(waiter) = completion.waiter.take() {
                         waiter.wake();
+                    }
+                    if completion.ignored_data.is_some() {
+                        state.completions.remove(token.0);
                     }
                 }
             }
@@ -518,6 +522,7 @@ impl Driver for UringDriver {
         vacant_completion.insert(Completion {
             waiter: Some(waker),
             completed: None,
+            ignored_data: None,
         });
 
         CompletionIoResult::Retry(token)
@@ -538,6 +543,14 @@ impl Driver for UringDriver {
         let mut state = self.state.borrow_mut();
         if let Some(c) = state.completions.get_mut(token) {
             c.waiter = Some(waker);
+        }
+    }
+
+    #[inline]
+    fn ignore_completion(&self, token: usize, data: Box<dyn std::any::Any>) {
+        let mut state = self.state.borrow_mut();
+        if let Some(c) = state.completions.get_mut(token) {
+            c.ignored_data = Some(data);
         }
     }
 }

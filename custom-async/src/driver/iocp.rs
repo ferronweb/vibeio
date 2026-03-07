@@ -110,6 +110,7 @@ struct Completion {
     waiter: Option<Waker>,
     completed: Option<i32>,
     overlapped: Option<Box<OverlappedCtx>>,
+    ignored_data: Option<Box<dyn std::any::Any>>,
 }
 
 #[repr(C)]
@@ -574,6 +575,9 @@ impl IocpDriver {
                 if let Some(waiter) = completion.waiter.take() {
                     waiter.wake();
                 }
+                if completion.ignored_data.is_some() {
+                    state.completions.remove(completion_token);
+                }
             }
         }
     }
@@ -775,6 +779,7 @@ impl Driver for IocpDriver {
                 waiter: Some(waker),
                 completed: None,
                 overlapped: Some(overlapped),
+                ignored_data: None,
             });
 
             (completion_token, overlapped_ptr)
@@ -855,6 +860,14 @@ impl Driver for IocpDriver {
     fn get_interruptor(&self) -> Self::Interruptor {
         IocpInterruptor {
             port: Arc::downgrade(&self.port),
+        }
+    }
+
+    #[inline]
+    fn ignore_completion(&self, token: usize, data: Box<dyn std::any::Any>) {
+        let mut state = self.state.borrow_mut();
+        if let Some(c) = state.completions.get_mut(token) {
+            c.ignored_data = Some(data);
         }
     }
 }

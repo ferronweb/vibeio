@@ -4,6 +4,7 @@ use std::task::{Context, Poll};
 
 use mio::Interest;
 
+use crate::current_driver;
 use crate::driver::{AnyDriver, CompletionIoResult};
 use crate::fd_inner::InnerRawHandle;
 use crate::op::Op;
@@ -133,5 +134,16 @@ impl Op for AcceptUnixOp<'_> {
         .build()
         .user_data(user_data);
         Ok(entry)
+    }
+}
+
+impl Drop for AcceptUnixOp<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(completion_token) = self.completion_token {
+            if let Some(driver) = current_driver() {
+                driver.ignore_completion(completion_token, Box::new(()));
+            }
+        }
     }
 }

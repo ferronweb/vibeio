@@ -13,13 +13,13 @@ use windows_sys::Win32::{
     System::IO::OVERLAPPED,
 };
 
-use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
+use crate::{current_driver, driver::AnyDriver};
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
 #[cfg(unix)]
@@ -330,5 +330,23 @@ impl Op for ReadvOp<'_, '_> {
         self.completion_system_iovecs = Some(iovecs);
 
         Ok(entry)
+    }
+}
+
+impl Drop for ReadvOp<'_, '_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(completion_token) = self.completion_token {
+            if let Some(driver) = current_driver() {
+                #[cfg(target_os = "linux")]
+                let bufs = self.completion_system_iovecs.take();
+                #[cfg(windows)]
+                let bufs = self.completion_wsabufs.take();
+                #[cfg(not(any(target_os = "linux", windows)))]
+                let bufs = ();
+
+                driver.ignore_completion(completion_token, Box::new(bufs));
+            }
+        }
     }
 }

@@ -21,10 +21,10 @@ use windows_sys::Win32::{
     System::IO::OVERLAPPED,
 };
 
-use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::{InnerRawHandle, RawOsHandle};
 use crate::op::Op;
+use crate::{current_driver, driver::AnyDriver};
 
 #[cfg(unix)]
 fn set_cloexec(fd: RawFd) -> Result<(), io::Error> {
@@ -573,6 +573,11 @@ impl Op for AcceptOp<'_> {
 impl Drop for AcceptOp<'_> {
     #[inline]
     fn drop(&mut self) {
+        if let Some(completion_token) = self.completion_token {
+            if let Some(driver) = current_driver() {
+                driver.ignore_completion(completion_token, Box::new(()));
+            }
+        }
         #[cfg(windows)]
         if let Some(socket) = self.accept_socket.take() {
             unsafe { WinSock::closesocket(socket) };

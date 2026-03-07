@@ -152,6 +152,10 @@ pub trait Driver {
     #[inline]
     fn set_completion_waker(&self, _token: usize, _waker: Waker) {}
 
+    /// Cancels a completion-based I/O operation.
+    #[inline]
+    fn ignore_completion(&self, _token: usize, _data: Box<dyn std::any::Any>) {}
+
     /// Interrupts a waiting I/O operation.
     fn get_interruptor(&self) -> Self::Interruptor;
 }
@@ -372,6 +376,19 @@ impl AnyDriver {
             AnyDriver::Mock(driver) => driver.set_completion_waker(token, waker),
             #[cfg(target_os = "linux")]
             AnyDriver::IoUring(driver) => driver.set_completion_waker(token, waker),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn ignore_completion(&self, token: usize, data: Box<dyn std::any::Any>) {
+        match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.ignore_completion(token, data),
+            #[cfg(unix)]
+            AnyDriver::Mio(driver) => driver.ignore_completion(token, data),
+            AnyDriver::Mock(driver) => driver.ignore_completion(token, data),
+            #[cfg(target_os = "linux")]
+            AnyDriver::IoUring(driver) => driver.ignore_completion(token, data),
         }
     }
 

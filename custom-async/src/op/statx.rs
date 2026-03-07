@@ -3,6 +3,7 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
+use crate::current_driver;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::op::Op;
@@ -12,7 +13,7 @@ pub struct StatxOp {
     pathname: CString,
     flags: libc::c_int,
     mask: libc::c_uint,
-    statxbuf: Box<MaybeUninit<libc::statx>>,
+    statxbuf: Option<Box<MaybeUninit<libc::statx>>>,
     completion_token: Option<usize>,
 }
 
@@ -29,7 +30,7 @@ impl StatxOp {
             pathname,
             flags,
             mask,
-            statxbuf: Box::new(MaybeUninit::uninit()),
+            statxbuf: None,
             completion_token: None,
         }
     }
@@ -70,7 +71,8 @@ impl Op for StatxOp {
             Poll::Ready(Err(io::Error::from_raw_os_error(-result)))
         } else {
             // SAFETY: kernel fills the statx struct on success.
-            let st = unsafe { self.statxbuf.assume_init_read() };
+            let statxbuf = self.statxbuf.take().expect("statxbuf is None");
+            let st = unsafe { *statxbuf.assume_init() };
             Poll::Ready(Ok(st))
         }
     }
@@ -82,16 +84,36 @@ impl Op for StatxOp {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
+        let mut statxbuf = if let Some(statxbuf) = self.statxbuf.take() {
+            statxbuf
+        } else {
+            Box::new_uninit()
+        };
+
         let entry = opcode::Statx::new(
             types::Fd(self.dirfd),
             self.pathname.as_ptr(),
-            self.statxbuf.as_mut_ptr() as *mut types::statx,
+            statxbuf.as_mut_ptr() as *mut types::statx,
         )
         .flags(self.flags as _)
         .mask(self.mask)
         .build()
         .user_data(user_data);
 
+        self.statxbuf = Some(statxbuf);
+
         Ok(entry)
+    }
+}
+
+impl Drop for StatxOp {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(completion_token) = self.completion_token {
+            if let Some(driver) = current_driver() {
+                let statxbuf = self.statxbuf.take();
+                driver.ignore_completion(completion_token, Box::new(statxbuf));
+            }
+        }
     }
 }
