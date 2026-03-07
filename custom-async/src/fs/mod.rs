@@ -17,6 +17,8 @@ use crate::io::{AsyncRead, AsyncWrite};
 #[cfg(target_os = "linux")]
 use crate::op::HardLinkOp;
 #[cfg(target_os = "linux")]
+use crate::op::MkDirOp;
+#[cfg(target_os = "linux")]
 use crate::op::Op;
 #[cfg(target_os = "linux")]
 use crate::op::RenameOp;
@@ -472,6 +474,94 @@ pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<(
     }
 }
 
+#[cfg(target_os = "linux")]
+pub async fn create_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    let path = path.as_ref();
+
+    let driver = crate::executor::current_driver();
+    if driver.as_ref().is_some_and(|d| d.supports_completion()) {
+        let path_cstr = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid path: {}", e),
+            )
+        })?;
+        let driver = driver.expect("invalid driver state");
+        // mode 0o777 is standard for mkdir, umask will be applied
+        let mut op = MkDirOp::new(path_cstr, 0o777);
+        std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
+    } else if crate::executor::offload_fs() {
+        let path = path.to_owned();
+        crate::spawn_blocking(move || std::fs::create_dir(path))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::create_dir(path)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn create_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    if crate::executor::offload_fs() {
+        let path = path.as_ref().to_owned();
+        crate::spawn_blocking(move || std::fs::create_dir(path))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::create_dir(path)
+    }
+}
+
+pub async fn create_dir_all(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    let path = path.as_ref();
+    let mut stack = Vec::new();
+    let mut p = path;
+
+    // Build stack of missing directories
+    loop {
+        // Try to create current path
+        match create_dir(p).await {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Exists. Check if dir.
+                if let Ok(metadata) = metadata(p).await {
+                    if metadata.is_dir() {
+                        break;
+                    }
+                }
+                return Err(e);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Parent missing.
+                stack.push(p);
+                match p.parent() {
+                    Some(parent) => p = parent,
+                    None => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    // Now create directories in stack in reverse order (top to bottom)
+    while let Some(p) = stack.pop() {
+        match create_dir(p).await {
+            Ok(()) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Ok(metadata) = metadata(p).await {
+                    if metadata.is_dir() {
+                        continue;
+                    }
+                }
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
 pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Metadata> {
     let path = path.as_ref();
@@ -694,6 +784,52 @@ mod tests {
             assert!(md.is_file());
 
             let _ = std::fs::remove_file(path);
+        });
+    }
+
+    #[test]
+    fn create_dir_works() {
+        let runtime = Runtime::new(AnyDriver::new_mock());
+        runtime.block_on(async {
+            let path = unique_path("create_dir");
+            crate::fs::create_dir(&path)
+                .await
+                .expect("create_dir should succeed");
+
+            let md = metadata(&path).await.expect("metadata should succeed");
+            assert!(md.is_dir());
+
+            crate::fs::remove_dir(path)
+                .await
+                .expect("remove_dir should succeed");
+        });
+    }
+
+    #[test]
+    fn create_dir_all_works() {
+        let runtime = Runtime::new(AnyDriver::new_mock());
+        runtime.block_on(async {
+            let base = unique_path("create_dir_all");
+            let path = base.join("a/b/c");
+
+            crate::fs::create_dir_all(&path)
+                .await
+                .expect("create_dir_all should succeed");
+
+            let md = metadata(&path).await.expect("metadata should succeed");
+            assert!(md.is_dir());
+
+            // Clean up
+            crate::fs::remove_dir(base.join("a/b/c"))
+                .await
+                .expect("remove_dir c");
+            crate::fs::remove_dir(base.join("a/b"))
+                .await
+                .expect("remove_dir b");
+            crate::fs::remove_dir(base.join("a"))
+                .await
+                .expect("remove_dir a");
+            crate::fs::remove_dir(&base).await.expect("remove_dir base");
         });
     }
 }

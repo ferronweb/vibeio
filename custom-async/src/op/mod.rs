@@ -8,6 +8,8 @@ mod fsync;
 mod hard_link;
 mod io_util;
 #[cfg(target_os = "linux")]
+mod mkdir;
+#[cfg(target_os = "linux")]
 mod open;
 mod read;
 mod readat;
@@ -40,6 +42,8 @@ pub use connect::ConnectOp;
 pub use fsync::FsyncOp;
 #[cfg(target_os = "linux")]
 pub use hard_link::HardLinkOp;
+#[cfg(target_os = "linux")]
+pub use mkdir::MkDirOp;
 #[cfg(target_os = "linux")]
 pub use open::OpenOp;
 pub use read::ReadOp;
