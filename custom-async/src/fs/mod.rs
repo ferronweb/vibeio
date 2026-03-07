@@ -65,9 +65,13 @@ pub fn windows_symlink_file(path: String, target: String) -> std::io::Result<()>
 
 pub async fn canonicalize<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<PathBuf> {
     let path = path.as_ref().to_path_buf();
-    crate::spawn_blocking(move || path.canonicalize())
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    if crate::executor::offload_fs() {
+        crate::spawn_blocking(move || path.canonicalize())
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        path.canonicalize()
+    }
 }
 
 use crate::io::{IoBuf, IoBufMut};
@@ -152,12 +156,14 @@ pub async fn hard_link(
         let driver = driver.expect("invalid driver state");
         let mut op = HardLinkOp::new(src_cstr, dst_cstr);
         std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
-    } else {
+    } else if crate::executor::offload_fs() {
         let src = src.to_owned();
         let dst = dst.to_owned();
         crate::spawn_blocking(move || std::fs::hard_link(src, dst))
             .await
             .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::hard_link(src, dst)
     }
 }
 
@@ -166,11 +172,15 @@ pub async fn hard_link(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
 ) -> std::io::Result<()> {
-    let src = src.as_ref().to_owned();
-    let dst = dst.as_ref().to_owned();
-    crate::spawn_blocking(move || std::fs::hard_link(src, dst))
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    if crate::executor::offload_fs() {
+        let src = src.as_ref().to_owned();
+        let dst = dst.as_ref().to_owned();
+        crate::spawn_blocking(move || std::fs::hard_link(src, dst))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::hard_link(src, dst)
+    }
 }
 
 #[cfg(windows)]
@@ -178,14 +188,24 @@ pub async fn symlink_dir(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
 ) -> std::io::Result<()> {
-    let src = src.as_ref();
-    let dst = dst.as_ref();
+    if crate::executor::offload_fs() {
+        let src = src.as_ref();
+        let dst = dst.as_ref();
 
-    let src_str = src.to_string_lossy().to_string();
-    let dst_str = dst.to_string_lossy().to_string();
-    crate::spawn_blocking(move || windows_symlink_dir(src_str, dst_str))
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+        let src_str = src.to_string_lossy().to_string();
+        let dst_str = dst.to_string_lossy().to_string();
+        crate::spawn_blocking(move || windows_symlink_dir(src_str, dst_str))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        let src = src.as_ref();
+        let dst = dst.as_ref();
+
+        let src_str = src.to_string_lossy().to_string();
+        let dst_str = dst.to_string_lossy().to_string();
+
+        windows_symlink_dir(src_str, dst_str)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -214,12 +234,14 @@ pub async fn symlink_dir(
         let driver = driver.expect("invalid driver state");
         let mut op = SymlinkOp::new(src_cstr, dst_cstr);
         std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
-    } else {
+    } else if crate::executor::offload_fs() {
         let src = src.to_owned();
         let dst = dst.to_owned();
         crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
             .await
             .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::os::unix::fs::symlink(src, dst)
     }
 }
 
@@ -228,11 +250,15 @@ pub async fn symlink_dir(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
 ) -> std::io::Result<()> {
-    let src = src.as_ref().to_owned();
-    let dst = dst.as_ref().to_owned();
-    crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    if crate::executor::offload_fs() {
+        let src = src.as_ref().to_owned();
+        let dst = dst.as_ref().to_owned();
+        crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::os::unix::fs::symlink(src, dst)
+    }
 }
 
 #[cfg(windows)]
@@ -240,14 +266,24 @@ pub async fn symlink_file(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
 ) -> std::io::Result<()> {
-    let src = src.as_ref();
-    let dst = dst.as_ref();
+    if crate::executor::offload_fs() {
+        let src = src.as_ref();
+        let dst = dst.as_ref();
 
-    let src_str = src.to_string_lossy().to_string();
-    let dst_str = dst.to_string_lossy().to_string();
-    crate::spawn_blocking(move || windows_symlink_file(src_str, dst_str))
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+        let src_str = src.to_string_lossy().to_string();
+        let dst_str = dst.to_string_lossy().to_string();
+        crate::spawn_blocking(move || windows_symlink_file(src_str, dst_str))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        let src = src.as_ref();
+        let dst = dst.as_ref();
+
+        let src_str = src.to_string_lossy().to_string();
+        let dst_str = dst.to_string_lossy().to_string();
+
+        windows_symlink_file(src_str, dst_str)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -276,12 +312,14 @@ pub async fn symlink_file(
         let driver = driver.expect("invalid driver state");
         let mut op = SymlinkOp::new(src_cstr, dst_cstr);
         std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
-    } else {
+    } else if crate::executor::offload_fs() {
         let src = src.to_owned();
         let dst = dst.to_owned();
         crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
             .await
             .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::os::unix::fs::symlink(src, dst)
     }
 }
 
@@ -290,11 +328,15 @@ pub async fn symlink_file(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
 ) -> std::io::Result<()> {
-    let src = src.as_ref().to_owned();
-    let dst = dst.as_ref().to_owned();
-    crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    if crate::executor::offload_fs() {
+        let src = src.as_ref().to_owned();
+        let dst = dst.as_ref().to_owned();
+        crate::spawn_blocking(move || std::os::unix::fs::symlink(src, dst))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::os::unix::fs::symlink(src, dst)
+    }
 }
 
 pub async fn symlink(
@@ -329,12 +371,14 @@ pub async fn rename(
         let driver = driver.expect("invalid driver state");
         let mut op = RenameOp::new(from_cstr, to_cstr);
         std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
-    } else {
+    } else if crate::executor::offload_fs() {
         let from = from.to_owned();
         let to = to.to_owned();
         crate::spawn_blocking(move || std::fs::rename(from, to))
             .await
             .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::rename(from, to)
     }
 }
 
@@ -343,11 +387,15 @@ pub async fn rename(
     from: impl AsRef<std::path::Path>,
     to: impl AsRef<std::path::Path>,
 ) -> std::io::Result<()> {
-    let from = from.as_ref().to_owned();
-    let to = to.as_ref().to_owned();
-    crate::spawn_blocking(move || std::fs::rename(from, to))
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    if crate::executor::offload_fs() {
+        let from = from.as_ref().to_owned();
+        let to = to.as_ref().to_owned();
+        crate::spawn_blocking(move || std::fs::rename(from, to))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::rename(from, to)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -365,20 +413,26 @@ pub async fn remove_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()
         let driver = driver.expect("invalid driver state");
         let mut op = UnlinkOp::new(path_cstr, true);
         std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
-    } else {
+    } else if crate::executor::offload_fs() {
         let path = path.to_owned();
         crate::spawn_blocking(move || std::fs::remove_dir(path))
             .await
             .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::remove_dir(path)
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 pub async fn remove_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
-    let path = path.as_ref().to_owned();
-    crate::spawn_blocking(move || std::fs::remove_dir(path))
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    if crate::executor::offload_fs() {
+        let path = path.as_ref().to_owned();
+        crate::spawn_blocking(move || std::fs::remove_dir(path))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::remove_dir(path)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -396,20 +450,26 @@ pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<(
         let driver = driver.expect("invalid driver state");
         let mut op = UnlinkOp::new(path_cstr, false);
         std::future::poll_fn(|cx| op.poll_completion(cx, driver.as_ref())).await
-    } else {
+    } else if crate::executor::offload_fs() {
         let path = path.to_owned();
         crate::spawn_blocking(move || std::fs::remove_file(path))
             .await
             .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::remove_file(path)
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
-    let path = path.as_ref().to_owned();
-    crate::spawn_blocking(move || std::fs::remove_file(path))
-        .await
-        .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    if crate::executor::offload_fs() {
+        let path = path.as_ref().to_owned();
+        crate::spawn_blocking(move || std::fs::remove_file(path))
+            .await
+            .map_err(|_| crate::fs::file::blocking_pool_io_error())?
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
@@ -428,24 +488,30 @@ pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Meta
         let mut op = crate::op::StatxOp::new(libc::AT_FDCWD, path_cstr, 0, libc::STATX_ALL);
         let statx = std::future::poll_fn(move |cx| op.poll_completion(cx, &driver)).await?;
         Ok(Metadata::from_statx(statx))
-    } else {
+    } else if crate::executor::offload_fs() {
         let path = path.to_owned();
         Ok(Metadata::from_std(
             crate::spawn_blocking(move || std::fs::metadata(path))
                 .await
                 .map_err(|_| crate::fs::file::blocking_pool_io_error())??,
         ))
+    } else {
+        Ok(Metadata::from_std(std::fs::metadata(path)?))
     }
 }
 
 #[cfg(not(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3))))]
 pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Metadata> {
-    let path = path.as_ref().to_owned();
-    Ok(Metadata::from_std(
-        crate::spawn_blocking(move || std::fs::metadata(path))
-            .await
-            .map_err(|_| crate::fs::file::blocking_pool_io_error())??,
-    ))
+    if crate::executor::offload_fs() {
+        let path = path.as_ref().to_owned();
+        Ok(Metadata::from_std(
+            crate::spawn_blocking(move || std::fs::metadata(path))
+                .await
+                .map_err(|_| crate::fs::file::blocking_pool_io_error())??,
+        ))
+    } else {
+        Ok(Metadata::from_std(std::fs::metadata(path)?))
+    }
 }
 
 #[cfg(test)]

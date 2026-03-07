@@ -57,6 +57,7 @@ impl DriverKind {
 pub struct RuntimeBuilder {
     driver_kind: Option<DriverKind>,
     enable_timer: bool,
+    enable_fs_offload: bool,
     blocking_pool: Option<Box<dyn BlockingThreadPool>>,
 }
 
@@ -68,6 +69,7 @@ impl RuntimeBuilder {
         Self {
             driver_kind: None,
             enable_timer: false,
+            enable_fs_offload: false,
             blocking_pool: None,
         }
     }
@@ -83,6 +85,14 @@ impl RuntimeBuilder {
     /// By default, the timer is disabled.
     pub fn enable_timer(mut self, enable: bool) -> Self {
         self.enable_timer = enable;
+        self
+    }
+
+    /// Enables or disables the offload of file I/O to blocking threads for the runtime.
+    ///
+    /// By default, the fs offload is disabled.
+    pub fn enable_fs_offload(mut self, enable: bool) -> Self {
+        self.enable_fs_offload = enable;
         self
     }
 
@@ -114,6 +124,7 @@ impl RuntimeBuilder {
             driver,
             self.enable_timer,
             self.blocking_pool,
+            self.enable_fs_offload,
         ))
     }
 }

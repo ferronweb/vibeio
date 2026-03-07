@@ -121,7 +121,7 @@ impl File {
             let mut op = ReadAtOp::new(handle, buf, offset);
             let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
             (result, op.take_bufs())
-        } else if current_driver().is_some() {
+        } else if crate::executor::offload_fs() && current_driver().is_some() {
             read_at_in_blocking_pool(&self.inner, buf, offset).await
         } else {
             let slice =
@@ -169,7 +169,7 @@ impl File {
             let mut op = WriteAtOp::new(handle, buf, offset);
             let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
             (result, op.take_bufs())
-        } else if current_driver().is_some() {
+        } else if crate::executor::offload_fs() && current_driver().is_some() {
             write_at_in_blocking_pool(&self.inner, buf, offset).await
         } else {
             let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
@@ -219,7 +219,7 @@ impl File {
                 let _ = handle;
                 sync_all_in_blocking_pool(&self.inner).await
             }
-        } else if current_driver().is_some() {
+        } else if crate::executor::offload_fs() && current_driver().is_some() {
             sync_all_in_blocking_pool(&self.inner).await
         } else {
             sync_all_blocking(&self.inner)
@@ -239,7 +239,7 @@ impl File {
                 let _ = handle;
                 sync_data_in_blocking_pool(&self.inner).await
             }
-        } else if current_driver().is_some() {
+        } else if crate::executor::offload_fs() && current_driver().is_some() {
             sync_data_in_blocking_pool(&self.inner).await
         } else {
             sync_data_blocking(&self.inner)
@@ -267,7 +267,7 @@ impl File {
                 let _ = handle;
                 metadata_in_blocking_pool(&self.inner).await
             }
-        } else if current_driver().is_some() {
+        } else if crate::executor::offload_fs() && current_driver().is_some() {
             metadata_in_blocking_pool(&self.inner).await
         } else {
             metadata_blocking(&self.inner)
