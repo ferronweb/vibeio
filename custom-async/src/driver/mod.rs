@@ -197,6 +197,17 @@ impl AnyDriver {
     #[cfg(target_os = "linux")]
     #[inline]
     pub(crate) fn new_uring() -> Result<Self, io::Error> {
+        let mut builder = io_uring::IoUring::builder();
+        builder
+            .setup_single_issuer()
+            .setup_coop_taskrun()
+            .setup_taskrun_flag()
+            .setup_submit_all();
+        if let Ok(driver) = Self::new_uring_custom(builder) {
+            return Ok(driver);
+        }
+
+        // Fallback for older kernels
         Self::new_uring_custom(io_uring::IoUring::builder())
     }
 
