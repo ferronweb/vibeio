@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use super::BlockingThreadPool;
 
 /// A default implementation of `BlockingThreadPool` using `rusty_pool` crate.

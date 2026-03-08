@@ -76,7 +76,7 @@ pub async fn canonicalize<P: AsRef<std::path::Path>>(path: P) -> std::io::Result
     }
 }
 
-use crate::io::{IoBuf, IoBufMut};
+use crate::io::IoBuf;
 
 pub async fn read(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>> {
     let mut file: File = OpenOptions::new().read(true).open(path).await?;

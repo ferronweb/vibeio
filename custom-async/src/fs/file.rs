@@ -1,4 +1,4 @@
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::RefCell;
 use std::future::poll_fn;
 use std::io::{self, ErrorKind};
 use std::mem::ManuallyDrop;
@@ -326,7 +326,7 @@ pub(crate) fn blocking_pool_io_error() -> io::Error {
 #[inline]
 async fn read_at_in_blocking_pool<B: IoBufMut>(
     file: &std::fs::File,
-    mut buf: B,
+    buf: B,
     offset: u64,
 ) -> (io::Result<usize>, B) {
     let file = match file.try_clone() {
