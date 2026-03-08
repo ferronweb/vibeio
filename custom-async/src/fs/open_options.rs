@@ -120,15 +120,21 @@ impl OpenOptions {
                     let mut op = self.build_open_op(path)?;
                     let raw = poll_fn(move |cx| op.poll(cx, &driver)).await?;
                     unsafe { std::fs::File::from_raw_fd(raw) }
-                } else {
+                } else if crate::offload_fs() {
                     self.open_in_blocking_pool(path).await?
+                } else {
+                    self.open_blocking(path)?
                 }
             }
 
             #[cfg(not(target_os = "linux"))]
             {
                 let _ = driver;
-                self.open_in_blocking_pool(path).await?
+                if crate::offload_fs() {
+                    self.open_in_blocking_pool(path).await?
+                } else {
+                    self.open_blocking(path)?
+                }
             }
         } else {
             self.open_blocking(path)?
