@@ -395,6 +395,14 @@ impl Runtime {
                 continue;
             }
 
+            #[cfg(feature = "time")]
+            if !next_task_taken && batch.len() > 64 {
+                if let Some(timer) = inner.timer.as_ref() {
+                    // Spin the timing wheel to avoid starving timers
+                    let _ = timer.spin_and_get_deadline();
+                }
+            }
+
             for task in batch.drain(..) {
                 let mut future_slot = task.future.borrow_mut();
                 if let Some(mut future) = future_slot.take() {
