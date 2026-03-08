@@ -69,9 +69,9 @@ pub struct UringDriver {
     ring: RefCell<IoUring>,
     state: RefCell<DriverState>,
     interrupt_eventfd: Option<StdArc<RawFd>>,
-    interrupt_buffer: RefCell<[u8; 8]>,
+    interrupt_buffer: RefCell<Box<[u8; 8]>>,
     ext_arg: bool,
-    timespec: RefCell<Option<Timespec>>,
+    timespec: RefCell<Box<Timespec>>,
 }
 
 impl Drop for UringDriver {
@@ -101,9 +101,9 @@ impl UringDriver {
                 completions: Slab::with_capacity(entries as usize),
             }),
             interrupt_eventfd: Some(StdArc::new(eventfd)),
-            interrupt_buffer: RefCell::new([0; 8]),
+            interrupt_buffer: RefCell::new(Box::new([0; 8])),
             ext_arg,
-            timespec: RefCell::new(None),
+            timespec: RefCell::new(Box::new(Timespec::new())),
         };
 
         driver.submit_interrupt();
@@ -212,13 +212,40 @@ impl UringDriver {
                         } else {
                             // Linux 5.4+
                             let timespec = timeout.into();
-                            let timespec_ptr = &timespec as *const Timespec;
-                            self.timespec.borrow_mut().replace(timespec);
-                            let _ = self.push_entry(
-                                opcode::Timeout::new(timespec_ptr)
-                                    .build()
-                                    .user_data(u64::MAX - 1),
-                            );
+                            let mut ts_box = self.timespec.borrow_mut();
+                            **ts_box = timespec;
+                            let timespec_ptr = &**ts_box as *const Timespec;
+
+                            // We must drop the borrow here so we can call push_entry (which borrows ring, but doesn't borrow timespec).
+                            // BUT push_entry borrows ring. We currently have `ring` borrowed mutably!
+                            // We need to drop `ring` borrow before calling `push_entry`?
+                            // `collect_completions` has `let mut ring = self.ring.borrow_mut();` at the top of this block.
+                            // If we call `self.push_entry`, it tries `self.ring.borrow_mut()`, which panics!
+                            //
+                            // FIX: We cannot call `self.push_entry` while holding `ring` borrow.
+                            // We must push manually using the already borrowed `ring`.
+
+                            // Duplicate logic of push_entry but using existing `ring` ref?
+                            // Or just push directly to `ring.submission()`.
+
+                            let entry = opcode::Timeout::new(timespec_ptr)
+                                .build()
+                                .user_data(u64::MAX - 1);
+
+                            if ring.submission().is_full() {
+                                // We are holding borrow, so we can't call methods that borrow.
+                                // But `ring.submit()` is on `IoUring`.
+                                Self::submitter_call_result(ring.submit())?;
+                            }
+
+                            {
+                                let mut sq = ring.submission();
+                                unsafe {
+                                    sq.push(&entry).map_err(|_| {
+                                        io::Error::other("io_uring submission queue is full")
+                                    })?;
+                                }
+                            }
 
                             ring.submit_and_wait(1)
                         }
@@ -291,21 +318,25 @@ impl UringDriver {
         use io_uring::{opcode, types};
         // Submit a read operation to the eventfd to wake up the driver
         let mut buffer = self.interrupt_buffer.borrow_mut();
-        let _ = self.push_entry(
-            opcode::Read::new(
-                types::Fd(
-                    *self
-                        .interrupt_eventfd
-                        .as_ref()
-                        .expect("interrupt_eventfd is not initialized")
-                        .as_ref(),
-                ),
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-            )
-            .build()
-            .user_data(u64::MAX),
-        );
+        let entry = opcode::Read::new(
+            types::Fd(
+                *self
+                    .interrupt_eventfd
+                    .as_ref()
+                    .expect("interrupt_eventfd is not initialized")
+                    .as_ref(),
+            ),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+        .build()
+        .user_data(u64::MAX);
+
+        // We use push_entry here. It handles submission if full.
+        // We panic if it fails because we cannot recover (we won't be able to wake up).
+        if let Err(err) = self.push_entry(entry) {
+            panic!("io_uring: failed to submit interrupt task: {}", err);
+        }
     }
 }
 
