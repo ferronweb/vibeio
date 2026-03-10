@@ -418,7 +418,6 @@ async fn metadata_in_blocking_pool(file: &std::fs::File) -> io::Result<Metadata>
 }
 
 impl AsyncRead for File {
-    // TODO: use Readv and Read ops
     #[inline]
     async fn read<B: IoBufMut>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
         let (read, buf) = self.read_at(buf, self.cursor).await;
@@ -430,7 +429,6 @@ impl AsyncRead for File {
 }
 
 impl AsyncWrite for File {
-    // TODO: use Writev and Write ops
     #[inline]
     async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
         let (written, buf) = self.write_at(buf, self.cursor).await;
