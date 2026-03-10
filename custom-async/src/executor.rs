@@ -31,6 +31,7 @@ pub(crate) struct RuntimeInner {
     driver: Rc<AnyDriver>,
     waiting: Arc<AtomicBool>,
     blocking_pool: Option<Box<dyn BlockingThreadPool>>,
+    #[cfg(feature = "fs")]
     fs_offload: bool,
     #[cfg(feature = "time")]
     timer: Option<Rc<Timer>>,
@@ -175,6 +176,7 @@ pub fn supports_completion() -> bool {
     current_driver().is_some_and(|driver| driver.supports_completion())
 }
 
+#[cfg(feature = "fs")]
 #[inline]
 pub(crate) fn offload_fs() -> bool {
     CURRENT_RUNTIME.with(|runtime| {
@@ -305,6 +307,9 @@ impl Runtime {
         blocking_pool: Option<Box<dyn BlockingThreadPool>>,
         fs_offload: bool,
     ) -> Self {
+        #[cfg(not(feature = "fs"))]
+        let _ = fs_offload;
+
         let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(4096)));
         Runtime {
             inner: Some(Rc::new(RuntimeInner {
@@ -315,6 +320,7 @@ impl Runtime {
                 driver: Rc::new(driver),
                 waiting: Arc::new(AtomicBool::new(false)),
                 blocking_pool,
+                #[cfg(feature = "fs")]
                 fs_offload,
                 #[cfg(feature = "time")]
                 timer: if enable_timer {

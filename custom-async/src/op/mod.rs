@@ -2,31 +2,37 @@ mod accept;
 #[cfg(unix)]
 mod accept_unix;
 mod connect;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 mod fsync;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 mod hard_link;
 mod io_util;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 mod mkdir;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 mod open;
 mod read;
+#[cfg(feature = "fs")]
 mod readat;
 mod readv;
 mod recv;
 mod recvfrom;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 mod rename;
 mod send;
 mod sendto;
-#[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_env = "gnu", musl_v1_2_3),
+    feature = "fs"
+))]
 mod statx; // musl libc 1.1.x doesn't support statx
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 mod symlink;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 mod unlink;
 mod write;
+#[cfg(feature = "fs")]
 mod writeat;
 mod writev;
 
@@ -38,30 +44,36 @@ pub use accept::AcceptOp;
 #[cfg(unix)]
 pub use accept_unix::AcceptUnixOp;
 pub use connect::ConnectOp;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 pub use fsync::FsyncOp;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 pub use hard_link::HardLinkOp;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 pub use mkdir::MkDirOp;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 pub use open::OpenOp;
 pub use read::ReadOp;
+#[cfg(feature = "fs")]
 pub use readat::ReadAtOp;
 pub use readv::ReadvOp;
 pub use recv::RecvOp;
 pub use recvfrom::RecvfromOp;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 pub use rename::RenameOp;
 pub use send::SendOp;
 pub use sendto::SendtoOp;
-#[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_env = "gnu", musl_v1_2_3),
+    feature = "fs"
+))]
 pub use statx::StatxOp;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 pub use symlink::SymlinkOp;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "fs"))]
 pub use unlink::UnlinkOp;
 pub use write::WriteOp;
+#[cfg(feature = "fs")]
 pub use writeat::WriteAtOp;
 pub use writev::WritevOp;
 

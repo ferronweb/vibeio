@@ -36,7 +36,8 @@ io-uring = "0.6"
 shiba = { workspace = true }
 
 [features]
-default = ["time", "blocking-default"]
+default = ["fs", "time", "blocking-default"]
+fs = []
 time = ["tm-wheel"]
 blocking-default = ["rusty_pool"]
 
