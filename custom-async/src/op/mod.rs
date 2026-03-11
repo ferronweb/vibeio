@@ -21,6 +21,8 @@ mod recvfrom;
 mod rename;
 mod send;
 mod sendto;
+#[cfg(all(target_os = "linux", feature = "splice"))]
+mod splice;
 #[cfg(all(
     target_os = "linux",
     any(target_env = "gnu", musl_v1_2_3),
@@ -62,6 +64,8 @@ pub use recvfrom::RecvfromOp;
 pub use rename::RenameOp;
 pub use send::SendOp;
 pub use sendto::SendtoOp;
+#[cfg(all(target_os = "linux", feature = "splice"))]
+pub use splice::SpliceOp;
 #[cfg(all(
     target_os = "linux",
     any(target_env = "gnu", musl_v1_2_3),

@@ -19,7 +19,7 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 
 use crate::io::{
-    IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
+    AsInnerRawHandle, IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
     IoVectoredBufTemporaryPoll,
 };
 use crate::op::{ConnectOp, ReadOp, ReadvOp, RecvOp, WriteOp, WritevOp};
@@ -459,6 +459,20 @@ impl IntoRawSocket for PollTcpStream {
     #[inline]
     fn into_raw_socket(self) -> RawSocket {
         self.stream.into_raw_socket()
+    }
+}
+
+impl<'a> AsInnerRawHandle<'a> for TcpStream {
+    #[inline]
+    fn as_inner_raw_handle(&'a self) -> &'a InnerRawHandle {
+        &self.handle
+    }
+}
+
+impl<'a> AsInnerRawHandle<'a> for PollTcpStream {
+    #[inline]
+    fn as_inner_raw_handle(&'a self) -> &'a InnerRawHandle {
+        self.stream.as_inner_raw_handle()
     }
 }
 

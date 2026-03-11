@@ -13,7 +13,7 @@ use mio::Interest;
 use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
 use crate::io::{
-    IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
+    AsInnerRawHandle, IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
     IoVectoredBufTemporaryPoll,
 };
 use crate::op::{ConnectOp, ReadOp, ReadvOp, WriteOp, WritevOp};
@@ -311,6 +311,20 @@ impl AsRawFd for UnixStream {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.inner.as_raw_fd()
+    }
+}
+
+impl<'a> AsInnerRawHandle<'a> for UnixStream {
+    #[inline]
+    fn as_inner_raw_handle(&'a self) -> &'a InnerRawHandle {
+        &self.handle
+    }
+}
+
+impl<'a> AsInnerRawHandle<'a> for PollUnixStream {
+    #[inline]
+    fn as_inner_raw_handle(&'a self) -> &'a InnerRawHandle {
+        self.stream.as_inner_raw_handle()
     }
 }
 

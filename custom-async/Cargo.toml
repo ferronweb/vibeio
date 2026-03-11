@@ -34,10 +34,12 @@ io-uring = "0.6"
 
 [dev-dependencies]
 shiba = { workspace = true }
+tempfile = "3.10.1"
 
 [features]
-default = ["fs", "time", "blocking-default"]
+default = ["fs", "splice", "time", "blocking-default"]
 fs = []
+splice = []
 time = ["tm-wheel"]
 blocking-default = ["rusty_pool"]
 
