@@ -171,11 +171,6 @@ where
     runtime.spawn_blocking(f).await
 }
 
-#[inline]
-pub fn supports_completion() -> bool {
-    current_driver().is_some_and(|driver| driver.supports_completion())
-}
-
 #[cfg(feature = "fs")]
 #[inline]
 pub(crate) fn offload_fs() -> bool {
