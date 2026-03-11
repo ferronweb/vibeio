@@ -2,7 +2,6 @@
 
 - Some I/O wrapper structs:
   - stdio
-  - Unix pipes
   - std::process wrappers
 - Process signal utilities
 

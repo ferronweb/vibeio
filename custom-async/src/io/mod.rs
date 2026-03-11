@@ -1,6 +1,8 @@
 #![allow(async_fn_in_trait)]
 
 mod buf;
+#[cfg(all(unix, feature = "pipe"))]
+mod pipe;
 #[cfg(all(target_os = "linux", feature = "splice"))]
 mod splice;
 mod util;
@@ -8,6 +10,8 @@ mod util;
 use crate::fd_inner::InnerRawHandle;
 
 pub use self::buf::*;
+#[cfg(all(unix, feature = "pipe"))]
+pub use self::pipe::*;
 #[cfg(all(target_os = "linux", feature = "splice"))]
 pub use self::splice::*;
 pub use self::util::*;
