@@ -15,6 +15,8 @@ use slab::Slab;
 use crate::blocking::DefaultBlockingThreadPool;
 use crate::blocking::{BlockingThreadPool, SpawnBlockingError};
 use crate::driver::AnyDriver;
+#[cfg(feature = "process")]
+use crate::process::{start_zombie_reaper, ZombieReaperMessage};
 use crate::task::Task;
 #[cfg(feature = "time")]
 use crate::timer::Timer;
@@ -35,6 +37,8 @@ pub(crate) struct RuntimeInner {
     fs_offload: bool,
     #[cfg(feature = "time")]
     timer: Option<Rc<Timer>>,
+    #[cfg(feature = "process")]
+    zombie_reaper: RefCell<Option<async_channel::Sender<ZombieReaperMessage>>>,
 }
 
 pub struct Runtime {
@@ -136,6 +140,22 @@ pub(crate) fn current_timer() -> Option<Rc<Timer>> {
                 .clone()
         })
     })
+}
+
+#[cfg(feature = "process")]
+pub(crate) async fn current_zombie_reaper() -> Option<async_channel::Sender<ZombieReaperMessage>> {
+    let runtime = CURRENT_RUNTIME.with(|runtime| {
+        let runtime = runtime.borrow();
+        runtime.as_ref().map(|runtime_inner| runtime_inner.clone())
+    })?;
+    let option = &mut *runtime.zombie_reaper.borrow_mut();
+    if let Some(option) = option.as_ref() {
+        Some(option.clone())
+    } else {
+        let reaper = runtime.spawn(start_zombie_reaper()).await;
+        *option = Some(reaper.clone());
+        Some(reaper)
+    }
 }
 
 pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T>
@@ -323,6 +343,8 @@ impl Runtime {
                 } else {
                     None
                 },
+                #[cfg(feature = "process")]
+                zombie_reaper: RefCell::new(None),
             })),
         }
     }
@@ -432,6 +454,10 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         // Drop all tasks with current runtime entered
         let inner = self.inner.take().expect("runtime has been dropped");
+        #[cfg(feature = "process")]
+        if let Some(zombie_reaper) = inner.zombie_reaper.borrow_mut().take() {
+            zombie_reaper.close();
+        }
         let _runtime_guard = CurrentRuntimeGuard::enter(inner.clone());
         drop(inner);
         drop(_runtime_guard);

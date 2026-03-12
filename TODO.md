@@ -1,8 +1,5 @@
 # TODO
 
-- Some I/O wrapper structs:
-  - std::process wrappers
-
 ## Chores
 
 - Reduce boilerplate across:

@@ -8,6 +8,8 @@ pub mod fs;
 pub mod io;
 pub mod net;
 mod op;
+#[cfg(feature = "process")]
+pub mod process;
 #[cfg(feature = "signal")]
 pub mod signal;
 mod task;

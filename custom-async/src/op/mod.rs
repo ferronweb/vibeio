@@ -33,6 +33,8 @@ mod statx; // musl libc 1.1.x doesn't support statx
 mod symlink;
 #[cfg(all(target_os = "linux", feature = "fs"))]
 mod unlink;
+#[cfg(all(target_os = "linux", feature = "process"))]
+mod waitpid;
 mod write;
 #[cfg(feature = "fs")]
 mod writeat;
@@ -76,6 +78,8 @@ pub use statx::StatxOp;
 pub use symlink::SymlinkOp;
 #[cfg(all(target_os = "linux", feature = "fs"))]
 pub use unlink::UnlinkOp;
+#[cfg(all(target_os = "linux", feature = "process"))]
+pub use waitpid::WaitPidOp;
 pub use write::WriteOp;
 #[cfg(feature = "fs")]
 pub use writeat::WriteAtOp;

@@ -13,6 +13,7 @@ crossbeam-queue = "0.3"
 oneshot = { version = "0.2.1", features = ["async", "std"] }
 rusty_pool = { version = "0.7.0", optional = true }
 once_cell = { version = "1.21.3", optional = true }
+async-channel = { version = "2.5.0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 mio = { version = "1.1.1", features = ["os-poll", "os-ext"] }
@@ -28,6 +29,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Security",
     "Win32_System_Console",
     "Win32_System_IO",
+    "Win32_System_Threading",
     "Win32_Storage_FileSystem",
 ] }
 
@@ -41,11 +43,12 @@ shiba = { workspace = true }
 tempfile = "3.10.1"
 
 [features]
-default = ["fs", "splice", "time", "pipe", "stdio", "signal", "blocking-default"]
+default = ["fs", "splice", "time", "pipe", "stdio", "signal", "process", "blocking-default"]
 fs = []
 splice = []
 pipe = []
 stdio = []
+process = ["async-channel"]
 signal = ["once_cell"]
 time = ["tm-wheel"]
 blocking-default = ["rusty_pool"]
