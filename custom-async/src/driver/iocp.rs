@@ -654,6 +654,7 @@ impl Driver for IocpDriver {
     fn flush(&self) {
         match self.process_ready_completions() {
             Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => panic!("iocp flush failed while processing completions: {err}"),
         }
     }
@@ -668,6 +669,7 @@ impl Driver for IocpDriver {
                 }
             }
             Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => panic!("iocp wait failed while waiting for I/O: {err}"),
         }
     }

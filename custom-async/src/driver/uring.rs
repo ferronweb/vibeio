@@ -347,6 +347,7 @@ impl Driver for UringDriver {
     fn flush(&self) {
         match self.collect_completions(false, None) {
             Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => panic!("io_uring submit failed while processing I/O completions: {err}"),
         }
     }
@@ -355,6 +356,7 @@ impl Driver for UringDriver {
     fn wait(&self, timeout: Option<Duration>) {
         match self.collect_completions(true, timeout) {
             Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => panic!("io_uring submit_and_wait failed while waiting for I/O: {err}"),
         }
     }
