@@ -16,6 +16,8 @@ use windows_sys::Win32::Networking::WinSock::{
     AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_STORAGE,
 };
 
+#[cfg(windows)]
+use crate::driver::RegistrationMode;
 use crate::fd_inner::InnerRawHandle;
 use crate::io::{IoBuf, IoBufMut};
 use crate::op::{ConnectOp, RecvOp, RecvfromOp, SendOp, SendtoOp};
@@ -146,11 +148,24 @@ async fn connect_one(handle: &InnerRawHandle, address: SocketAddr) -> Result<(),
 
 #[cfg(windows)]
 #[inline]
-async fn connect_one(handle: &InnerRawHandle, address: SocketAddr) -> Result<(), io::Error> {
+async fn connect_one(
+    handle: &mut InnerRawHandle,
+    socket: &mut StdUdpSocket,
+    address: SocketAddr,
+) -> Result<(), io::Error> {
+    // Since ConnectEx (used by `ConnectOp`) requires the socket to be connection-oriented,
+    // we use poll-based I/O instead of completion-based I/O on Windows.
+    let old_registration_mode = handle.mode();
+    handle.rebind_mode(RegistrationMode::Poll)?;
+    socket.set_nonblocking(true)?;
     let (raw_addr, raw_addr_len) = socket_addr_to_raw(address);
     let raw_addr_ptr = (&raw_addr as *const SOCKADDR_STORAGE).cast::<SOCKADDR>();
     let mut op = ConnectOp::new(handle, raw_addr_ptr, raw_addr_len);
-    poll_fn(move |cx| handle.poll_op(cx, &mut op)).await
+    let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
+    drop(op);
+    handle.rebind_mode(old_registration_mode)?;
+    socket.set_nonblocking(!handle.uses_completion())?;
+    result
 }
 
 pub struct UdpSocket {
@@ -205,11 +220,15 @@ impl UdpSocket {
     }
 
     #[inline]
-    pub async fn connect(&self, address: impl ToSocketAddrs) -> Result<(), io::Error> {
+    pub async fn connect(&mut self, address: impl ToSocketAddrs) -> Result<(), io::Error> {
         let addresses = address.to_socket_addrs()?;
         let mut last_error = None;
         for address in addresses {
-            match connect_one(&self.handle, address).await {
+            #[cfg(unix)]
+            let connect_one_result = connect_one(&self.handle, address).await;
+            #[cfg(windows)]
+            let connect_one_result = connect_one(&mut self.handle, &mut self.inner, address).await;
+            match connect_one_result {
                 Ok(()) => return Ok(()),
                 Err(err) => last_error = Some(err),
             }
@@ -481,10 +500,10 @@ mod tests {
                 .parse::<SocketAddr>()
                 .expect("address should parse");
 
-            let Some(server) = try_bind_udp(address) else {
+            let Some(mut server) = try_bind_udp(address) else {
                 return;
             };
-            let Some(client) = try_bind_udp(address) else {
+            let Some(mut client) = try_bind_udp(address) else {
                 return;
             };
 

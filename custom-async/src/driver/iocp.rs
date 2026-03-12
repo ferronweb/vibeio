@@ -10,7 +10,10 @@ use std::time::Duration;
 use mio::{Interest, Token};
 use slab::Slab;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
-use windows_sys::Wdk::Storage::FileSystem::{NtCancelIoFileEx, NtCreateFile, FILE_OPEN};
+use windows_sys::Wdk::Storage::FileSystem::{
+    FileReplaceCompletionInformation, NtCancelIoFileEx, NtCreateFile, NtSetInformationFile,
+    FILE_COMPLETION_INFORMATION, FILE_OPEN,
+};
 use windows_sys::Wdk::System::IO::NtDeviceIoControlFile;
 use windows_sys::Win32::Foundation::{
     RtlNtStatusToDosError, ERROR_ABANDONED_WAIT_0, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS,
@@ -525,6 +528,25 @@ impl IocpDriver {
     }
 
     #[inline]
+    fn disassociate_iocp_handle(&self, handle: &InnerRawHandle) {
+        let windows_handle = Self::raw_os_handle_to_windows_handle(handle.handle);
+        let info: FILE_COMPLETION_INFORMATION = FILE_COMPLETION_INFORMATION {
+            Port: std::ptr::null_mut(),
+            Key: std::ptr::null_mut(),
+        };
+        let mut status = IO_STATUS_BLOCK::default();
+        let _ = unsafe {
+            NtSetInformationFile(
+                windows_handle,
+                &mut status,
+                &info as *const FILE_COMPLETION_INFORMATION as *const c_void,
+                std::mem::size_of::<FILE_COMPLETION_INFORMATION>() as u32,
+                FileReplaceCompletionInformation,
+            )
+        };
+    }
+
+    #[inline]
     fn process_entries(&self, entries: &[OVERLAPPED_ENTRY]) {
         let mut state = self.state.borrow_mut();
         for entry in entries {
@@ -750,7 +772,11 @@ impl Driver for IocpDriver {
         };
 
         if let Some(poll_token) = poll_token {
+            // Poll-based I/O
             self.cancel_poll_operation(poll_token);
+        } else {
+            // Completion-based I/O
+            self.disassociate_iocp_handle(handle);
         }
 
         Ok(())
