@@ -1,3 +1,7 @@
+mod async_wrap;
+
+pub use async_wrap::*;
+
 use crate::current_driver;
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
