@@ -15,7 +15,7 @@ path = "src/tcp-echo-server/main.rs"
 [dependencies]
 custom-async = { workspace = true }
 
-[dev-dependencies]
+[target.'cfg(unix)'.dev-dependencies]
 shiba = { workspace = true }
 
 [package.metadata.docs.rs]

@@ -65,6 +65,7 @@ dependencies = [
  "io-uring",
  "libc",
  "mio",
+ "once_cell",
  "oneshot",
  "rusty_pool",
  "shiba",
