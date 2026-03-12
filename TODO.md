@@ -2,7 +2,6 @@
 
 - Some I/O wrapper structs:
   - std::process wrappers
-- Process signal utilities
 
 ## Chores
 

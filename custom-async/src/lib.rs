@@ -8,6 +8,8 @@ pub mod fs;
 pub mod io;
 pub mod net;
 mod op;
+#[cfg(feature = "signal")]
+pub mod signal;
 mod task;
 #[cfg(feature = "time")]
 pub mod time;
