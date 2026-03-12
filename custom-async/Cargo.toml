@@ -37,10 +37,11 @@ shiba = { workspace = true }
 tempfile = "3.10.1"
 
 [features]
-default = ["fs", "splice", "time", "pipe", "blocking-default"]
+default = ["fs", "splice", "time", "pipe", "stdio", "blocking-default"]
 fs = []
 splice = []
 pipe = []
+stdio = []
 time = ["tm-wheel"]
 blocking-default = ["rusty_pool"]
 

@@ -5,6 +5,8 @@ mod buf;
 mod pipe;
 #[cfg(all(target_os = "linux", feature = "splice"))]
 mod splice;
+#[cfg(feature = "stdio")]
+mod stdio;
 mod util;
 
 use crate::fd_inner::InnerRawHandle;
@@ -14,6 +16,8 @@ pub use self::buf::*;
 pub use self::pipe::*;
 #[cfg(all(target_os = "linux", feature = "splice"))]
 pub use self::splice::*;
+#[cfg(feature = "stdio")]
+pub use self::stdio::*;
 pub use self::util::*;
 
 use std::io::{self, ErrorKind};
