@@ -340,7 +340,7 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
                 })
                 .and_then(sockaddr_storage_to_socketaddr);
             self.completion_addr = None;
-            let mut buf = self.buf.as_mut().unwrap();
+            let buf = self.buf.as_mut().unwrap();
             unsafe { buf.set_buf_init(read) };
             return Poll::Ready(address.map(|address| (read, address)));
         }
