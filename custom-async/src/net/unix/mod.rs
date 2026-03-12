@@ -8,7 +8,6 @@ pub use stream::*;
 mod tests {
     use std::fs;
     use std::io::{self as std_io};
-    use std::io::{IoSlice, IoSliceMut};
     use std::net::Shutdown;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};

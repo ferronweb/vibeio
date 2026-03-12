@@ -7,7 +7,6 @@ pub use stream::*;
 #[cfg(test)]
 mod tests {
     use std::io::{self as std_io};
-    use std::io::{IoSlice, IoSliceMut};
     use std::net::{Shutdown, SocketAddr};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

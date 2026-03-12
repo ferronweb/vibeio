@@ -331,7 +331,7 @@ extern "C" fn signal_handler(signum: libc::c_int) {
 
 unsafe fn install_handler(signum: libc::c_int) -> io::Result<libc::sigaction> {
     let mut action: libc::sigaction = std::mem::zeroed();
-    action.sa_sigaction = signal_handler as usize;
+    action.sa_sigaction = signal_handler as extern "C" fn(libc::c_int) as usize;
     action.sa_flags = libc::SA_RESTART;
     libc::sigemptyset(&mut action.sa_mask);
 
