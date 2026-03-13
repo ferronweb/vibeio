@@ -1,3 +1,13 @@
+//! Utility types and functions for internal use.
+//!
+//! This module provides supporting infrastructure for the library:
+//! - `AsyncWrap`: a wrapper that adapts `AsyncRead`/`AsyncWrite` implementations
+//!   to the `tokio::io` traits, enabling interoperability with tokio-based code.
+//! - `supports_completion`: check if the current driver supports completion-based I/O.
+//! - `supports_io_uring`: check if the system supports io_uring with required operations.
+//!
+//! This module is **not** part of the public API and may change without notice.
+
 mod async_wrap;
 
 pub use async_wrap::*;
@@ -6,11 +16,22 @@ use crate::current_driver;
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
 
+/// Check if the current driver supports completion-based I/O operations.
+///
+/// This function returns `true` when the runtime is using a driver that can
+/// handle completion-based operations (e.g., io_uring with completion queues).
 #[inline]
 pub fn supports_completion() -> bool {
     current_driver().is_some_and(|driver| driver.supports_completion())
 }
 
+/// Check if the system supports io_uring with required operations.
+///
+/// This function performs a runtime probe to verify that io_uring is available
+/// and supports the operations needed by the library (accept, connect, poll,
+/// timeout, read, write, etc.). On non-Linux platforms, this always returns `false`.
+///
+/// The result is cached for the lifetime of the program.
 #[inline]
 pub fn supports_io_uring() -> bool {
     #[cfg(target_os = "linux")]

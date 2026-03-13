@@ -1,3 +1,19 @@
+//! Async I/O wrapper for interoperability with tokio traits.
+//!
+//! This module provides `AsyncWrap`, a type that adapts `vibeio`'s `AsyncRead`
+//! and `AsyncWrite` traits to the `tokio::io` traits. This enables using
+//! `vibeio` types with tokio-based libraries that expect the tokio I/O traits.
+//!
+//! The wrapper buffers read operations and ensures write operations complete
+//! fully (like `write_all`), making it suitable for bridging async runtimes.
+//!
+//! # Implementation notes
+//! - Read operations are buffered with a 4KB buffer size.
+//! - Write operations are completed fully before returning, splitting the
+//!   buffer if necessary.
+//! - Concurrent operations are rejected with an error.
+//! - The wrapper is `Unpin` regardless of the inner type.
+
 use std::{
     future::Future,
     mem::MaybeUninit,
@@ -11,6 +27,24 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 type Buffer = Box<[u8]>;
 const BUFFER_SIZE: usize = 4096;
 
+/// A wrapper that adapts `vibeio`'s `AsyncRead`/`AsyncWrite` to `tokio::io` traits.
+///
+/// This type bridges the gap between `vibeio`'s async I/O traits and tokio's
+/// `AsyncRead`/`AsyncWrite` traits, allowing `vibeio` types to be used with
+/// tokio-based libraries.
+///
+/// # Examples
+/// ```ignore
+/// use tokio::io::{AsyncReadExt, AsyncWriteExt};
+/// use vibeio::util::AsyncWrap;
+///
+/// // Wrap a vibeio async reader
+/// let mut reader = some_vibeio_reader();
+/// let mut wrap = AsyncWrap::new(reader);
+///
+/// let mut buf = Vec::new();
+/// wrap.read_to_end(&mut buf).await?;  // tokio method
+/// ```
 pub struct AsyncWrap<T> {
     inner: Option<T>,
     read_buf: Option<(Buffer, usize, usize)>,
@@ -20,6 +54,7 @@ pub struct AsyncWrap<T> {
 }
 
 impl<T> AsyncWrap<T> {
+    /// Create a new `AsyncWrap` wrapping the given inner value.
     #[inline]
     pub fn new(inner: T) -> Self {
         Self {
@@ -79,6 +114,7 @@ where
                     std::io::ErrorKind::Other,
                     "another operation is already in progress",
                 )));
+
             };
             let fut = Box::pin(async move {
                 let (read, buf) = crate::io::AsyncRead::read(&mut inner, buf).await;
@@ -138,6 +174,7 @@ where
                     std::io::ErrorKind::Other,
                     "another operation is already in progress",
                 )));
+
             };
             let fut = Box::pin(async move {
                 // write_all
@@ -177,6 +214,7 @@ where
                     std::io::ErrorKind::Other,
                     "another operation is already in progress",
                 )));
+
             };
             let fut = Box::pin(async move {
                 let flush = crate::io::AsyncWrite::flush(&mut inner).await;
