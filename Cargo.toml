@@ -4,10 +4,12 @@ resolver = "2"
 
 [workspace.dependencies]
 vibeio = "=0.1.0"
+vibeio-hyper = "=0.1.0"
 shiba = "0.1.1"
 
 [patch.crates-io]
 vibeio = { path = "./vibeio" }
+vibeio-hyper = { path = "./vibeio-hyper" }
 
 [workspace.metadata.cargo-shear]
 ignored = ["shiba"]

@@ -8,12 +8,16 @@ publish = false
 name = "tcp-echo-server"
 path = "src/tcp-echo-server/main.rs"
 
-#[[bin]]
-#name = "lowlevel-cgi-client"
-#path = "src/lowlevel/client.rs"
+[[bin]]
+name = "http-server"
+path = "src/http-server/main.rs"
 
 [dependencies]
+bytes = "1.11.1"
+http-body-util = "0.1.3"
+hyper = { version = "1.8.1", features = ["server", "http1"] }
 vibeio = { workspace = true }
+vibeio-hyper = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 shiba = { workspace = true }

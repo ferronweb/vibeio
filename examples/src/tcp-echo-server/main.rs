@@ -3,7 +3,8 @@ use vibeio::RuntimeBuilder;
 fn main() -> Result<(), std::io::Error> {
     let runtime = RuntimeBuilder::new().build()?;
 
-    // A basic TCP echo server example
+    // A basic single-threaded TCP echo server example
+    // In production, you would typically use a multi-threaded runtime and offload blocking I/O.
     runtime.block_on(async {
         let listener = vibeio::net::TcpListener::bind("127.0.0.1:5555")?;
 
