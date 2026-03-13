@@ -1,3 +1,13 @@
+//! Windows signal handling implementation for `vibeio`.
+//!
+//! This module provides Ctrl-C support for Windows systems using
+//! `SetConsoleCtrlHandler`.
+//!
+//! # Implementation details
+//! - Ctrl-C events are handled via the Windows console control handler.
+//! - The handler updates a counter and wakes registered wakers.
+//! - Only Ctrl-C is supported on Windows (no arbitrary signals).
+
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -16,12 +26,16 @@ struct CtrlCState {
 static CTRL_C_STATE: OnceCell<Arc<CtrlCState>> = OnceCell::new();
 
 /// Cross-platform Ctrl-C future (Windows implementation).
+///
+/// This type provides a future that resolves when Ctrl-C is received.
+/// On Windows, this is implemented via `SetConsoleCtrlHandler`.
 pub struct CtrlC {
     state: Arc<CtrlCState>,
     last_seen: usize,
 }
 
 impl CtrlC {
+    /// Create a new Ctrl-C listener.
     pub fn new() -> io::Result<Self> {
         let state = ctrl_c_state()?.clone();
         let last_seen = state.counter.load(Ordering::Acquire);
@@ -51,6 +65,8 @@ impl Future for CtrlC {
 }
 
 /// Cross-platform Ctrl-C support.
+///
+/// Returns a future that resolves when Ctrl-C is received.
 #[inline]
 pub fn ctrl_c() -> io::Result<CtrlC> {
     CtrlC::new()

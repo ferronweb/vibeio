@@ -1,3 +1,14 @@
+//! Unix signal handling implementation for `vibeio`.
+//!
+//! This module provides async signal handling for Unix systems using a
+//! dedicated dispatch thread and pipe-based communication.
+//!
+//! # Implementation details
+//! - A background thread reads from a pipe connected to signal handlers.
+//! - Signal handlers write the signal number to the pipe.
+//! - The dispatch thread wakes registered wakers for received signals.
+//! - Multiple listeners for the same signal share the same handler.
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
@@ -11,60 +22,83 @@ use futures_util::future::poll_fn;
 use once_cell::sync::OnceCell;
 
 /// Unix signal kind wrapper.
+///
+/// Represents a Unix signal number. Common signal kinds are provided as
+/// convenience methods:
+/// - `SignalKind::interrupt()` - SIGINT (Ctrl-C)
+/// - `SignalKind::terminate()` - SIGTERM
+/// - `SignalKind::hangup()` - SIGHUP
+/// - `SignalKind::quit()` - SIGQUIT
+/// - `SignalKind::user_defined1()` - SIGUSR1
+/// - `SignalKind::user_defined2()` - SIGUSR2
+/// - `SignalKind::child()` - SIGCHLD
+/// - `SignalKind::alarm()` - SIGALRM
+/// - `SignalKind::pipe()` - SIGPIPE
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct SignalKind(libc::c_int);
 
 impl SignalKind {
+    /// Create a new `SignalKind` from a raw signal number.
     #[inline]
     pub const fn new(raw: libc::c_int) -> Self {
         Self(raw)
     }
 
+    /// Return the raw signal number.
     #[inline]
     pub const fn as_raw(self) -> libc::c_int {
         self.0
     }
 
+    /// SIGINT - interrupt signal (Ctrl-C).
     #[inline]
     pub const fn interrupt() -> Self {
         Self(libc::SIGINT)
     }
 
+    /// SIGTERM - termination signal.
     #[inline]
     pub const fn terminate() -> Self {
         Self(libc::SIGTERM)
     }
 
+    /// SIGHUP - hangup signal.
     #[inline]
     pub const fn hangup() -> Self {
         Self(libc::SIGHUP)
     }
 
+    /// SIGQUIT - quit signal.
     #[inline]
     pub const fn quit() -> Self {
         Self(libc::SIGQUIT)
     }
 
+    /// SIGUSR1 - user-defined signal 1.
     #[inline]
     pub const fn user_defined1() -> Self {
         Self(libc::SIGUSR1)
     }
 
+    /// SIGUSR2 - user-defined signal 2.
     #[inline]
     pub const fn user_defined2() -> Self {
         Self(libc::SIGUSR2)
     }
 
+    /// SIGCHLD - child process terminated or stopped.
     #[inline]
     pub const fn child() -> Self {
         Self(libc::SIGCHLD)
     }
 
+    /// SIGALRM - alarm clock signal.
     #[inline]
     pub const fn alarm() -> Self {
         Self(libc::SIGALRM)
     }
 
+    /// SIGPIPE - write to pipe with no readers.
     #[inline]
     pub const fn pipe() -> Self {
         Self(libc::SIGPIPE)
@@ -97,6 +131,16 @@ static REGISTRY: OnceCell<Arc<Registry>> = OnceCell::new();
 static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Async signal listener for a specific Unix signal.
+///
+/// This type listens for occurrences of a specific signal. Multiple `Signal`
+/// instances can be created for the same signal kind; all will be woken when
+/// the signal is received.
+///
+/// # Examples
+/// ```ignore
+/// let mut sig = Signal::new(SignalKind::terminate())?;
+/// sig.recv().await?;  // Wait for SIGTERM
+/// ```
 pub struct Signal {
     kind: SignalKind,
     state: Arc<SignalState>,
@@ -105,6 +149,9 @@ pub struct Signal {
 
 impl Signal {
     /// Register for a Unix signal.
+    ///
+    /// Creates a new signal listener for the given signal kind. If this is the
+    /// first listener for this signal, the signal handler will be installed.
     pub fn new(kind: SignalKind) -> io::Result<Self> {
         let state = register_signal(kind)?;
         let last_seen = state.counter.load(Ordering::Acquire);
@@ -115,12 +162,16 @@ impl Signal {
         })
     }
 
+    /// Returns the signal kind being listened to.
     #[inline]
     pub fn kind(&self) -> SignalKind {
         self.kind
     }
 
     /// Wait for the next occurrence of the signal.
+    ///
+    /// This method returns a future that resolves when the signal is received.
+    /// Multiple listeners for the same signal will all be woken on each signal.
     pub async fn recv(&mut self) -> io::Result<()> {
         poll_fn(|cx| self.poll_recv(cx)).await
     }
@@ -144,17 +195,23 @@ impl Drop for Signal {
 }
 
 /// Convenience builder for Unix signals.
+///
+/// This is a wrapper around `Signal::new()` that provides a more ergonomic API.
 #[inline]
 pub fn signal(kind: SignalKind) -> io::Result<Signal> {
     Signal::new(kind)
 }
 
 /// Cross-platform Ctrl-C future (Unix implementation uses SIGINT).
+///
+/// This type provides a future that resolves when Ctrl-C (SIGINT) is received.
+/// On Unix, this is implemented as a `Signal` for `SignalKind::interrupt()`.
 pub struct CtrlC {
     signal: Signal,
 }
 
 impl CtrlC {
+    /// Create a new Ctrl-C listener.
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             signal: Signal::new(SignalKind::interrupt())?,
@@ -173,6 +230,8 @@ impl Future for CtrlC {
 }
 
 /// Cross-platform Ctrl-C support.
+///
+/// Returns a future that resolves when Ctrl-C is received.
 #[inline]
 pub fn ctrl_c() -> io::Result<CtrlC> {
     CtrlC::new()
@@ -449,6 +508,7 @@ mod tests {
         let rt = crate::executor::Runtime::new(AnyDriver::new_mock());
         let result = rt.block_on(async {
             let ctrlc = ctrl_c()?;
+
             spawn_signal_after_delay(SignalKind::interrupt().as_raw());
             await_signal_with_timeout(ctrlc).await
         });
