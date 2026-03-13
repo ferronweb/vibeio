@@ -48,7 +48,6 @@ io-uring = "0.6"
 shiba = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3.10.1"
 
 [features]
 default = ["fs", "splice", "time", "pipe", "stdio", "signal", "process", "blocking-default"]

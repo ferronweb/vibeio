@@ -114,7 +114,6 @@ where
                     std::io::ErrorKind::Other,
                     "another operation is already in progress",
                 )));
-
             };
             let fut = Box::pin(async move {
                 let (read, buf) = crate::io::AsyncRead::read(&mut inner, buf).await;
@@ -174,7 +173,6 @@ where
                     std::io::ErrorKind::Other,
                     "another operation is already in progress",
                 )));
-
             };
             let fut = Box::pin(async move {
                 // write_all
@@ -214,7 +212,6 @@ where
                     std::io::ErrorKind::Other,
                     "another operation is already in progress",
                 )));
-
             };
             let fut = Box::pin(async move {
                 let flush = crate::io::AsyncWrite::flush(&mut inner).await;
