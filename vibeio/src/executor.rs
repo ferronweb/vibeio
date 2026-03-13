@@ -1,3 +1,31 @@
+//! Async runtime and task execution utilities.
+//!
+//! This module provides the core async runtime infrastructure:
+//! - `Runtime`: the main async runtime that drives futures to completion.
+//! - `spawn`: spawn a task on the current runtime.
+//! - `spawn_blocking`: spawn a blocking task on the thread pool.
+//! - `JoinHandle`: a handle to a spawned task that can be awaited.
+//! - `current_driver`: get the driver for the current runtime.
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use vibeio::RuntimeBuilder;
+//!
+//! let runtime = RuntimeBuilder::new().build().unwrap();
+//! let value = runtime.block_on(async {
+//!     // Spawn a task and await its result
+//!     let handle = vibeio::spawn(async { 42 });
+//!     handle.await + 10
+//! });
+//! assert_eq!(value, 52);
+//! ```
+//!
+//! # Implementation notes
+//! - The runtime is single-threaded and uses a work-stealing queue.
+//! - Tasks are polled in batches for better performance.
+//! - The runtime supports timers, blocking pools, and file I/O offloading via features.
+
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::future::Future;
@@ -25,27 +53,8 @@ thread_local! {
     static CURRENT_RUNTIME: RefCell<Option<Rc<RuntimeInner>>> = const { RefCell::new(None) };
 }
 
-pub(crate) struct RuntimeInner {
-    queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
-    next_task: Rc<RefCell<Option<Arc<Task>>>>,
-    remote_queue: Arc<SegQueue<usize>>,
-    token_to_task: RefCell<Slab<Arc<Task>>>,
-    driver: Rc<AnyDriver>,
-    waiting: Arc<AtomicBool>,
-    blocking_pool: Option<Box<dyn BlockingThreadPool>>,
-    #[cfg(feature = "fs")]
-    fs_offload: bool,
-    #[cfg(feature = "time")]
-    timer: Option<Rc<Timer>>,
-    #[cfg(feature = "process")]
-    zombie_reaper: RefCell<Option<async_channel::Sender<ZombieReaperMessage>>>,
-}
-
-pub struct Runtime {
-    inner: Option<Rc<RuntimeInner>>,
-}
-
 /// Internal state for a spawned task.
+///
 /// Stores the task's output and a waker to notify when the task completes.
 struct JoinState<T> {
     output: Option<T>,
@@ -56,6 +65,12 @@ struct JoinState<T> {
 ///
 /// This handle implements `Future` and can be `await`ed to retrieve the task's output.
 /// It allows you to wait for a spawned task to complete and get its result.
+///
+/// # Examples
+/// ```ignore
+/// let handle = vibeio::spawn(async { 42 });
+/// let result = handle.await;  // result == 42
+/// ```
 pub struct JoinHandle<T> {
     state: Rc<RefCell<JoinState<T>>>,
 }
@@ -68,6 +83,7 @@ impl<T> JoinHandle<T> {
     }
 
     /// Attempts to retrieve the task's output without blocking.
+    ///
     /// Returns `Some(output)` if the task has completed, or `None` if it's still running.
     #[inline]
     fn try_take_output(&self) -> Option<T> {
@@ -94,6 +110,9 @@ impl<T> Future for JoinHandle<T> {
 struct CurrentRuntimeGuard;
 
 impl CurrentRuntimeGuard {
+    /// Enter a runtime, making it available for spawning tasks.
+    ///
+    /// Panics if called while already inside a runtime.
     #[inline]
     fn enter(runtime_inner: Rc<RuntimeInner>) -> Self {
         CURRENT_RUNTIME.with(|runtime| {
@@ -110,6 +129,7 @@ impl CurrentRuntimeGuard {
 }
 
 impl Drop for CurrentRuntimeGuard {
+    /// Exit the runtime, clearing the current runtime reference.
     #[inline]
     fn drop(&mut self) {
         CURRENT_RUNTIME.with(|runtime| {
@@ -119,6 +139,9 @@ impl Drop for CurrentRuntimeGuard {
     }
 }
 
+/// Get the I/O driver for the current runtime.
+///
+/// Returns `None` if called outside a runtime context.
 pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
     CURRENT_RUNTIME.with(|runtime| {
         let runtime = runtime.borrow();
@@ -128,6 +151,9 @@ pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
     })
 }
 
+/// Get the timer for the current runtime.
+///
+/// Returns `None` if called outside a runtime context or if timers are not enabled.
 #[cfg(feature = "time")]
 pub(crate) fn current_timer() -> Option<Rc<Timer>> {
     CURRENT_RUNTIME.with(|runtime| {
@@ -142,6 +168,9 @@ pub(crate) fn current_timer() -> Option<Rc<Timer>> {
     })
 }
 
+/// Get the zombie reaper channel for the current runtime.
+///
+/// Returns `None` if called outside a runtime context or if process support is not enabled.
 #[cfg(feature = "process")]
 pub(crate) async fn current_zombie_reaper() -> Option<async_channel::Sender<ZombieReaperMessage>> {
     let runtime = CURRENT_RUNTIME.with(|runtime| {
@@ -158,6 +187,19 @@ pub(crate) async fn current_zombie_reaper() -> Option<async_channel::Sender<Zomb
     }
 }
 
+/// Spawn a task on the current runtime.
+///
+/// This function spawns the given future on the runtime and returns a `JoinHandle`
+/// that can be awaited to get the task's output.
+///
+/// # Panics
+/// Panics if called outside a runtime context.
+///
+/// # Examples
+/// ```ignore
+/// let handle = vibeio::spawn(async { 42 });
+/// let result = handle.await;
+/// ```
 pub fn spawn<T>(future: impl Future<Output = T> + 'static) -> JoinHandle<T>
 where
     T: 'static,
@@ -174,6 +216,21 @@ where
     runtime.spawn(future)
 }
 
+/// Spawn a blocking task on the thread pool.
+///
+/// This function spawns the given closure on a blocking thread pool and returns
+/// a future that resolves to the result.
+///
+/// # Panics
+/// Panics if called outside a runtime context.
+///
+/// # Examples
+/// ```ignore
+/// let result = vibeio::spawn_blocking(|| {
+///     // blocking work
+///     42
+/// }).await?;
+/// ```
 pub async fn spawn_blocking<T, F>(f: F) -> Result<T, SpawnBlockingError>
 where
     T: Send + 'static,
@@ -191,6 +248,9 @@ where
     runtime.spawn_blocking(f).await
 }
 
+/// Check if file I/O should be offloaded to blocking threads.
+///
+/// Returns `true` if fs offload is enabled and we're inside a runtime.
 #[cfg(feature = "fs")]
 #[inline]
 pub(crate) fn offload_fs() -> bool {
@@ -204,7 +264,42 @@ pub(crate) fn offload_fs() -> bool {
     })
 }
 
+pub(crate) struct RuntimeInner {
+    queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
+    next_task: Rc<RefCell<Option<Arc<Task>>>>,
+    remote_queue: Arc<SegQueue<usize>>,
+    token_to_task: RefCell<Slab<Arc<Task>>>,
+    driver: Rc<AnyDriver>,
+    waiting: Arc<AtomicBool>,
+    blocking_pool: Option<Box<dyn BlockingThreadPool>>,
+    #[cfg(feature = "fs")]
+    fs_offload: bool,
+    #[cfg(feature = "time")]
+    timer: Option<Rc<Timer>>,
+    #[cfg(feature = "process")]
+    zombie_reaper: RefCell<Option<async_channel::Sender<ZombieReaperMessage>>>,
+}
+
+/// The async runtime that drives futures to completion.
+///
+/// The runtime provides:
+/// - Task spawning via `spawn()` and `block_on()`.
+/// - Blocking task support via `spawn_blocking()`.
+/// - Timer support (when the `time` feature is enabled).
+/// - File I/O offloading (when the `fs` feature is enabled).
+///
+/// # Examples
+/// ```ignore
+/// let runtime = RuntimeBuilder::new().build().unwrap();
+/// let value = runtime.block_on(async { 42 });
+/// assert_eq!(value, 42);
+/// ```
+pub struct Runtime {
+    inner: Option<Rc<RuntimeInner>>,
+}
+
 impl RuntimeInner {
+    /// Spawn a task on this runtime.
     #[inline]
     pub(crate) fn spawn<T>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T>
     where
@@ -244,6 +339,7 @@ impl RuntimeInner {
         JoinHandle::new(state)
     }
 
+    /// Spawn a blocking task on this runtime's thread pool.
     #[inline]
     pub(crate) async fn spawn_blocking<T, F>(&self, f: F) -> Result<T, SpawnBlockingError>
     where
@@ -257,6 +353,7 @@ impl RuntimeInner {
         crate::blocking::spawn_blocking(pool.as_ref(), f).await
     }
 
+    /// Enqueue a task for polling.
     #[inline]
     fn enqueue(&self, task: Arc<Task>) {
         // SAFETY: this runtime is single-threaded. All ready-queue mutation goes
@@ -266,6 +363,7 @@ impl RuntimeInner {
         }
     }
 
+    /// Drain ready tasks into the given batch.
     #[inline]
     fn drain_ready(&self, batch: &mut Vec<Arc<Task>>) {
         let slab = self.token_to_task.borrow();
@@ -293,6 +391,7 @@ impl RuntimeInner {
         }
     }
 
+    /// Take the next task to run, if any.
     #[inline]
     fn take_next_task(&self) -> Option<Arc<Task>> {
         let task = self.next_task.take();
@@ -305,6 +404,8 @@ impl RuntimeInner {
 
 impl Runtime {
     /// Create a new runtime with the given driver.
+    ///
+    /// By default, this enables the timer and file I/O offload.
     #[inline]
     pub(crate) fn new(driver: AnyDriver) -> Self {
         #[cfg(not(feature = "blocking-default"))]
@@ -315,6 +416,7 @@ impl Runtime {
         Self::with_options(driver, true, blocking_pool, true)
     }
 
+    /// Create a new runtime with the given driver and options.
     #[inline]
     pub(crate) fn with_options(
         driver: AnyDriver,
@@ -349,6 +451,9 @@ impl Runtime {
         }
     }
 
+    /// Spawn a task on this runtime.
+    ///
+    /// Returns a `JoinHandle` that can be awaited to get the task's output.
     #[inline]
     pub fn spawn<T>(&self, future: impl Future<Output = T> + 'static) -> JoinHandle<T>
     where
@@ -360,6 +465,7 @@ impl Runtime {
             .spawn(future)
     }
 
+    /// Spawn a blocking task on this runtime's thread pool.
     #[inline]
     pub async fn spawn_blocking<T, F>(&self, f: F) -> Result<T, SpawnBlockingError>
     where
@@ -370,6 +476,10 @@ impl Runtime {
         inner.spawn_blocking(f).await
     }
 
+    /// Run the runtime and execute the given future to completion.
+    ///
+    /// This method blocks the current thread and drives the runtime until
+    /// the provided future completes.
     #[inline]
     pub fn block_on<T>(&self, future: impl Future<Output = T> + 'static) -> T
     where
