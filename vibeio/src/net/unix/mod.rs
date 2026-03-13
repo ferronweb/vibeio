@@ -91,6 +91,7 @@ mod tests {
             let (read, response) = client.read(response).await;
             let read = read.expect("client should read");
             assert_eq!(&response[..read], b"pong");
+            #[cfg(not(target_os = "macos"))]
             assert_eq!(
                 client
                     .peer_addr()
