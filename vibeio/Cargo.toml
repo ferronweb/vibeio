@@ -2,6 +2,14 @@
 name = "vibeio"
 version = "0.1.0"
 edition = "2021"
+authors = ["Dorian Niemiec <dorian@ferron.sh>"]
+description = "A high-performance, cross-platform asynchronous runtime for Rust"
+license = "MIT"
+readme = "../README.md"
+keywords = ["async", "io"]
+categories = ["network-programming", "asynchronous"]
+documentation = "https://docs.rs/vibeio"
+repository = "https://github.com/ferronweb/vibeio"
 
 [dependencies]
 futures-util = "0.3.32"

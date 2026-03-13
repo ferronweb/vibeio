@@ -1,7 +1,16 @@
 [package]
 name = "vibeio-hyper"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Dorian Niemiec <dorian@ferron.sh>"]
+description = "A compatibility layer for using `hyper` with the `vibeio` async runtime"
+license = "MIT"
+readme = "../README.md"
+keywords = ["async", "http", "hyper"]
+categories = ["network-programming", "web-programming"]
+documentation = "https://docs.rs/vibeio-hyper"
+repository = "https://github.com/ferronweb/vibeio"
+
 
 [dependencies]
 hyper = "1.8.1"
