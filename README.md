@@ -23,6 +23,10 @@ A high-performance, cross-platform asynchronous runtime for Rust.
 
 Shared state can be communicated between runtimes using message passing (e.g., channels) or shared atomic structures, but I/O resources are typically owned by the thread that created them.
 
+## But why not Tokio?
+
+Tokio is a popular asynchronous runtime for Rust, but it uses a **work-stealing** model and may introduce additional synchronization overhead when using it as a thread-per-core runtime. `vibeio` is more specialized for thread-per-core architectures that are optimized for low overhead and cache locality.
+
 ## Getting started
 
 Add `vibeio` to your `Cargo.toml`:
