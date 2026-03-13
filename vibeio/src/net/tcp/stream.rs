@@ -332,7 +332,11 @@ impl TcpStream {
     /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
-        self.inner.shutdown(how)
+        match self.inner.shutdown(how) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotConnected => Ok(()), // macOS-specific behavior
+            Err(e) => Err(e),
+        }
     }
 
     /// Peeks at data from the socket without removing it from the buffer.
