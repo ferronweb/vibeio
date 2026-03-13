@@ -1,3 +1,16 @@
+//! TCP stream types for async I/O.
+//!
+//! This module provides:
+//! - [`TcpStream`]: An async TCP stream that can use either completion-based or poll-based I/O.
+//! - [`PollTcpStream`]: A poll-only variant that always uses readiness-based operations.
+//!
+//! # Implementation details
+//!
+//! - On Linux with io_uring support, TCP operations use native async syscalls via the async driver.
+//! - When io_uring completion is available, operations complete directly.
+//! - For platforms without native async support, operations fall back to synchronous std::net calls.
+//! - The runtime must be active when calling these types' methods; otherwise they will panic.
+
 use std::future::poll_fn;
 use std::io::{self, IoSlice};
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -187,17 +200,59 @@ fn new_socket(
     Ok((stream, raw_addr, raw_addr_len))
 }
 
+/// An async TCP stream that can use either completion-based or poll-based I/O.
+///
+/// This is the async version of [`std::net::TcpStream`].
+///
+/// # Implementation details
+///
+/// - On Linux with io_uring support, TCP operations use native async syscalls via the async driver.
+/// - When io_uring completion is available, operations complete directly.
+/// - For platforms without native async support, operations fall back to synchronous std::net calls.
+/// - The runtime must be active when calling these methods; otherwise they will panic.
+///
+/// # Examples
+///
+/// ```ignore
+/// use vibeio::net::TcpStream;
+///
+/// let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+/// stream.write(b"hello").await.0?;
+/// let mut buf = [0u8; 1024];
+/// let (read, buf) = stream.read(buf).await;
+/// let read = read?;
+/// ```
 pub struct TcpStream {
     inner: std::net::TcpStream,
     handle: ManuallyDrop<InnerRawHandle>,
 }
 
 /// A poll-only variant that always uses readiness-based operations.
+///
+/// This type is useful when you want to ensure readiness-based I/O is used,
+/// for example when integrating with other readiness-based systems.
+///
+/// # Implementation details
+///
+/// - Always uses readiness-based I/O via `mio`.
+/// - Can be converted to [`TcpStream`] with adaptive or completion mode.
 pub struct PollTcpStream {
     stream: TcpStream,
 }
 
 impl TcpStream {
+    /// Connects to the specified address.
+    ///
+    /// This is the async version of [`std::net::TcpStream::connect`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - DNS resolution fails
+    /// - Connection refused
+    /// - Network unreachable
+    /// - The runtime is not active
+    #[inline]
     pub async fn connect(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let addresses = address.to_socket_addrs()?;
         let mut last_error = None;
@@ -227,31 +282,64 @@ impl TcpStream {
         Ok(stream)
     }
 
+    /// Returns the local address of this connection.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.local_addr()
     }
 
+    /// Returns the remote address of this connection.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.peer_addr()
     }
 
+    /// Returns the current state of the TCP_NODELAY option for this socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn nodelay(&self) -> Result<bool, io::Error> {
         self.inner.nodelay()
     }
 
+    /// Sets the value of the TCP_NODELAY option for this socket.
+    ///
+    /// When set, this disables the Nagle algorithm, which means that small
+    /// packets are sent immediately rather than being buffered.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn set_nodelay(&self, nodelay: bool) -> Result<(), io::Error> {
         self.inner.set_nodelay(nodelay)
     }
 
+    /// Shuts down the connection.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.inner.shutdown(how)
     }
 
+    /// Peeks at data from the socket without removing it from the buffer.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub async fn peek<B: IoBufMut>(&self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
@@ -260,11 +348,17 @@ impl TcpStream {
         (result, op.take_bufs())
     }
 
+    /// Creates a new `TcpStream` from a standard library `TcpStream`.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if registration with the async driver fails.
     #[inline]
     pub fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
         Self::from_std_with_mode(inner, RegistrationMode::Completion)
     }
 
+    /// Creates a new `TcpStream` from a standard library `TcpStream` with a specific registration mode.
     #[inline]
     pub(crate) fn from_std_with_mode(
         inner: std::net::TcpStream,
@@ -286,6 +380,9 @@ impl TcpStream {
         Ok(Self { inner, handle })
     }
 
+    /// Converts this stream into a poll-only variant.
+    ///
+    /// The returned `PollTcpStream` will always use readiness-based I/O.
     #[inline]
     pub fn into_poll(self) -> Result<PollTcpStream, io::Error> {
         let mut stream = self;
@@ -298,6 +395,8 @@ impl TcpStream {
 }
 
 impl PollTcpStream {
+    /// Connects to the specified address using poll-based I/O.
+    #[inline]
     pub async fn connect(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let addresses = address.to_socket_addrs()?;
         let mut last_error = None;
@@ -328,6 +427,7 @@ impl PollTcpStream {
         Ok(stream)
     }
 
+    /// Creates a new `PollTcpStream` from a standard library `TcpStream`.
     #[inline]
     pub fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
         Ok(Self {
@@ -335,11 +435,13 @@ impl PollTcpStream {
         })
     }
 
+    /// Converts this poll stream into an adaptive `TcpStream`.
     #[inline]
     pub fn into_adaptive(self) -> TcpStream {
         self.stream
     }
 
+    /// Converts this poll stream into a completion-based `TcpStream`.
     #[inline]
     pub fn into_completion(self) -> Result<TcpStream, io::Error> {
         let mut stream = self.stream;
@@ -350,31 +452,39 @@ impl PollTcpStream {
         Ok(stream)
     }
 
+    /// Returns the local address of this connection.
     #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.stream.local_addr()
     }
 
+    /// Returns the remote address of this connection.
     #[inline]
     pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
         self.stream.peer_addr()
     }
 
+    /// Returns the current state of the TCP_NODELAY option for this socket.
     #[inline]
     pub fn nodelay(&self) -> Result<bool, io::Error> {
         self.stream.nodelay()
     }
 
+    /// Sets the value of the TCP_NODELAY option for this socket.
     #[inline]
     pub fn set_nodelay(&self, nodelay: bool) -> Result<(), io::Error> {
         self.stream.set_nodelay(nodelay)
     }
 
+    /// Shuts down the connection.
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.stream.shutdown(how)
     }
 
+    /// Peeks at data from the socket without removing it from the buffer.
+    ///
+    /// This method uses readiness-based I/O and is compatible with `tokio::io`.
     #[inline]
     pub async fn peek(&self, buf: &mut [u8]) -> Result<usize, io::Error> {
         let handle = &self.stream.handle;
@@ -438,7 +548,7 @@ impl IntoRawSocket for TcpStream {
         let mut this = ManuallyDrop::new(self);
 
         // Safety: `this` will not be dropped, so we must drop the registration handle manually.
-        // We then move out the inner std stream and transfer its fd ownership to the caller.
+        // We then move out the inner std stream and transfer its socket ownership to the caller.
         unsafe {
             ManuallyDrop::drop(&mut this.handle);
             std::ptr::read(&this.inner).into_raw_socket()

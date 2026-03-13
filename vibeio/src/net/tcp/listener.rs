@@ -1,3 +1,15 @@
+//! TCP listener types for async I/O.
+//!
+//! This module provides:
+//! - [`TcpListener`]: An async TCP listener that can use either completion-based or poll-based I/O.
+//!
+//! # Implementation details
+//!
+//! - On Linux with io_uring support, TCP operations use native async syscalls via the async driver.
+//! - When io_uring completion is available, operations complete directly.
+//! - For platforms without native async support, operations fall back to synchronous std::net calls.
+//! - The runtime must be active when calling these types' methods; otherwise they will panic.
+
 use std::future::poll_fn;
 use std::io;
 use std::mem::ManuallyDrop;
@@ -265,12 +277,45 @@ fn bind_one(address: SocketAddr) -> Result<StdTcpListener, io::Error> {
     Ok(unsafe { StdTcpListener::from_raw_socket(socket as RawSocket) })
 }
 
+/// An async TCP listener that can use either completion-based or poll-based I/O.
+///
+/// This is the async version of [`std::net::TcpListener`].
+///
+/// # Implementation details
+///
+/// - On Linux with io_uring support, TCP operations use native async syscalls via the async driver.
+/// - When io_uring completion is available, operations complete directly.
+/// - For platforms without native async support, operations fall back to synchronous std::net calls.
+/// - The runtime must be active when calling these methods; otherwise they will panic.
+///
+/// # Examples
+///
+/// ```ignore
+/// use vibeio::net::TcpListener;
+///
+/// let listener = TcpListener::bind("127.0.0.1:8080").await?;
+/// loop {
+///     let (stream, addr) = listener.accept().await?;
+///     println!("Connection from: {}", addr);
+/// }
+/// ```
 pub struct TcpListener {
     inner: StdTcpListener,
     handle: ManuallyDrop<InnerRawHandle>,
 }
 
 impl TcpListener {
+    /// Creates a new `TcpListener` which will be bound to the specified address.
+    ///
+    /// This is the async version of [`std::net::TcpListener::bind`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - DNS resolution fails
+    /// - The address is already in use
+    /// - The process lacks permissions to bind to the address
+    /// - The runtime is not active
     #[inline]
     pub fn bind(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let addresses = address.to_socket_addrs()?;
@@ -286,6 +331,11 @@ impl TcpListener {
             .unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses")))
     }
 
+    /// Creates a new `TcpListener` from a standard library `TcpListener`.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if registration with the async driver fails.
     #[inline]
     pub fn from_std(inner: std::net::TcpListener) -> Result<Self, io::Error> {
         #[cfg(unix)]
@@ -299,11 +349,25 @@ impl TcpListener {
         Ok(Self { inner, handle })
     }
 
+    /// Returns the local address of this listener.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not bound.
     #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.local_addr()
     }
 
+    /// Accepts a new incoming connection from this listener.
+    ///
+    /// This is the async version of [`std::net::TcpListener::accept`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The listener is not bound to an address
+    /// - The runtime is not active
     #[inline]
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), io::Error> {
         let mut op = AcceptOp::new(&self.handle);

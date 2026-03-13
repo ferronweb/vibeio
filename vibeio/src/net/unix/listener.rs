@@ -1,3 +1,15 @@
+//! Unix domain socket listener types for async I/O.
+//!
+//! This module provides:
+//! - [`UnixListener`]: An async Unix domain socket listener.
+//!
+//! # Implementation details
+//!
+//! - Unix domain sockets use native async syscalls via the async driver when available.
+//! - When io_uring completion is available, operations complete directly.
+//! - For platforms without native async support, operations fall back to synchronous std::os::unix::net calls.
+//! - The runtime must be active when calling these types' methods; otherwise they will panic.
+
 use std::future::poll_fn;
 use std::io;
 use std::mem::ManuallyDrop;
@@ -13,18 +25,57 @@ use crate::fd_inner::InnerRawHandle;
 use crate::net::UnixStream;
 use crate::op::AcceptUnixOp;
 
+/// An async Unix domain socket listener.
+///
+/// This is the async version of [`std::os::unix::net::UnixListener`].
+///
+/// # Implementation details
+///
+/// - Unix domain sockets use native async syscalls via the async driver when available.
+/// - When io_uring completion is available, operations complete directly.
+/// - For platforms without native async support, operations fall back to synchronous std::os::unix::net calls.
+/// - The runtime must be active when calling these methods; otherwise they will panic.
+///
+/// # Examples
+///
+/// ```ignore
+/// use vibeio::net::UnixListener;
+///
+/// let listener = UnixListener::bind("/tmp/mysocket").await?;
+/// loop {
+///     let (stream, addr) = listener.accept().await?;
+///     println!("Connection from: {:?}", addr);
+/// }
+/// ```
 pub struct UnixListener {
     inner: StdUnixListener,
     handle: ManuallyDrop<InnerRawHandle>,
 }
 
 impl UnixListener {
+    /// Creates a new `UnixListener` which will be bound to the specified path.
+    ///
+    /// This is the async version of [`std::os::unix::net::UnixListener::bind`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The path does not exist
+    /// - The path is too long
+    /// - The path is already in use
+    /// - The process lacks permissions
+    /// - The runtime is not active
     #[inline]
     pub fn bind(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         let inner = StdUnixListener::bind(path)?;
         Self::from_std(inner)
     }
 
+    /// Creates a new `UnixListener` from a standard library `UnixListener`.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if registration with the async driver fails.
     #[inline]
     pub fn from_std(inner: StdUnixListener) -> Result<Self, io::Error> {
         let handle = ManuallyDrop::new(InnerRawHandle::new(inner.as_raw_fd(), Interest::READABLE)?);
@@ -32,11 +83,25 @@ impl UnixListener {
         Ok(Self { inner, handle })
     }
 
+    /// Returns the local address of this listener.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not bound.
     #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.local_addr()
     }
 
+    /// Accepts a new incoming connection from this listener.
+    ///
+    /// This is the async version of [`std::os::unix::net::UnixListener::accept`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The listener is not bound to an address
+    /// - The runtime is not active
     #[inline]
     pub async fn accept(&self) -> Result<(UnixStream, SocketAddr), io::Error> {
         let mut op = AcceptUnixOp::new(&self.handle);

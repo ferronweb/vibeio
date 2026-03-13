@@ -1,3 +1,16 @@
+//! Unix domain socket stream types for async I/O.
+//!
+//! This module provides:
+//! - [`UnixStream`]: An async Unix domain socket stream that can use either completion-based or poll-based I/O.
+//! - [`PollUnixStream`]: A poll-only variant that always uses readiness-based operations.
+//!
+//! # Implementation details
+//!
+//! - Unix domain sockets use native async syscalls via the async driver when available.
+//! - When io_uring completion is available, operations complete directly.
+//! - For platforms without native async support, operations fall back to synchronous std::os::unix::net calls.
+//! - The runtime must be active when calling these types' methods; otherwise they will panic.
+
 use std::future::poll_fn;
 use std::io::{self, IoSlice};
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -86,17 +99,59 @@ fn new_socket(
     Ok((stream, raw_addr, raw_addr_len))
 }
 
+/// An async Unix domain socket stream that can use either completion-based or poll-based I/O.
+///
+/// This is the async version of [`std::os::unix::net::UnixStream`].
+///
+/// # Implementation details
+///
+/// - Unix domain sockets use native async syscalls via the async driver when available.
+/// - When io_uring completion is available, operations complete directly.
+/// - For platforms without native async support, operations fall back to synchronous std::os::unix::net calls.
+/// - The runtime must be active when calling these methods; otherwise they will panic.
+///
+/// # Examples
+///
+/// ```ignore
+/// use vibeio::net::UnixStream;
+///
+/// let mut stream = UnixStream::connect("/tmp/mysocket").await?;
+/// stream.write(b"hello").await.0?;
+/// let mut buf = [0u8; 1024];
+/// let (read, buf) = stream.read(buf).await;
+/// let read = read?;
+/// ```
 pub struct UnixStream {
     inner: StdUnixStream,
     handle: ManuallyDrop<InnerRawHandle>,
 }
 
 /// A poll-only variant that always uses readiness-based operations.
+///
+/// This type is useful when you want to ensure readiness-based I/O is used,
+/// for example when integrating with other readiness-based systems.
+///
+/// # Implementation details
+///
+/// - Always uses readiness-based I/O via `mio`.
+/// - Can be converted to [`UnixStream`] with adaptive or completion mode.
 pub struct PollUnixStream {
     stream: UnixStream,
 }
 
 impl UnixStream {
+    /// Connects to the specified Unix domain socket path.
+    ///
+    /// This is the async version of [`std::os::unix::net::UnixStream::connect`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The path does not exist
+    /// - The path is too long
+    /// - Connection refused
+    /// - The runtime is not active
+    #[inline]
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_socket(path.as_ref())?;
         let stream = Self::from_std(inner)?;
@@ -109,26 +164,47 @@ impl UnixStream {
         Ok(stream)
     }
 
+    /// Returns the local address of this connection.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.local_addr()
     }
 
+    /// Returns the remote address of this connection.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.peer_addr()
     }
 
+    /// Shuts down the connection.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.inner.shutdown(how)
     }
 
+    /// Creates a new `UnixStream` from a standard library `UnixStream`.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if registration with the async driver fails.
     #[inline]
     pub fn from_std(inner: StdUnixStream) -> Result<Self, io::Error> {
         Self::from_std_with_mode(inner, RegistrationMode::Completion)
     }
 
+    /// Creates a new `UnixStream` from a standard library `UnixStream` with a specific registration mode.
     #[inline]
     pub(crate) fn from_std_with_mode(
         inner: StdUnixStream,
@@ -143,6 +219,9 @@ impl UnixStream {
         Ok(Self { inner, handle })
     }
 
+    /// Converts this stream into a poll-only variant.
+    ///
+    /// The returned `PollUnixStream` will always use readiness-based I/O.
     #[inline]
     pub fn into_poll(self) -> Result<PollUnixStream, io::Error> {
         let mut stream = self;
@@ -155,6 +234,8 @@ impl UnixStream {
 }
 
 impl PollUnixStream {
+    /// Connects to the specified Unix domain socket path using poll-based I/O.
+    #[inline]
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         let (inner, raw_addr, raw_addr_len) = new_socket(path.as_ref())?;
         let stream = Self::from_std(inner)?;
@@ -167,6 +248,7 @@ impl PollUnixStream {
         Ok(stream)
     }
 
+    /// Creates a new `PollUnixStream` from a standard library `UnixStream`.
     #[inline]
     pub fn from_std(inner: StdUnixStream) -> Result<Self, io::Error> {
         Ok(Self {
@@ -174,11 +256,13 @@ impl PollUnixStream {
         })
     }
 
+    /// Converts this poll stream into an adaptive `UnixStream`.
     #[inline]
     pub fn into_adaptive(self) -> UnixStream {
         self.stream
     }
 
+    /// Converts this poll stream into a completion-based `UnixStream`.
     #[inline]
     pub fn into_completion(self) -> Result<UnixStream, io::Error> {
         let mut stream = self.stream;
@@ -189,16 +273,19 @@ impl PollUnixStream {
         Ok(stream)
     }
 
+    /// Returns the local address of this connection.
     #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.stream.local_addr()
     }
 
+    /// Returns the remote address of this connection.
     #[inline]
     pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
         self.stream.peer_addr()
     }
 
+    /// Shuts down the connection.
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.stream.shutdown(how)
@@ -294,6 +381,9 @@ impl TokioAsyncWrite for PollUnixStream {
 }
 
 impl UnixStream {
+    /// Creates a new `UnixStream` that is ready to use with readiness-based I/O.
+    ///
+    /// This is useful when you want to create a Unix stream that uses poll-based I/O.
     #[inline]
     pub fn from_std_poll(inner: StdUnixStream) -> Result<PollUnixStream, io::Error> {
         let handle = ManuallyDrop::new(InnerRawHandle::new(

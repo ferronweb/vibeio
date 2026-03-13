@@ -1,3 +1,15 @@
+//! UDP socket types for async I/O.
+//!
+//! This module provides:
+//! - [`UdpSocket`]: An async UDP socket that can use either completion-based or poll-based I/O.
+//!
+//! # Implementation details
+//!
+//! - On Linux with io_uring support, UDP operations use native async syscalls via the async driver.
+//! - When io_uring completion is available, operations complete directly.
+//! - For platforms without native async support, operations fall back to synchronous std::net calls.
+//! - The runtime must be active when calling these types' methods; otherwise they will panic.
+
 use std::future::poll_fn;
 use std::io;
 use std::mem::ManuallyDrop;
@@ -168,18 +180,54 @@ async fn connect_one(
     result
 }
 
+/// An async UDP socket that can use either completion-based or poll-based I/O.
+///
+/// This is the async version of [`std::net::UdpSocket`].
+///
+/// # Implementation details
+///
+/// - On Linux with io_uring support, UDP operations use native async syscalls via the async driver.
+/// - When io_uring completion is available, operations complete directly.
+/// - For platforms without native async support, operations fall back to synchronous std::net calls.
+/// - The runtime must be active when calling these methods; otherwise they will panic.
+///
+/// # Examples
+///
+/// ```ignore
+/// use vibeio::net::UdpSocket;
+///
+/// let socket = UdpSocket::bind("127.0.0.1:0").await?;
+/// socket.connect("127.0.0.1:9000").await?;
+/// socket.send(b"hello").await?;
+/// ```
 pub struct UdpSocket {
     inner: StdUdpSocket,
     handle: ManuallyDrop<InnerRawHandle>,
 }
 
 impl UdpSocket {
+    /// Creates a new `UdpSocket` which will be bound to the specified address.
+    ///
+    /// This is the async version of [`std::net::UdpSocket::bind`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - DNS resolution fails
+    /// - The address is already in use
+    /// - The process lacks permissions to bind to the address
+    /// - The runtime is not active
     #[inline]
     pub fn bind(address: impl ToSocketAddrs) -> Result<Self, io::Error> {
         let inner = StdUdpSocket::bind(address)?;
         Self::from_std(inner)
     }
 
+    /// Creates a new `UdpSocket` from a standard library `UdpSocket`.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if registration with the async driver fails.
     #[inline]
     pub fn from_std(inner: StdUdpSocket) -> Result<Self, io::Error> {
         #[cfg(unix)]
@@ -197,6 +245,7 @@ impl UdpSocket {
         Ok(Self { inner, handle })
     }
 
+    /// Converts this `UdpSocket` into the standard library `UdpSocket`.
     #[inline]
     pub fn into_std(self) -> StdUdpSocket {
         let mut this = ManuallyDrop::new(self);
@@ -209,16 +258,36 @@ impl UdpSocket {
         }
     }
 
+    /// Returns the local address of this socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not bound.
     #[inline]
     pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.local_addr()
     }
 
+    /// Returns the remote address of this socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn peer_addr(&self) -> Result<SocketAddr, io::Error> {
         self.inner.peer_addr()
     }
 
+    /// Connects this UDP socket to a remote address.
+    ///
+    /// This is the async version of [`std::net::UdpSocket::connect`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - DNS resolution fails
+    /// - Connection fails
+    /// - The runtime is not active
     #[inline]
     pub async fn connect(&mut self, address: impl ToSocketAddrs) -> Result<(), io::Error> {
         let addresses = address.to_socket_addrs()?;
@@ -237,6 +306,15 @@ impl UdpSocket {
             .unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no addresses")))
     }
 
+    /// Receives a single datagram message.
+    ///
+    /// This is the async version of [`std::net::UdpSocket::recv`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The socket is not bound
+    /// - The runtime is not active
     #[inline]
     pub async fn recv<B: IoBufMut>(&self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
@@ -245,6 +323,15 @@ impl UdpSocket {
         (result, op.take_bufs())
     }
 
+    /// Receives a single datagram message, returning the sender's address.
+    ///
+    /// This is the async version of [`std::net::UdpSocket::recv_from`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The socket is not bound
+    /// - The runtime is not active
     #[inline]
     pub async fn recv_from<B: IoBufMut>(
         &self,
@@ -256,6 +343,15 @@ impl UdpSocket {
         (result, op.take_bufs())
     }
 
+    /// Sends data on a connected socket.
+    ///
+    /// This is the async version of [`std::net::UdpSocket::send`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The socket is not connected
+    /// - The runtime is not active
     #[inline]
     pub async fn send<B: IoBuf>(&self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
@@ -264,6 +360,16 @@ impl UdpSocket {
         (result, op.take_bufs())
     }
 
+    /// Sends data to the specified address.
+    ///
+    /// This is the async version of [`std::net::UdpSocket::send_to`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - DNS resolution fails
+    /// - The send operation fails
+    /// - The runtime is not active
     #[inline]
     pub async fn send_to<B: IoBuf>(
         &self,
@@ -295,6 +401,15 @@ impl UdpSocket {
         )
     }
 
+    /// Receives data without removing it from the socket's receive queue.
+    ///
+    /// This is the async version of [`std::net::UdpSocket::peek`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The socket is not bound
+    /// - The runtime is not active
     #[inline]
     pub async fn peek<B: IoBufMut>(&self, buf: B) -> (Result<usize, io::Error>, B) {
         let handle = &self.handle;
@@ -303,6 +418,16 @@ impl UdpSocket {
         (result, op.take_bufs())
     }
 
+    /// Receives data without removing it from the socket's receive queue,
+    /// returning the sender's address.
+    ///
+    /// This is the async version of [`std::net::UdpSocket::peek_from`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The socket is not bound
+    /// - The runtime is not active
     #[inline]
     pub async fn peek_from<B: IoBufMut>(
         &self,
@@ -314,61 +439,131 @@ impl UdpSocket {
         (result, op.take_bufs())
     }
 
+    /// Returns a new `UdpSocket` that shares the same underlying file descriptor.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be cloned.
     #[inline]
     pub fn try_clone(&self) -> Result<Self, io::Error> {
         Self::from_std(self.inner.try_clone()?)
     }
 
+    /// Sets the broadcast flag.
+    ///
+    /// When set, the socket can send broadcast packets.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn set_broadcast(&self, broadcast: bool) -> Result<(), io::Error> {
         self.inner.set_broadcast(broadcast)
     }
 
+    /// Returns the current value of the broadcast flag.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be queried.
     #[inline]
     pub fn broadcast(&self) -> Result<bool, io::Error> {
         self.inner.broadcast()
     }
 
+    /// Sets the time-to-live (TTL) value.
+    ///
+    /// This controls how many hops a packet can traverse before being discarded.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn set_ttl(&self, ttl: u32) -> Result<(), io::Error> {
         self.inner.set_ttl(ttl)
     }
 
+    /// Returns the current TTL value.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be queried.
     #[inline]
     pub fn ttl(&self) -> Result<u32, io::Error> {
         self.inner.ttl()
     }
 
+    /// Sets the multicast loop flag for IPv4.
+    ///
+    /// When set, multicast packets are looped back to the local socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn set_multicast_loop_v4(&self, multicast_loop_v4: bool) -> Result<(), io::Error> {
         self.inner.set_multicast_loop_v4(multicast_loop_v4)
     }
 
+    /// Returns the current IPv4 multicast loop flag.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be queried.
     #[inline]
     pub fn multicast_loop_v4(&self) -> Result<bool, io::Error> {
         self.inner.multicast_loop_v4()
     }
 
+    /// Sets the multicast TTL for IPv4.
+    ///
+    /// This controls how many hops multicast packets can traverse.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn set_multicast_ttl_v4(&self, multicast_ttl_v4: u32) -> Result<(), io::Error> {
         self.inner.set_multicast_ttl_v4(multicast_ttl_v4)
     }
 
+    /// Returns the current IPv4 multicast TTL.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be queried.
     #[inline]
     pub fn multicast_ttl_v4(&self) -> Result<u32, io::Error> {
         self.inner.multicast_ttl_v4()
     }
 
+    /// Sets the multicast loop flag for IPv6.
+    ///
+    /// When set, multicast packets are looped back to the local socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn set_multicast_loop_v6(&self, multicast_loop_v6: bool) -> Result<(), io::Error> {
         self.inner.set_multicast_loop_v6(multicast_loop_v6)
     }
 
+    /// Returns the current IPv6 multicast loop flag.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be queried.
     #[inline]
     pub fn multicast_loop_v6(&self) -> Result<bool, io::Error> {
         self.inner.multicast_loop_v6()
     }
 
+    /// Joins a multicast group for IPv4.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn join_multicast_v4(
         &self,
@@ -378,11 +573,21 @@ impl UdpSocket {
         self.inner.join_multicast_v4(multiaddr, interface)
     }
 
+    /// Joins a multicast group for IPv6.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn join_multicast_v6(&self, multiaddr: &Ipv6Addr, interface: u32) -> Result<(), io::Error> {
         self.inner.join_multicast_v6(multiaddr, interface)
     }
 
+    /// Leaves a multicast group for IPv4.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn leave_multicast_v4(
         &self,
@@ -392,6 +597,11 @@ impl UdpSocket {
         self.inner.leave_multicast_v4(multiaddr, interface)
     }
 
+    /// Leaves a multicast group for IPv6.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn leave_multicast_v6(
         &self,
@@ -401,26 +611,51 @@ impl UdpSocket {
         self.inner.leave_multicast_v6(multiaddr, interface)
     }
 
+    /// Takes the pending error from the socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be queried.
     #[inline]
     pub fn take_error(&self) -> Result<Option<io::Error>, io::Error> {
         self.inner.take_error()
     }
 
+    /// Sets the read timeout for the socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn set_read_timeout(&self, dur: Option<Duration>) -> Result<(), io::Error> {
         self.inner.set_read_timeout(dur)
     }
 
+    /// Sets the write timeout for the socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be modified.
     #[inline]
     pub fn set_write_timeout(&self, dur: Option<Duration>) -> Result<(), io::Error> {
         self.inner.set_write_timeout(dur)
     }
 
+    /// Returns the read timeout for the socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be queried.
     #[inline]
     pub fn read_timeout(&self) -> Result<Option<Duration>, io::Error> {
         self.inner.read_timeout()
     }
 
+    /// Returns the write timeout for the socket.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the underlying socket cannot be queried.
     #[inline]
     pub fn write_timeout(&self) -> Result<Option<Duration>, io::Error> {
         self.inner.write_timeout()
