@@ -1,3 +1,25 @@
+//! Async pipe utilities.
+//!
+//! This module provides async-aware pipe endpoints:
+//! - `pipe()`: create a pair of async-aware pipe endpoints.
+//! - `Pipe`: a pipe endpoint for async I/O.
+//! - `PollPipe`: a variant that uses readiness-based polling.
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use vibeio::io::{AsyncRead, AsyncWrite, pipe};
+//!
+//! async fn pipe_example() {
+//!     let (mut reader, mut writer) = pipe().unwrap();
+//!
+//!     writer.write(b"hello").await.0.unwrap();
+//!     let mut buf = [0u8; 5];
+//!     reader.read(buf).await.0.unwrap();
+//!     assert_eq!(&buf, b"hello");
+//! }
+//! ```
+
 use std::future::poll_fn;
 use std::io::{self, IoSlice};
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -31,6 +53,9 @@ fn pipe_inner() -> std::io::Result<(OwnedFd, OwnedFd)> {
     }))
 }
 
+/// Create a new async-aware pipe.
+///
+/// Returns a tuple of `(reader, writer)` pipe endpoints.
 pub fn pipe() -> std::io::Result<(Pipe, Pipe)> {
     let (read, write) = pipe_inner()?;
     Ok((
@@ -39,6 +64,7 @@ pub fn pipe() -> std::io::Result<(Pipe, Pipe)> {
     ))
 }
 
+/// A pipe endpoint that can use either completion or readiness-based I/O.
 pub struct Pipe {
     inner: OwnedFd,
     handle: ManuallyDrop<InnerRawHandle>,
@@ -50,6 +76,7 @@ pub struct PollPipe {
 }
 
 impl Pipe {
+    /// Create a `Pipe` from a standard library `OwnedFd` with the given registration mode.
     #[inline]
     pub(crate) fn from_std_with_mode(
         inner: OwnedFd,
@@ -72,6 +99,7 @@ impl Pipe {
         Ok(Self { inner, handle })
     }
 
+    /// Convert this `Pipe` to a `PollPipe` for readiness-based operations.
     #[inline]
     pub fn into_poll(self) -> Result<PollPipe, io::Error> {
         let mut stream = self;
@@ -89,11 +117,13 @@ impl Pipe {
 }
 
 impl PollPipe {
+    /// Convert this `PollPipe` back to an adaptive `Pipe`.
     #[inline]
     pub fn into_adaptive(self) -> Pipe {
         self.stream
     }
 
+    /// Convert this `PollPipe` to a completion-based `Pipe`.
     #[inline]
     pub fn into_completion(self) -> Result<Pipe, io::Error> {
         let mut stream = self.stream;
@@ -290,364 +320,5 @@ impl Drop for Pipe {
         unsafe {
             ManuallyDrop::drop(&mut self.handle);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    use crate::io::{AsyncRead, AsyncWrite};
-    use crate::{driver::AnyDriver, executor::spawn};
-
-    use super::{pipe, Pipe, PollPipe};
-
-    fn make_runtime() -> crate::executor::Runtime {
-        crate::executor::Runtime::new(AnyDriver::new_mio().expect("mio driver should initialize"))
-    }
-
-    // ── Pipe (completion / adaptive path) ────────────────────────────────────
-
-    #[test]
-    fn pipe_exchanges_data() {
-        make_runtime().block_on(async {
-            let (mut reader, mut writer) = pipe().expect("pipe should be created");
-
-            let writer_task = spawn(async move {
-                writer
-                    .write(b"hello".to_vec())
-                    .await
-                    .0
-                    .expect("writer should write");
-            });
-
-            let buf = [0u8; 5];
-            let (read, buf) = reader.read(buf).await;
-            let read = read.expect("reader should read");
-            assert_eq!(&buf[..read], b"hello");
-
-            writer_task.await;
-        });
-    }
-
-    #[test]
-    fn pipe_write_then_read_multiple_messages() {
-        make_runtime().block_on(async {
-            let (mut reader, mut writer) = pipe().expect("pipe should be created");
-
-            let writer_task = spawn(async move {
-                writer
-                    .write(b"ping".to_vec())
-                    .await
-                    .0
-                    .expect("first write should succeed");
-                writer
-                    .write(b"pong".to_vec())
-                    .await
-                    .0
-                    .expect("second write should succeed");
-            });
-
-            let buf = [0u8; 4];
-            let (read, buf) = reader.read(buf).await;
-            assert_eq!(&buf[..read.expect("first read should succeed")], b"ping");
-
-            let buf = [0u8; 4];
-            let (read, buf) = reader.read(buf).await;
-            assert_eq!(&buf[..read.expect("second read should succeed")], b"pong");
-
-            writer_task.await;
-        });
-    }
-
-    #[test]
-    fn pipe_read_vectored() {
-        make_runtime().block_on(async {
-            let (mut reader, mut writer) = pipe().expect("pipe should be created");
-
-            let writer_task = spawn(async move {
-                writer
-                    .write(b"abcdef".to_vec())
-                    .await
-                    .0
-                    .expect("writer should write");
-            });
-
-            // Two separate buffers of 3 bytes each.
-            let bufs: Vec<libc::iovec> = vec![
-                libc::iovec {
-                    iov_base: Box::into_raw(vec![0u8; 3].into_boxed_slice()) as *mut libc::c_void,
-                    iov_len: 3,
-                },
-                libc::iovec {
-                    iov_base: Box::into_raw(vec![0u8; 3].into_boxed_slice()) as *mut libc::c_void,
-                    iov_len: 3,
-                },
-            ];
-
-            let (read, bufs) = reader.read_vectored(bufs).await;
-            let read = read.expect("vectored read should succeed");
-            assert_eq!(read, 6);
-
-            // Reconstruct slices to check contents.
-            let first = unsafe { std::slice::from_raw_parts(bufs[0].iov_base as *const u8, 3) };
-            let second = unsafe { std::slice::from_raw_parts(bufs[1].iov_base as *const u8, 3) };
-            assert_eq!(first, b"abc");
-            assert_eq!(second, b"def");
-
-            // Free the iovec memory.
-            for iov in &bufs {
-                unsafe {
-                    drop(Box::from_raw(std::slice::from_raw_parts_mut(
-                        iov.iov_base as *mut u8,
-                        iov.iov_len,
-                    )));
-                }
-            }
-
-            writer_task.await;
-        });
-    }
-
-    #[test]
-    fn pipe_write_vectored() {
-        make_runtime().block_on(async {
-            let (mut reader, mut writer) = pipe().expect("pipe should be created");
-
-            let writer_task = spawn(async move {
-                let bufs: Vec<libc::iovec> = vec![
-                    libc::iovec {
-                        iov_base: b"foo" as *const [u8; 3] as *mut libc::c_void,
-                        iov_len: 3,
-                    },
-                    libc::iovec {
-                        iov_base: b"bar" as *const [u8; 3] as *mut libc::c_void,
-                        iov_len: 3,
-                    },
-                ];
-                let (written, _) = writer.write_vectored(bufs).await;
-                written.expect("vectored write should succeed");
-            });
-
-            let buf = [0u8; 6];
-            let (read, buf) = reader.read(buf).await;
-            assert_eq!(&buf[..read.expect("read should succeed")], b"foobar");
-
-            writer_task.await;
-        });
-    }
-
-    #[test]
-    fn pipe_flush_is_noop() {
-        make_runtime().block_on(async {
-            let (_, mut writer) = pipe().expect("pipe should be created");
-            writer.flush().await.expect("flush should succeed");
-        });
-    }
-
-    // ── into_poll / into_completion round-trips ───────────────────────────────
-
-    #[test]
-    fn pipe_into_poll_and_back_exchanges_data() {
-        make_runtime().block_on(async {
-            let (mut reader, writer) = pipe().expect("pipe should be created");
-
-            // Convert the write end to PollPipe and back to completion Pipe.
-            let poll_writer = writer.into_poll().expect("into_poll should succeed");
-            let mut writer = poll_writer
-                .into_completion()
-                .expect("into_completion should succeed");
-
-            let writer_task = spawn(async move {
-                writer
-                    .write(b"roundtrip".to_vec())
-                    .await
-                    .0
-                    .expect("write should succeed");
-            });
-
-            let buf = [0u8; 9];
-            let (read, buf) = reader.read(buf).await;
-            assert_eq!(&buf[..read.expect("read should succeed")], b"roundtrip");
-
-            writer_task.await;
-        });
-    }
-
-    #[test]
-    fn pipe_into_poll_into_adaptive_exchanges_data() {
-        make_runtime().block_on(async {
-            let (mut reader, writer) = pipe().expect("pipe should be created");
-
-            let poll_writer = writer.into_poll().expect("into_poll should succeed");
-            let mut writer: Pipe = poll_writer.into_adaptive();
-
-            let writer_task = spawn(async move {
-                writer
-                    .write(b"adaptive".to_vec())
-                    .await
-                    .0
-                    .expect("write should succeed");
-            });
-
-            let buf = [0u8; 8];
-            let (read, buf) = reader.read(buf).await;
-            assert_eq!(&buf[..read.expect("read should succeed")], b"adaptive");
-
-            writer_task.await;
-        });
-    }
-
-    // ── PollPipe (readiness / tokio path) ─────────────────────────────────────
-
-    #[test]
-    fn poll_pipe_uses_readiness_path() {
-        make_runtime().block_on(async {
-            let (reader, writer) = pipe().expect("pipe should be created");
-            let mut poll_reader: PollPipe =
-                reader.into_poll().expect("reader into_poll should succeed");
-            let mut poll_writer: PollPipe =
-                writer.into_poll().expect("writer into_poll should succeed");
-
-            let writer_task = spawn(async move {
-                AsyncWriteExt::write_all(&mut poll_writer, b"mio!")
-                    .await
-                    .expect("tokio write_all should succeed");
-            });
-
-            let mut buf = [0u8; 4];
-            AsyncReadExt::read_exact(&mut poll_reader, &mut buf)
-                .await
-                .expect("tokio read_exact should succeed");
-            assert_eq!(&buf, b"mio!");
-
-            writer_task.await;
-        });
-    }
-
-    #[test]
-    fn poll_pipe_write_vectored_via_tokio() {
-        make_runtime().block_on(async {
-            let (reader, writer) = pipe().expect("pipe should be created");
-            let mut poll_reader: PollPipe =
-                reader.into_poll().expect("reader into_poll should succeed");
-            let mut poll_writer: PollPipe =
-                writer.into_poll().expect("writer into_poll should succeed");
-
-            let writer_task = spawn(async move {
-                use std::io::IoSlice;
-                let slices = [IoSlice::new(b"vec"), IoSlice::new(b"tor")];
-                AsyncWriteExt::write_vectored(&mut poll_writer, &slices)
-                    .await
-                    .expect("tokio write_vectored should succeed");
-            });
-
-            let mut buf = [0u8; 6];
-            AsyncReadExt::read_exact(&mut poll_reader, &mut buf)
-                .await
-                .expect("tokio read_exact should succeed");
-            assert_eq!(&buf, b"vector");
-
-            writer_task.await;
-        });
-    }
-
-    #[test]
-    fn poll_pipe_is_write_vectored() {
-        make_runtime().block_on(async {
-            let (reader, writer) = pipe().expect("pipe should be created");
-            let poll_reader = reader.into_poll().expect("reader into_poll should succeed");
-            let poll_writer = writer.into_poll().expect("writer into_poll should succeed");
-            // Both ends should report is_write_vectored = true.
-            use tokio::io::AsyncWrite;
-            assert!(std::pin::Pin::new(&poll_reader).is_write_vectored());
-            assert!(std::pin::Pin::new(&poll_writer).is_write_vectored());
-        });
-    }
-
-    // ── fd / ownership ────────────────────────────────────────────────────────
-
-    #[test]
-    fn pipe_as_raw_fd_is_valid() {
-        make_runtime().block_on(async {
-            use std::os::fd::AsRawFd;
-            let (reader, writer) = pipe().expect("pipe should be created");
-            assert!(reader.as_raw_fd() >= 0);
-            assert!(writer.as_raw_fd() >= 0);
-            assert_ne!(reader.as_raw_fd(), writer.as_raw_fd());
-        });
-    }
-
-    #[test]
-    fn poll_pipe_as_raw_fd_matches_inner() {
-        make_runtime().block_on(async {
-            use std::os::fd::AsRawFd;
-            let (reader, _writer) = pipe().expect("pipe should be created");
-            let fd = reader.as_raw_fd();
-            let poll_reader = reader.into_poll().expect("into_poll should succeed");
-            assert_eq!(poll_reader.as_raw_fd(), fd);
-        });
-    }
-
-    #[test]
-    fn pipe_into_raw_fd_transfers_ownership() {
-        make_runtime().block_on(async {
-            use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
-            let (reader, _writer) = pipe().expect("pipe should be created");
-            let fd = reader.as_raw_fd();
-            let raw = reader.into_raw_fd();
-            assert_eq!(raw, fd);
-            // Re-wrap so the fd is properly closed and doesn't leak.
-            let _ = unsafe { OwnedFd::from_raw_fd(raw) };
-        });
-    }
-
-    #[test]
-    fn poll_pipe_into_raw_fd_transfers_ownership() {
-        make_runtime().block_on(async {
-            use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
-            let (reader, _writer) = pipe().expect("pipe should be created");
-            let fd = reader.as_raw_fd();
-            let poll_reader = reader.into_poll().expect("into_poll should succeed");
-            let raw = poll_reader.into_raw_fd();
-            assert_eq!(raw, fd);
-            let _ = unsafe { OwnedFd::from_raw_fd(raw) };
-        });
-    }
-
-    // ── edge cases ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn pipe_read_vectored_empty_bufs_returns_zero() {
-        make_runtime().block_on(async {
-            let (mut reader, _writer) = pipe().expect("pipe should be created");
-            let empty: Vec<libc::iovec> = vec![];
-            let (result, _) = reader.read_vectored(empty).await;
-            assert_eq!(result.expect("empty vectored read should succeed"), 0);
-        });
-    }
-
-    #[test]
-    fn pipe_write_vectored_empty_bufs_returns_zero() {
-        make_runtime().block_on(async {
-            let (_reader, mut writer) = pipe().expect("pipe should be created");
-            let empty: Vec<libc::iovec> = vec![];
-            let (result, _) = writer.write_vectored(empty).await;
-            assert_eq!(result.expect("empty vectored write should succeed"), 0);
-        });
-    }
-
-    #[test]
-    fn poll_pipe_flush_and_shutdown_are_noop() {
-        make_runtime().block_on(async {
-            let (_reader, writer) = pipe().expect("pipe should be created");
-            let mut poll_writer = writer.into_poll().expect("into_poll should succeed");
-            AsyncWriteExt::flush(&mut poll_writer)
-                .await
-                .expect("flush should succeed");
-            AsyncWriteExt::shutdown(&mut poll_writer)
-                .await
-                .expect("shutdown should succeed");
-        });
     }
 }

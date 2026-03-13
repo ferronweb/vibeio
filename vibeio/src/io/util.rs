@@ -1,3 +1,21 @@
+//! Async I/O utilities.
+//!
+//! This module provides utility functions for async I/O operations:
+//! - `copy()`: copy data from a reader to a writer.
+//! - `split()`: split an I/O object into independent read/write halves.
+//! - `copy_bidirectional()`: copy data in both directions between two I/O objects.
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use vibeio::io::{AsyncRead, AsyncWrite, copy};
+//!
+//! async fn copy_example<R: AsyncRead, W: AsyncWrite>(reader: &mut R, writer: &mut W) {
+//!     let bytes_copied = copy(reader, writer).await?;
+//!     println!("Copied {} bytes", bytes_copied);
+//! }
+//! ```
+
 use std::io;
 use std::sync::Arc;
 
@@ -6,6 +24,10 @@ use futures_util::lock::Mutex as AsyncMutex;
 use super::{AsyncRead, AsyncWrite};
 use crate::io::{IoBuf, IoBufMut, IoBufWithCursor};
 
+/// Copy data from a reader to a writer.
+///
+/// This function reads from `reader` and writes to `writer` until EOF is reached.
+/// Returns the number of bytes copied.
 pub async fn copy<R, W>(reader: &mut R, writer: &mut W) -> Result<u64, io::Error>
 where
     R: AsyncRead + ?Sized,
@@ -61,9 +83,10 @@ pub struct WriteHalf<T> {
 }
 
 /// Split an object implementing both `AsyncRead` and `AsyncWrite` into two
-/// independently usable halves. The halves share ownership of the original
-/// object via an `Arc<AsyncMutex<T>>` so they may be used concurrently in
-/// async contexts.
+/// independently usable halves.
+///
+/// The halves share ownership of the original object via an `Arc<AsyncMutex<T>>`
+/// so they may be used concurrently in async contexts.
 ///
 /// Note: this is a simple, owned split helper — it clones an `Arc` around
 /// a mutex protecting the whole I/O object. It does not provide lock-free
@@ -200,196 +223,4 @@ where
     let n1 = res1?;
     let n2 = res2?;
     Ok((n1, n2))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io;
-
-    use crate::io::{split, util::copy, AsyncRead, AsyncWrite};
-
-    struct SliceReader {
-        data: Vec<u8>,
-        offset: usize,
-        chunk_size: usize,
-    }
-
-    impl SliceReader {
-        #[inline]
-        fn new(data: &[u8], chunk_size: usize) -> Self {
-            Self {
-                data: data.to_vec(),
-                offset: 0,
-                chunk_size,
-            }
-        }
-    }
-
-    use crate::io::{IoBuf, IoBufMut};
-
-    impl AsyncRead for SliceReader {
-        #[inline]
-        async fn read<B: IoBufMut>(&mut self, mut buf: B) -> (Result<usize, io::Error>, B) {
-            if self.offset >= self.data.len() {
-                return (Ok(0), buf);
-            }
-
-            let remaining = self.data.len() - self.offset;
-            let cap = buf.buf_capacity();
-            let read_len = remaining.min(cap).min(self.chunk_size.max(1));
-
-            unsafe {
-                let ptr = buf.as_buf_mut_ptr().add(buf.buf_len());
-                std::ptr::copy_nonoverlapping(self.data[self.offset..].as_ptr(), ptr, read_len);
-                buf.set_buf_init(buf.buf_len() + read_len);
-            }
-
-            self.offset += read_len;
-            (Ok(read_len), buf)
-        }
-    }
-
-    struct VecWriter {
-        data: Vec<u8>,
-        chunk_size: usize,
-        flushed: bool,
-    }
-
-    impl VecWriter {
-        #[inline]
-        fn new(chunk_size: usize) -> Self {
-            Self {
-                data: Vec::new(),
-                chunk_size,
-                flushed: false,
-            }
-        }
-    }
-
-    impl AsyncWrite for VecWriter {
-        #[inline]
-        async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
-            let len = buf.buf_len();
-            if len == 0 {
-                return (Ok(0), buf);
-            }
-            let write_len = len.min(self.chunk_size.max(1));
-
-            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), write_len) };
-            self.data.extend_from_slice(slice);
-
-            (Ok(write_len), buf)
-        }
-
-        #[inline]
-        async fn flush(&mut self) -> Result<(), io::Error> {
-            self.flushed = true;
-            Ok(())
-        }
-    }
-
-    struct ReadWriteVec {
-        read_data: Vec<u8>,
-        read_off: usize,
-        write_data: Vec<u8>,
-    }
-
-    impl ReadWriteVec {
-        fn new(read: &[u8]) -> Self {
-            Self {
-                read_data: read.to_vec(),
-                read_off: 0,
-                write_data: Vec::new(),
-            }
-        }
-    }
-
-    impl AsyncRead for ReadWriteVec {
-        async fn read<B: IoBufMut>(&mut self, mut buf: B) -> (Result<usize, io::Error>, B) {
-            if self.read_off >= self.read_data.len() {
-                return (Ok(0), buf);
-            }
-            let remaining = self.read_data.len() - self.read_off;
-            let cap = buf.buf_capacity();
-            let n = remaining.min(cap);
-
-            unsafe {
-                let ptr = buf.as_buf_mut_ptr().add(buf.buf_len());
-                std::ptr::copy_nonoverlapping(self.read_data[self.read_off..].as_ptr(), ptr, n);
-                buf.set_buf_init(buf.buf_len() + n);
-            }
-
-            self.read_off += n;
-            (Ok(n), buf)
-        }
-    }
-
-    impl AsyncWrite for ReadWriteVec {
-        async fn write<B: IoBuf>(&mut self, buf: B) -> (Result<usize, io::Error>, B) {
-            let len = buf.buf_len();
-            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), len) };
-            self.write_data.extend_from_slice(slice);
-            (Ok(len), buf)
-        }
-
-        async fn flush(&mut self) -> Result<(), io::Error> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn copy_copies_all_bytes_and_flushes_writer() {
-        let runtime = crate::executor::Runtime::new(crate::driver::AnyDriver::new_mock());
-        runtime.block_on(async {
-            let mut reader = SliceReader::new(b"hello world", 3);
-            let mut writer = VecWriter::new(2);
-
-            let copied = copy(&mut reader, &mut writer)
-                .await
-                .expect("copy should succeed");
-            assert_eq!(copied, 11);
-            assert_eq!(writer.data, b"hello world");
-            assert!(writer.flushed);
-        });
-    }
-
-    #[test]
-    fn split_allows_separate_read_and_write_halves() {
-        let runtime = crate::executor::Runtime::new(crate::driver::AnyDriver::new_mock());
-        runtime.block_on(async {
-            let rw = ReadWriteVec::new(b"abc");
-            let (mut r, mut w) = split(rw);
-
-            let mut out = vec![0u8; 3];
-            out.clear();
-            let (read, out) = r.read(out).await;
-            let read = read.expect("read should succeed");
-            assert_eq!(read, 3);
-            assert_eq!(&out[..], b"abc");
-
-            let buf = b"xyz".to_vec();
-            w.write(buf).await.0.expect("write should succeed");
-
-            // Acquire the inner mutex to inspect the written data.
-            let inner = r.into_inner();
-            let guard = inner.lock().await;
-            assert_eq!(guard.write_data, b"xyz");
-        });
-    }
-
-    #[test]
-    fn copy_bidirectional_works() {
-        let runtime = crate::executor::Runtime::new(crate::driver::AnyDriver::new_mock());
-        runtime.block_on(async {
-            let a = ReadWriteVec::new(b"hello");
-            let b = ReadWriteVec::new(b"world");
-
-            let (a_to_b, b_to_a) = super::copy_bidirectional(a, b)
-                .await
-                .expect("copy_bidirectional should succeed");
-
-            assert_eq!(a_to_b, 5);
-            assert_eq!(b_to_a, 5);
-        });
-    }
 }

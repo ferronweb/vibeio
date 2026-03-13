@@ -1,5 +1,44 @@
+//! Buffer traits for async I/O operations.
+//!
+//! This module provides traits for working with buffers in async I/O:
+//! - `IoBuf` and `IoBufMut`: traits for read/write buffers.
+//! - `IoVectoredBuf` and `IoVectoredBufMut`: traits for vectored I/O buffers.
+//!
+//! # Buffer types
+//!
+//! `IoBuf` is implemented for:
+//! - `Vec<u8>`
+//! - `String`
+//! - `&'static [u8]`
+//! - `&'static str`
+//! - `[u8; N]` for any size `N`
+//! - `Box<[u8]>`
+//!
+//! `IoBufMut` is implemented for:
+//! - `Vec<u8>`
+//! - `String`
+//! - `[u8; N]` for any size `N`
+//! - `Box<[u8]>`
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use vibeio::io::{AsyncRead, IoBufMut};
+//!
+//! async fn read_something<R: AsyncRead>(reader: &mut R) {
+//!     let mut buf = vec![0u8; 1024];
+//!     let (result, buf) = reader.read(buf).await;
+//!     let bytes_read = result.unwrap_or(0);
+//!     println!("Read {} bytes", bytes_read);
+//! }
+//! ```
+
 use std::io::{IoSlice, IoSliceMut};
 
+/// Trait for read-only buffers.
+///
+/// This trait is implemented by types that can be used as buffers for
+/// reading data in async I/O operations.
 pub trait IoBuf: Send + 'static {
     /// Returns a raw pointer to the inner buffer.
     fn as_buf_ptr(&self) -> *const u8;
@@ -11,6 +50,9 @@ pub trait IoBuf: Send + 'static {
     fn buf_capacity(&self) -> usize;
 }
 
+/// Trait for mutable buffers.
+///
+/// This trait extends `IoBuf` with mutable operations needed for writing.
 pub trait IoBufMut: IoBuf {
     /// Returns a raw mutable pointer to the inner buffer.
     fn as_buf_mut_ptr(&mut self) -> *mut u8;
@@ -168,22 +210,26 @@ impl IoBufMut for Box<[u8]> {
     unsafe fn set_buf_init(&mut self, _len: usize) {}
 }
 
+/// A buffer wrapper with a cursor for tracking progress.
 pub(crate) struct IoBufWithCursor<I: IoBuf> {
     pub(crate) buf: I,
     pub(crate) cursor: usize,
 }
 
 impl<I: IoBuf> IoBufWithCursor<I> {
+    /// Create a new `IoBufWithCursor` with the given buffer.
     #[inline]
     pub(crate) fn new(buf: I) -> Self {
         IoBufWithCursor { buf, cursor: 0 }
     }
 
+    /// Advance the cursor by `n` bytes.
     #[inline]
     pub(crate) fn advance(&mut self, n: usize) {
         self.cursor += n;
     }
 
+    /// Consume the wrapper and return the inner buffer.
     #[inline]
     pub(crate) fn into_inner(self) -> I {
         self.buf
@@ -218,12 +264,15 @@ impl<I: IoBufMut> IoBufMut for IoBufWithCursor<I> {
     }
 }
 
+/// A temporary buffer for polling operations.
 pub(crate) struct IoBufTemporaryPoll {
     ptr: *mut u8,
     len: usize,
 }
 
 impl IoBufTemporaryPoll {
+    /// Create a new `IoBufTemporaryPoll` with the given pointer and length.
+    #[inline]
     pub(crate) unsafe fn new(ptr: *mut u8, len: usize) -> Self {
         Self { ptr, len }
     }
@@ -258,11 +307,15 @@ impl IoBufMut for IoBufTemporaryPoll {
 
 unsafe impl Send for IoBufTemporaryPoll {}
 
+/// A single I/O vector entry.
 pub struct IoVec {
+    /// Pointer to the data.
     pub ptr: *mut u8,
+    /// Length of the data.
     pub len: usize,
 }
 
+/// Trait for vectored read buffers.
 pub trait IoVectoredBuf: 'static {
     /// Returns a pointer to an array of `iovec` structures and its length.
     #[inline]
@@ -277,6 +330,7 @@ pub trait IoVectoredBuf: 'static {
     }
 }
 
+/// Trait for vectored write buffers.
 pub trait IoVectoredBufMut: IoVectoredBuf {
     /// Returns a mutable pointer to an array of `iovec` structures and its length.
     #[inline]
@@ -338,11 +392,13 @@ impl IoVectoredBufMut for Box<[libc::iovec]> {
     }
 }
 
+/// A temporary vectored buffer for polling operations.
 pub(crate) struct IoVectoredBufTemporaryPoll {
     pub(crate) iovecs: Vec<(*mut u8, usize)>,
 }
 
 impl IoVectoredBufTemporaryPoll {
+    /// Create a new `IoVectoredBufTemporaryPoll` from immutable slices.
     #[inline]
     pub(crate) unsafe fn new(iovecs: &[IoSlice<'_>]) -> Self {
         let iovecs = iovecs
@@ -352,6 +408,7 @@ impl IoVectoredBufTemporaryPoll {
         Self { iovecs }
     }
 
+    /// Create a new `IoVectoredBufTemporaryPoll` from mutable slices.
     #[inline]
     pub(crate) unsafe fn new_mut(iovecs: &mut [IoSliceMut<'_>]) -> Self {
         let iovecs = iovecs

@@ -1,3 +1,34 @@
+//! Standard I/O utilities for stdin, stdout, and stderr.
+//!
+//! This module provides async-aware wrappers around standard I/O streams:
+//! - `Stdin`: async stdin reader.
+//! - `Stdout`: async stdout writer.
+//! - `Stderr`: async stderr writer.
+//!
+//! These types use a blocking thread pool for I/O operations when inside
+//! a runtime context. Outside a runtime, they fall back to synchronous I/O.
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use vibeio::io::{AsyncRead, AsyncWrite, stdin, stdout};
+//!
+//! async fn echo() {
+//!     let mut stdin = stdin();
+//!     let mut stdout = stdout();
+//!     let mut buf = vec![0u8; 1024];
+//!     loop {
+//!         let (read, buf) = stdin.read(buf).await;
+//!         let read = read?;
+//!         if read == 0 {
+//!             break;
+//!         }
+//!         let (written, buf) = stdout.write(buf).await;
+//!         written?;
+//!     }
+//! }
+//! ```
+
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
@@ -5,31 +36,37 @@ use std::sync::{Arc, Mutex};
 use crate::executor::current_driver;
 use crate::io::{AsyncRead, AsyncWrite, IoBuf, IoBufMut};
 
+/// Async-aware stdin reader.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stdin {
     _private: (),
 }
 
+/// Async-aware stdout writer.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stdout {
     _private: (),
 }
 
+/// Async-aware stderr writer.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stderr {
     _private: (),
 }
 
+/// Get an async-aware stdin reader.
 #[inline]
 pub fn stdin() -> Stdin {
     Stdin { _private: () }
 }
 
+/// Get an async-aware stdout writer.
 #[inline]
 pub fn stdout() -> Stdout {
     Stdout { _private: () }
 }
 
+/// Get an async-aware stderr writer.
 #[inline]
 pub fn stderr() -> Stderr {
     Stderr { _private: () }

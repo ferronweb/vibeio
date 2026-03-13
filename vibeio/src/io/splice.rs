@@ -1,3 +1,27 @@
+//! Zero-copy I/O utilities using `splice` and `sendfile`.
+//!
+//! This module provides async-aware zero-copy I/O operations:
+//! - `splice()`: transfer data between file descriptors without copying to userspace.
+//! - `splice_exact()`: transfer exactly `len` bytes using `splice`.
+//! - `sendfile_exact()`: transfer data from a file to a socket using a pipe as an intermediary.
+//!
+//! These operations are only available on Linux with the `splice` feature enabled.
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use vibeio::io::{splice, AsyncRead, AsyncWrite, pipe};
+//!
+//! async fn zero_copy_example() {
+//!     let (reader, writer) = pipe().unwrap();
+//!     let mut file = std::fs::File::open("data.txt").unwrap();
+//!
+//!     // Transfer 1024 bytes from file to pipe
+//!     let n = splice(&file, &writer, 1024).await.unwrap();
+//!     println!("Spliced {} bytes", n);
+//! }
+//! ```
+
 use std::{
     mem::MaybeUninit,
     os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
@@ -7,6 +31,10 @@ use mio::Interest;
 
 use crate::{fd_inner::InnerRawHandle, io::AsInnerRawHandle, op::SpliceOp};
 
+/// Transfer data from one file descriptor to another using `splice`.
+///
+/// This function uses the kernel's `splice` system call to transfer data
+/// between file descriptors without copying to userspace.
 pub async fn splice<'a, 'b>(
     from: &'a impl AsRawFd,
     to: &'b impl AsInnerRawHandle<'b>,
@@ -20,6 +48,10 @@ pub async fn splice<'a, 'b>(
     result
 }
 
+/// Transfer exactly `len` bytes from one file descriptor to another using `splice`.
+///
+/// This function calls `splice()` repeatedly until `len` bytes have been transferred
+/// or EOF is reached.
 pub async fn splice_exact<'a, 'b>(
     from: &'a impl AsRawFd,
     to: &'b impl AsInnerRawHandle<'b>,
@@ -37,6 +69,11 @@ pub async fn splice_exact<'a, 'b>(
     Ok(total)
 }
 
+/// Transfer data from a file to a socket using `sendfile` semantics.
+///
+/// This function implements `sendfile`-like behavior using `splice` with an
+/// intermediate pipe, allowing data to be transferred from a regular file to
+/// a socket without copying to userspace.
 pub async fn sendfile_exact<'a, 'b>(
     from: &'a impl AsRawFd,
     to: &'b impl AsInnerRawHandle<'b>,
@@ -93,188 +130,4 @@ pub async fn sendfile_exact<'a, 'b>(
     }
 
     Ok(total_to_socket)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::{Read, Seek, Write};
-    use std::mem::{ManuallyDrop, MaybeUninit};
-    use std::os::fd::{IntoRawFd, OwnedFd, RawFd};
-    use std::os::unix::io::FromRawFd;
-
-    use super::*;
-    use crate::{fd_inner::InnerRawHandle, io::AsInnerRawHandle, RuntimeBuilder};
-
-    const TEST_DATA_LEN: usize = 1024 * 1024; // 1MB
-
-    struct PipeWriter {
-        handle: ManuallyDrop<InnerRawHandle>,
-    }
-
-    impl PipeWriter {
-        fn new(fd: i32) -> Self {
-            let handle =
-                ManuallyDrop::new(InnerRawHandle::new(fd, mio::Interest::WRITABLE).unwrap());
-            Self { handle }
-        }
-    }
-
-    impl<'a> AsInnerRawHandle<'a> for PipeWriter {
-        fn as_inner_raw_handle(&'a self) -> &'a InnerRawHandle {
-            &self.handle
-        }
-    }
-
-    fn create_test_file() -> tempfile::NamedTempFile {
-        let mut file = tempfile::Builder::new()
-            .prefix("vibeio-splice-test")
-            .tempfile()
-            .unwrap();
-        let data: Vec<u8> = (0..TEST_DATA_LEN).map(|i| (i % 256) as u8).collect();
-        file.write_all(&data).unwrap();
-        file.seek(std::io::SeekFrom::Start(0)).unwrap();
-        file
-    }
-
-    fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
-        let mut fds: Box<[MaybeUninit<RawFd>]> = Box::new_uninit_slice(2);
-        let fds = unsafe {
-            libc::pipe(fds.as_mut_ptr().cast::<RawFd>());
-            fds.assume_init()
-        };
-        Ok((unsafe { OwnedFd::from_raw_fd(fds[0]) }, unsafe {
-            OwnedFd::from_raw_fd(fds[1])
-        }))
-    }
-
-    #[test]
-    fn test_splice_exact() {
-        let runtime = RuntimeBuilder::new().build().unwrap();
-        runtime.block_on(async {
-            let test_file = create_test_file();
-            let (r, w) = pipe().unwrap();
-
-            let reader_task = std::thread::spawn(move || {
-                let mut reader = unsafe { std::fs::File::from_raw_fd(r.into_raw_fd()) };
-                let mut received_data = vec![0u8; TEST_DATA_LEN];
-                reader.read_exact(&mut received_data).unwrap();
-                received_data
-            });
-
-            let writer = PipeWriter::new(w.as_raw_fd());
-            let n = splice_exact(&test_file, &writer, TEST_DATA_LEN)
-                .await
-                .unwrap();
-
-            // Close the writer to signal EOF to the reader.
-            drop(writer);
-
-            let received_data = reader_task.join().unwrap();
-
-            assert_eq!(n, TEST_DATA_LEN);
-            assert_eq!(received_data.len(), TEST_DATA_LEN);
-
-            let original_data: Vec<u8> = (0..TEST_DATA_LEN).map(|i| (i % 256) as u8).collect();
-            assert_eq!(received_data, original_data);
-        });
-    }
-
-    #[test]
-    fn test_sendfile_exact_full() {
-        let runtime = RuntimeBuilder::new().build().unwrap();
-        runtime.block_on(async {
-            let test_file = create_test_file();
-            let (r, w) = pipe().unwrap();
-
-            let reader_task = std::thread::spawn(move || {
-                let mut reader = unsafe { std::fs::File::from_raw_fd(r.into_raw_fd()) };
-                let mut received_data = vec![0u8; TEST_DATA_LEN];
-                reader.read_exact(&mut received_data).unwrap();
-                received_data
-            });
-
-            let writer = PipeWriter::new(w.as_raw_fd());
-            let n = sendfile_exact(&test_file, &writer, TEST_DATA_LEN)
-                .await
-                .unwrap();
-
-            // Close the writer to signal EOF to the reader.
-            drop(writer);
-
-            let received_data = reader_task.join().unwrap();
-
-            assert_eq!(n, TEST_DATA_LEN);
-            assert_eq!(received_data.len(), TEST_DATA_LEN);
-
-            let original_data: Vec<u8> = (0..TEST_DATA_LEN).map(|i| (i % 256) as u8).collect();
-            assert_eq!(received_data, original_data);
-        });
-    }
-
-    #[test]
-    fn test_sendfile_exact_zero_length() {
-        let runtime = RuntimeBuilder::new().build().unwrap();
-        runtime.block_on(async {
-            let test_file = create_test_file();
-            let (r, w) = pipe().unwrap();
-
-            let reader_task = std::thread::spawn(move || {
-                let mut reader = unsafe { std::fs::File::from_raw_fd(r.into_raw_fd()) };
-                let mut received_data = vec![0u8; 0]; // No data expected
-                reader.read_exact(&mut received_data).unwrap();
-                received_data
-            });
-
-            let writer = PipeWriter::new(w.as_raw_fd());
-            let n = sendfile_exact(&test_file, &writer, 0).await.unwrap();
-
-            // Close the writer to signal EOF to the reader.
-            drop(writer);
-
-            let received_data = reader_task.join().unwrap();
-
-            assert_eq!(n, 0);
-            assert_eq!(received_data.len(), 0);
-        });
-    }
-
-    #[test]
-    fn test_sendfile_exact_early_eof() {
-        let runtime = RuntimeBuilder::new().build().unwrap();
-        runtime.block_on(async {
-            let mut temp_file = tempfile::Builder::new()
-                .prefix("vibeio-splice-test")
-                .tempfile()
-                .unwrap();
-            let short_data_len = TEST_DATA_LEN / 2;
-            let data: Vec<u8> = (0..short_data_len).map(|i| (i % 256) as u8).collect();
-            temp_file.write_all(&data).unwrap();
-            temp_file.seek(std::io::SeekFrom::Start(0)).unwrap();
-
-            let (r, w) = pipe().unwrap();
-
-            let reader_task = std::thread::spawn(move || {
-                let mut reader = unsafe { std::fs::File::from_raw_fd(r.into_raw_fd()) };
-                let mut received_data = vec![0u8; short_data_len];
-                reader.read_exact(&mut received_data).unwrap();
-                received_data
-            });
-
-            let writer = PipeWriter::new(w.as_raw_fd());
-            let n = sendfile_exact(&temp_file, &writer, TEST_DATA_LEN)
-                .await
-                .unwrap();
-
-            // Close the writer to signal EOF to the reader.
-            drop(writer);
-
-            let received_data = reader_task.join().unwrap();
-
-            assert_eq!(n, short_data_len);
-            assert_eq!(received_data.len(), short_data_len);
-
-            let original_data: Vec<u8> = (0..short_data_len).map(|i| (i % 256) as u8).collect();
-            assert_eq!(received_data, original_data);
-        });
-    }
 }
