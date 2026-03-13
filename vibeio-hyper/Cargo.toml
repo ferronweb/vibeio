@@ -1,0 +1,9 @@
+[package]
+name = "vibeio-hyper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hyper = "1.8.1"
+tokio = "1.50.0"
+vibeio = { workspace = true }

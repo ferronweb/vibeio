@@ -1,5 +1,5 @@
 [workspace]
-members = ["vibeio", "examples"]
+members = ["vibeio", "examples", "vibeio-hyper"]
 resolver = "2"
 
 [workspace.dependencies]
