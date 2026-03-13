@@ -87,6 +87,7 @@ impl InnerRawHandle {
         self.token
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn reregister(&self, interest: Interest) -> Result<(), io::Error> {
         self.driver.reregister_handle(self, interest)
@@ -102,6 +103,7 @@ impl InnerRawHandle {
         self.supports_completion() && matches!(self.mode, RegistrationMode::Completion)
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn mode(&self) -> RegistrationMode {
         self.mode

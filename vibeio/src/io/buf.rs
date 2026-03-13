@@ -409,6 +409,7 @@ impl IoVectoredBufTemporaryPoll {
     }
 
     /// Create a new `IoVectoredBufTemporaryPoll` from mutable slices.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) unsafe fn new_mut(iovecs: &mut [IoSliceMut<'_>]) -> Self {
         let iovecs = iovecs

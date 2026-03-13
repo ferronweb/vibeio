@@ -29,3 +29,9 @@ impl BlockingThreadPool for DefaultBlockingThreadPool {
         });
     }
 }
+
+impl Default for DefaultBlockingThreadPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}

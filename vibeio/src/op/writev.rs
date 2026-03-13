@@ -129,7 +129,7 @@ impl<B: IoVectoredBuf> Op for WritevOp<'_, B> {
 
         #[cfg(unix)]
         let result = {
-            let mut iovecs = bufs.as_iovecs();
+            let iovecs = bufs.as_iovecs();
             let iovecs_system = iovec_to_system(&iovecs);
             let written = unsafe {
                 libc::writev(

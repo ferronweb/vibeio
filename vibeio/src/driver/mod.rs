@@ -29,6 +29,7 @@ pub enum RegistrationMode {
 
 #[derive(Debug)]
 pub enum CompletionIoResult {
+    #[allow(dead_code)]
     Ok(i32),
     Retry(usize), // usize -> token
     SubmitErr(std::io::Error),
@@ -160,6 +161,7 @@ pub trait Driver {
     fn get_interruptor(&self) -> Self::Interruptor;
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum AnyDriver {
     Mock(MockDriver),
     #[cfg(windows)]
@@ -252,6 +254,7 @@ impl AnyDriver {
         }
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn register_handle(
         &self,

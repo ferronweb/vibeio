@@ -157,9 +157,7 @@ impl Op for WaitPidOp {
                     return Poll::Ready(status);
                 }
                 WaitPidState::Done => {
-                    return Poll::Ready(Err(io::Error::other(
-                        "WaitPidOp already completed",
-                    )));
+                    return Poll::Ready(Err(io::Error::other("WaitPidOp already completed")));
                 }
             }
         }
@@ -171,68 +169,62 @@ impl Op for WaitPidOp {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        loop {
-            // We need to take ownership to transition states. Use a temporary Done.
-            match std::mem::replace(&mut self.state, WaitPidState::Done) {
-                WaitPidState::Init { pid } => {
-                    let raw_fd = Self::open_pidfd(pid)?;
-                    let pidfd = OwnedPidFd(raw_fd);
-                    // For io_uring we register in Poll mode so we can use PollAdd
-                    // to wait for readability on the pidfd.
-                    let handle = InnerRawHandle::new_with_mode(
-                        raw_fd,
-                        Interest::READABLE,
-                        crate::driver::RegistrationMode::Poll,
-                    )?;
-                    // Submit the poll via the driver (which uses io_uring PollAdd
-                    // on uring, or mio on poll-based).
-                    if let Err(submit_err) =
-                        driver.submit_poll(&handle, cx.waker().clone(), Interest::READABLE)
-                    {
-                        self.state = WaitPidState::Polling { pid, pidfd, handle };
-                        return Poll::Ready(Err(submit_err));
-                    }
+        // We need to take ownership to transition states. Use a temporary Done.
+        match std::mem::replace(&mut self.state, WaitPidState::Done) {
+            WaitPidState::Init { pid } => {
+                let raw_fd = Self::open_pidfd(pid)?;
+                let pidfd = OwnedPidFd(raw_fd);
+                // For io_uring we register in Poll mode so we can use PollAdd
+                // to wait for readability on the pidfd.
+                let handle = InnerRawHandle::new_with_mode(
+                    raw_fd,
+                    Interest::READABLE,
+                    crate::driver::RegistrationMode::Poll,
+                )?;
+                // Submit the poll via the driver (which uses io_uring PollAdd
+                // on uring, or mio on poll-based).
+                if let Err(submit_err) =
+                    driver.submit_poll(&handle, cx.waker().clone(), Interest::READABLE)
+                {
                     self.state = WaitPidState::Polling { pid, pidfd, handle };
-                    return Poll::Pending;
+                    return Poll::Ready(Err(submit_err));
                 }
-                WaitPidState::Polling { pid, pidfd, handle } => {
-                    // Check if the pidfd is readable (child exited).
-                    let mut buf = [0u8; 8];
-                    let n = unsafe {
-                        libc::read(
-                            handle.handle,
-                            buf.as_mut_ptr().cast::<libc::c_void>(),
-                            buf.len(),
-                        )
-                    };
-                    if n < 0 {
-                        let err = io::Error::last_os_error();
-                        if err.kind() == io::ErrorKind::WouldBlock {
-                            // Re-arm poll.
-                            if let Err(submit_err) =
-                                driver.submit_poll(&handle, cx.waker().clone(), Interest::READABLE)
-                            {
-                                self.state = WaitPidState::Polling { pid, pidfd, handle };
-                                return Poll::Ready(Err(submit_err));
-                            }
-                            self.state = WaitPidState::Polling { pid, pidfd, handle };
-                            return Poll::Pending;
-                        }
-                        // Other error — try reaping anyway.
-                    }
-
-                    let status = Self::reap(pid);
-                    drop(handle);
-                    drop(pidfd);
-                    self.state = WaitPidState::Done;
-                    return Poll::Ready(status);
-                }
-                WaitPidState::Done => {
-                    return Poll::Ready(Err(io::Error::other(
-                        "WaitPidOp already completed",
-                    )));
-                }
+                self.state = WaitPidState::Polling { pid, pidfd, handle };
+                Poll::Pending
             }
+            WaitPidState::Polling { pid, pidfd, handle } => {
+                // Check if the pidfd is readable (child exited).
+                let mut buf = [0u8; 8];
+                let n = unsafe {
+                    libc::read(
+                        handle.handle,
+                        buf.as_mut_ptr().cast::<libc::c_void>(),
+                        buf.len(),
+                    )
+                };
+                if n < 0 {
+                    let err = io::Error::last_os_error();
+                    if err.kind() == io::ErrorKind::WouldBlock {
+                        // Re-arm poll.
+                        if let Err(submit_err) =
+                            driver.submit_poll(&handle, cx.waker().clone(), Interest::READABLE)
+                        {
+                            self.state = WaitPidState::Polling { pid, pidfd, handle };
+                            return Poll::Ready(Err(submit_err));
+                        }
+                        self.state = WaitPidState::Polling { pid, pidfd, handle };
+                        return Poll::Pending;
+                    }
+                    // Other error — try reaping anyway.
+                }
+
+                let status = Self::reap(pid);
+                drop(handle);
+                drop(pidfd);
+                self.state = WaitPidState::Done;
+                Poll::Ready(status)
+            }
+            WaitPidState::Done => Poll::Ready(Err(io::Error::other("WaitPidOp already completed"))),
         }
     }
 }

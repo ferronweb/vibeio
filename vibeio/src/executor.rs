@@ -177,12 +177,18 @@ pub(crate) async fn current_zombie_reaper() -> Option<async_channel::Sender<Zomb
         let runtime = runtime.borrow();
         runtime.as_ref().map(|runtime_inner| runtime_inner.clone())
     })?;
-    let option = &mut *runtime.zombie_reaper.borrow_mut();
-    if let Some(option) = option.as_ref() {
+    let option = runtime
+        .zombie_reaper
+        .try_borrow()
+        .ok()
+        .and_then(|e| e.as_ref().cloned());
+    if let Some(option) = option {
         Some(option.clone())
     } else {
         let reaper = runtime.spawn(start_zombie_reaper()).await;
-        *option = Some(reaper.clone());
+        if let Ok(mut option) = runtime.zombie_reaper.try_borrow_mut() {
+            *option = Some(reaper.clone());
+        }
         Some(reaper)
     }
 }
@@ -322,6 +328,7 @@ impl RuntimeInner {
 
         let mut slab = self.token_to_task.borrow_mut();
         let vacant_slab_entry = slab.vacant_entry();
+        #[allow(clippy::arc_with_non_send_sync)]
         let task = Arc::new(Task {
             future: RefCell::new(Some(future)),
             queue: Rc::downgrade(&self.queue),
@@ -406,6 +413,7 @@ impl Runtime {
     /// Create a new runtime with the given driver.
     ///
     /// By default, this enables the timer and file I/O offload.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn new(driver: AnyDriver) -> Self {
         #[cfg(not(feature = "blocking-default"))]
