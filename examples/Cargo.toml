@@ -1,5 +1,5 @@
 [package]
-name = "custom-async-examples"
+name = "vibeio-examples"
 version = "0.1.2"
 edition = "2021"
 publish = false
@@ -13,7 +13,7 @@ path = "src/tcp-echo-server/main.rs"
 #path = "src/lowlevel/client.rs"
 
 [dependencies]
-custom-async = { workspace = true }
+vibeio = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 shiba = { workspace = true }

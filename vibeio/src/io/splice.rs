@@ -127,7 +127,7 @@ mod tests {
 
     fn create_test_file() -> tempfile::NamedTempFile {
         let mut file = tempfile::Builder::new()
-            .prefix("custom-async-splice-test")
+            .prefix("vibeio-splice-test")
             .tempfile()
             .unwrap();
         let data: Vec<u8> = (0..TEST_DATA_LEN).map(|i| (i % 256) as u8).collect();
@@ -243,7 +243,7 @@ mod tests {
         let runtime = RuntimeBuilder::new().build().unwrap();
         runtime.block_on(async {
             let mut temp_file = tempfile::Builder::new()
-                .prefix("custom-async-splice-test")
+                .prefix("vibeio-splice-test")
                 .tempfile()
                 .unwrap();
             let short_data_len = TEST_DATA_LEN / 2;

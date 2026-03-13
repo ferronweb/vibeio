@@ -49,7 +49,7 @@ impl DriverKind {
 /// # Examples
 ///
 /// ```
-/// use custom_async::RuntimeBuilder;
+/// use vibeio::RuntimeBuilder;
 ///
 /// let runtime = RuntimeBuilder::new()
 ///     .build();

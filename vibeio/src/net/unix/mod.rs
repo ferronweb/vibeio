@@ -28,7 +28,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        std::env::temp_dir().join(format!("custom-async-{name}-{nanos}-{id}.sock"))
+        std::env::temp_dir().join(format!("vibeio-{name}-{nanos}-{id}.sock"))
     }
 
     fn cleanup_socket(path: &Path) {

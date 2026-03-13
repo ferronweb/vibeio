@@ -321,7 +321,7 @@ impl IocpDriver {
 
     #[inline]
     fn open_afd_handle() -> Result<OwnedHandle, io::Error> {
-        let device_name = format!("\\Device\\Afd\\custom-async-{}", std::process::id());
+        let device_name = format!("\\Device\\Afd\\vibeio-{}", std::process::id());
         let mut device_name_utf16: Vec<u16> = device_name.encode_utf16().collect();
         let name_len = (device_name_utf16.len() * std::mem::size_of::<u16>()) as u16;
 

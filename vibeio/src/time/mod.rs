@@ -1,4 +1,4 @@
-//! A small `time` utility module for the custom async runtime.
+//! A small `time` utility module for `vibeio`.
 //!
 //! This module provides:
 //! - `Sleep`: a Future that completes after a duration.

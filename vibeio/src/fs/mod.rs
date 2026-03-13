@@ -621,7 +621,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("custom_async_{name}_{now}.tmp"))
+        std::env::temp_dir().join(format!("vibeio_{name}_{now}.tmp"))
     }
 
     #[test]

@@ -78,35 +78,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
-name = "custom-async"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "crossbeam-queue",
- "futures-util",
- "io-uring",
- "libc",
- "mio",
- "once_cell",
- "oneshot",
- "rusty_pool",
- "shiba",
- "slab",
- "tempfile",
- "tm-wheel",
- "tokio",
- "windows-sys",
-]
-
-[[package]]
-name = "custom-async-examples"
-version = "0.1.2"
-dependencies = [
- "custom-async",
- "shiba",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -567,6 +538,35 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "vibeio"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "crossbeam-queue",
+ "futures-util",
+ "io-uring",
+ "libc",
+ "mio",
+ "once_cell",
+ "oneshot",
+ "rusty_pool",
+ "shiba",
+ "slab",
+ "tempfile",
+ "tm-wheel",
+ "tokio",
+ "windows-sys",
+]
+
+[[package]]
+name = "vibeio-examples"
+version = "0.1.2"
+dependencies = [
+ "shiba",
+ "vibeio",
+]
 
 [[package]]
 name = "wasi"

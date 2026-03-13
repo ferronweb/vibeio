@@ -1,13 +1,13 @@
 [workspace]
-members = ["custom-async", "examples"]
+members = ["vibeio", "examples"]
 resolver = "2"
 
 [workspace.dependencies]
-custom-async = "=0.1.0"
+vibeio = "=0.1.0"
 shiba = "0.1.1"
 
 [patch.crates-io]
-custom-async = { path = "./custom-async" }
+vibeio = { path = "./vibeio" }
 
 [workspace.metadata.cargo-shear]
 ignored = ["shiba"]

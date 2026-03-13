@@ -1,4 +1,4 @@
-//! Async signal utilities integrated with the custom runtime.
+//! Async signal utilities integrated with `vibeio`.
 //!
 //! - `ctrl_c` provides cross-platform Ctrl-C support.
 //! - `unix` exposes Unix-specific signal handling.
