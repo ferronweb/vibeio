@@ -29,7 +29,6 @@
 //! // Create a directory
 //! fs::create_dir("my_dir").await?;
 //!
-//! Ok(())
 //! ```
 
 mod file;

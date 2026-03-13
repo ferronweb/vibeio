@@ -47,7 +47,6 @@ use crate::fs::open_options::OpenOptions;
 /// let read = read?;
 ///
 /// println!("Read {} bytes", read);
-/// Ok(())
 /// ```
 enum FileIo {
     Completion(ManuallyDrop<InnerRawHandle>),
@@ -74,7 +73,6 @@ enum FileIo {
 /// let read = read?;
 ///
 /// println!("Read {} bytes", read);
-/// Ok(())
 /// ```
 pub struct File {
     inner: std::fs::File,
@@ -105,7 +103,6 @@ impl File {
     /// use vibeio::fs::File;
     ///
     /// let file = File::open("hello.txt").await?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn open(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -134,7 +131,6 @@ impl File {
     /// use vibeio::fs::File;
     ///
     /// let file = File::create("hello.txt").await?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn create(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -240,7 +236,6 @@ impl File {
     /// let mut buf = [0u8; 1024];
     /// let (read, buf) = file.read_at(buf, 0).await;
     /// let read = read?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn read_at<B: IoBufMut>(&self, mut buf: B, offset: u64) -> (io::Result<usize>, B) {
@@ -288,7 +283,6 @@ impl File {
     /// let mut buf = [0u8; 1024];
     /// let (result, buf) = file.read_exact_at(buf, 0).await;
     /// result?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn read_exact_at<B: IoBufMut>(&self, buf: B, mut offset: u64) -> (io::Result<()>, B) {
@@ -345,7 +339,6 @@ impl File {
     /// let buf = b"Hello, world!";
     /// let (written, buf) = file.write_at(buf.to_vec(), 0).await;
     /// let written = written?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn write_at<B: IoBuf>(&self, buf: B, offset: u64) -> (io::Result<usize>, B) {
@@ -392,7 +385,6 @@ impl File {
     /// let buf = b"Hello, world!";
     /// let (result, buf) = file.write_exact_at(buf.to_vec(), 0).await;
     /// result?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn write_exact_at<B: IoBuf>(&self, buf: B, mut offset: u64) -> (io::Result<()>, B) {
@@ -445,7 +437,6 @@ impl File {
     ///
     /// let file = File::create("hello.txt").await?;
     /// file.sync_all().await?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn sync_all(&self) -> io::Result<()> {
@@ -489,7 +480,6 @@ impl File {
     ///
     /// let file = File::create("hello.txt").await?;
     /// file.sync_data().await?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn sync_data(&self) -> io::Result<()> {
@@ -534,7 +524,6 @@ impl File {
     /// let file = File::open("hello.txt").await?;
     /// let metadata = file.metadata().await?;
     /// println!("File size: {} bytes", metadata.len());
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn metadata(&self) -> io::Result<Metadata> {

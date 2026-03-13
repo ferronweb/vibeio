@@ -46,7 +46,6 @@ use crate::fs::file::File;
 ///     .open("output.txt")
 ///     .await?;
 ///
-/// Ok(())
 /// ```
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
@@ -176,7 +175,6 @@ impl OpenOptions {
     ///     .read(true)
     ///     .open("hello.txt")
     ///     .await?;
-    /// Ok(())
     /// ```
     #[inline]
     pub async fn open(&self, path: impl AsRef<Path>) -> io::Result<File> {

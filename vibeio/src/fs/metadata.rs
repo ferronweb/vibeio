@@ -20,7 +20,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 ///
 /// let metadata = fs::metadata("hello.txt").await?;
 /// println!("File size: {} bytes", metadata.len());
-/// Ok(())
 /// ```
 #[derive(Clone, Debug)]
 pub struct Metadata {
@@ -192,7 +191,6 @@ fn statx_timestamp_to_system_time(ts: &libc::statx_timestamp) -> io::Result<Syst
 /// } else if file_type.is_dir() {
 ///     println!("It's a directory!");
 /// }
-/// Ok(())
 /// ```
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FileType {
@@ -213,7 +211,6 @@ impl FileType {
     /// if metadata.file_type().is_dir() {
     ///     println!("It's a directory!");
     /// }
-    /// Ok(())
     /// ```
     #[inline]
     pub fn is_dir(&self) -> bool {
@@ -231,7 +228,6 @@ impl FileType {
     /// if metadata.file_type().is_file() {
     ///     println!("It's a file!");
     /// }
-    /// Ok(())
     /// ```
     #[inline]
     pub fn is_file(&self) -> bool {
@@ -249,7 +245,6 @@ impl FileType {
     /// if metadata.file_type().is_symlink() {
     ///     println!("It's a symlink!");
     /// }
-    /// Ok(())
     /// ```
     #[inline]
     pub fn is_symlink(&self) -> bool {
