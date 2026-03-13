@@ -185,13 +185,13 @@ impl UnixStream {
     }
 
     /// Shuts down the connection.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
-        self.inner.shutdown(how)
+        match self.inner.shutdown(how) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotConnected => Ok(()), // macOS-specific behavior
+            Err(e) => Err(e),
+        }
     }
 
     /// Creates a new `UnixStream` from a standard library `UnixStream`.

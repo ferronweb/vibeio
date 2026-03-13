@@ -326,10 +326,6 @@ impl TcpStream {
     }
 
     /// Shuts down the connection.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if the underlying socket is not connected.
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         match self.inner.shutdown(how) {
