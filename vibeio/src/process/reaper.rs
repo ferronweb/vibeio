@@ -40,7 +40,7 @@ impl ZombieReaper {
             let (sender, recver) = oneshot::async_channel();
             let _ = reaper_send.send((child, Some(sender))).await;
             recver.await.map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "zombie reaper error")
+                std::io::Error::other("zombie reaper error")
             })?
         } else {
             child.wait()
@@ -251,7 +251,7 @@ async fn zombie_reaper_fn_linux_pidfd(rx: async_channel::Receiver<ZombieReaperMe
             })
             .await;
 
-            let status = result.map(|raw_status| exit_status_from_raw(raw_status));
+            let status = result.map(exit_status_from_raw);
             if let Some(sender) = sender {
                 let _ = sender.send(status);
             }

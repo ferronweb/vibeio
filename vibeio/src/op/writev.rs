@@ -130,7 +130,7 @@ impl<B: IoVectoredBuf> Op for WritevOp<'_, B> {
         #[cfg(unix)]
         let result = {
             let mut iovecs = bufs.as_iovecs();
-            let iovecs_system = iovec_to_system(&mut iovecs);
+            let iovecs_system = iovec_to_system(&iovecs);
             let written = unsafe {
                 libc::writev(
                     self.handle.handle,
@@ -325,7 +325,7 @@ impl<B: IoVectoredBuf> Op for WritevOp<'_, B> {
         let iovecs = if let Some(iovecs) = self.completion_system_iovecs.take() {
             iovecs
         } else {
-            iovec_to_system(&mut bufs.as_iovecs())
+            iovec_to_system(&bufs.as_iovecs())
         };
 
         let entry = opcode::Writev::new(

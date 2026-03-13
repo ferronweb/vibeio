@@ -320,7 +320,7 @@ fn start_dispatch_thread(read_fd: RawFd, registry: Arc<Registry>) -> io::Result<
     std::thread::Builder::new()
         .name("vibeio-signal-dispatch".to_string())
         .spawn(move || dispatch_loop(read_fd, registry))
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
     Ok(())
 }
 

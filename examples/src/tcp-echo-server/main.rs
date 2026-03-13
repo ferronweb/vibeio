@@ -11,7 +11,7 @@ fn main() -> Result<(), std::io::Error> {
         while let Ok((stream, _)) = listener.accept().await {
             vibeio::spawn(async move {
                 let (mut reader, mut writer) = vibeio::io::split(stream);
-                let _ = vibeio::io::copy(&mut reader, &mut writer);
+                let _ = vibeio::io::copy(&mut reader, &mut writer).await;
             });
         }
 

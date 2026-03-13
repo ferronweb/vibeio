@@ -110,8 +110,7 @@ where
                 unsafe { slice.assume_init() }
             };
             let Some(mut inner) = this.inner.take() else {
-                return Poll::Ready(Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Poll::Ready(Err(std::io::Error::other(
                     "another operation is already in progress",
                 )));
             };
@@ -169,8 +168,7 @@ where
         if this.write_fut.is_none() {
             let buf: Vec<u8> = buf.into();
             let Some(mut inner) = this.inner.take() else {
-                return Poll::Ready(Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Poll::Ready(Err(std::io::Error::other(
                     "another operation is already in progress",
                 )));
             };
@@ -208,8 +206,7 @@ where
 
         if this.flush_fut.is_none() {
             let Some(mut inner) = this.inner.take() else {
-                return Poll::Ready(Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Poll::Ready(Err(std::io::Error::other(
                     "another operation is already in progress",
                 )));
             };

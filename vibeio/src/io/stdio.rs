@@ -190,14 +190,14 @@ async fn write_stderr_in_blocking_pool<B: IoBuf>(buf: B) -> (io::Result<usize>, 
 
 #[inline]
 async fn flush_stdout_in_blocking_pool() -> io::Result<()> {
-    crate::spawn_blocking(move || flush_stdout_blocking())
+    crate::spawn_blocking(flush_stdout_blocking)
         .await
         .map_err(|_| blocking_pool_io_error())?
 }
 
 #[inline]
 async fn flush_stderr_in_blocking_pool() -> io::Result<()> {
-    crate::spawn_blocking(move || flush_stderr_blocking())
+    crate::spawn_blocking(flush_stderr_blocking)
         .await
         .map_err(|_| blocking_pool_io_error())?
 }
