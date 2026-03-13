@@ -1,3 +1,37 @@
+//! A file system module for `vibeio`.
+//!
+//! This module provides async versions of common file system operations:
+//! - File operations: [`File`] with async read/write methods
+//! - Path operations: [`canonicalize`], [`hard_link`], [`rename`], [`remove_dir`], [`remove_file`]
+//! - Directory operations: [`create_dir`], [`create_dir_all`], [`symlink_dir`], [`symlink_file`]
+//! - File content helpers: [`read`], [`read_to_string`], [`write()`]
+//! - Metadata: [`metadata`] for file information
+//!
+//! Implementation notes:
+//! - On Linux with io_uring support, some operations use native async syscalls (e.g. `statx`, `linkat`)
+//!   via the async driver. When io_uring completion is available, operations complete directly.
+//! - For platforms without native async support, operations either offload to a blocking thread pool
+//!   (if file I/O offload is enabled) or fall back to synchronous std::fs calls.
+//! - The runtime must be active when calling these functions; otherwise they will panic.
+//!
+//! # Examples
+//!
+//! ```ignore
+//! use vibeio::fs;
+//!
+//! // Write to a file
+//! fs::write("hello.txt", b"Hello, world!").await?;
+//!
+//! // Read from a file
+//! let contents = fs::read_to_string("hello.txt").await?;
+//! println!("File contents: {}", contents);
+//!
+//! // Create a directory
+//! fs::create_dir("my_dir").await?;
+//!
+//! Ok(())
+//! ```
+
 mod file;
 mod metadata;
 mod open_options;
@@ -13,6 +47,7 @@ pub use open_options::*;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::CreateSymbolicLinkW;
 
+use crate::io::IoBuf;
 use crate::io::{AsyncRead, AsyncWrite};
 #[cfg(target_os = "linux")]
 use crate::op::HardLinkOp;
@@ -27,6 +62,22 @@ use crate::op::SymlinkOp;
 #[cfg(target_os = "linux")]
 use crate::op::UnlinkOp;
 
+/// Creates a symbolic link to a directory on Windows.
+///
+/// This is a Windows-specific helper function that uses the `CreateSymbolicLinkW` API.
+/// For cross-platform symlink creation, use [`symlink_dir`] instead.
+///
+/// # Platform-specific behavior
+///
+/// - This function is only available on Windows.
+/// - It creates a symbolic link to a directory using the Windows API.
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` already exists
+/// - The process lacks permissions to create the symlink
+/// - The platform does not support symbolic links
 #[cfg(windows)]
 pub fn windows_symlink_dir(path: String, target: String) -> std::io::Result<()> {
     let path_w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
@@ -46,6 +97,22 @@ pub fn windows_symlink_dir(path: String, target: String) -> std::io::Result<()> 
     }
 }
 
+/// Creates a symbolic link to a file on Windows.
+///
+/// This is a Windows-specific helper function that uses the `CreateSymbolicLinkW` API.
+/// For cross-platform symlink creation, use [`symlink_file`] instead.
+///
+/// # Platform-specific behavior
+///
+/// - This function is only available on Windows.
+/// - It creates a symbolic link to a file using the Windows API.
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` already exists
+/// - The process lacks permissions to create the symlink
+/// - The platform does not support symbolic links
 #[cfg(windows)]
 pub fn windows_symlink_file(path: String, target: String) -> std::io::Result<()> {
     let path_w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
@@ -65,6 +132,21 @@ pub fn windows_symlink_file(path: String, target: String) -> std::io::Result<()>
     }
 }
 
+/// Returns the canonical form of a path with all components normalized.
+///
+/// This is the async version of [`std::fs::canonicalize`].
+///
+/// # Platform-specific behavior
+///
+/// - On most platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::canonicalize`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` does not exist
+/// - A component in the path is not a directory
+/// - The process lacks permissions to access components of the path
 pub async fn canonicalize<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<PathBuf> {
     let path = path.as_ref().to_path_buf();
     if crate::executor::offload_fs() {
@@ -76,8 +158,20 @@ pub async fn canonicalize<P: AsRef<std::path::Path>>(path: P) -> std::io::Result
     }
 }
 
-use crate::io::IoBuf;
-
+/// Reads the entire contents of a file into a vector of bytes.
+///
+/// This is the async version of [`std::fs::read`].
+///
+/// # Platform-specific behavior
+///
+/// - On most platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::read`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` does not exist
+/// - The process lacks permissions to read the file
 pub async fn read(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>> {
     let mut file: File = OpenOptions::new().read(true).open(path).await?;
     let mut bytes = Vec::new();
@@ -100,12 +194,40 @@ pub async fn read(path: impl AsRef<std::path::Path>) -> std::io::Result<Vec<u8>>
     Ok(bytes)
 }
 
+/// Reads the entire contents of a file into a string.
+///
+/// This is the async version of [`std::fs::read_to_string`].
+///
+/// # Platform-specific behavior
+///
+/// - On most platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::read_to_string`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - [`read`] fails
+/// - The file contents are not valid UTF-8
 pub async fn read_to_string(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
     let bytes = read(path).await?;
     String::from_utf8(bytes)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.utf8_error()))
 }
 
+/// Writes a byte slice to a file, creating it if necessary.
+///
+/// This is the async version of [`std::fs::write`].
+///
+/// # Platform-specific behavior
+///
+/// - On most platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::write`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - The file cannot be opened for writing
+/// - The write operation fails
 pub async fn write(
     path: impl AsRef<std::path::Path>,
     contents: impl AsRef<[u8]>,
@@ -132,6 +254,23 @@ pub async fn write(
     file.flush().await
 }
 
+/// Creates a hard link at the destination path pointing to the source.
+///
+/// This is the async version of [`std::fs::hard_link`].
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `linkat` syscall directly.
+/// - On other platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::hard_link`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `src` does not exist
+/// - `dst` already exists
+/// - The source and destination are on different filesystems
+/// - The process lacks permissions
 #[cfg(target_os = "linux")]
 pub async fn hard_link(
     src: impl AsRef<std::path::Path>,
@@ -169,6 +308,22 @@ pub async fn hard_link(
     }
 }
 
+/// Creates a hard link at the destination path pointing to the source.
+///
+/// This is the async version of [`std::fs::hard_link`].
+///
+/// # Platform-specific behavior
+///
+/// - On platforms other than Linux, this either offloads to a blocking thread pool
+///   or falls back to [`std::fs::hard_link`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `src` does not exist
+/// - `dst` already exists
+/// - The source and destination are on different filesystems
+/// - The process lacks permissions
 #[cfg(not(target_os = "linux"))]
 pub async fn hard_link(
     src: impl AsRef<std::path::Path>,
@@ -185,6 +340,25 @@ pub async fn hard_link(
     }
 }
 
+/// Creates a symbolic link to a directory.
+///
+/// This is the async version of [`std::os::unix::fs::symlink`] (on Unix) or
+/// [`std::os::windows::fs::symlink_dir`] (on Windows).
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `symlinkat` syscall directly.
+/// - On Windows, this uses the [`windows_symlink_dir`] helper.
+/// - On other Unix platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::os::unix::fs::symlink`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `src` does not exist or is not a directory
+/// - `dst` already exists
+/// - The process lacks permissions to create the symlink
+/// - The platform does not support symbolic links
 #[cfg(windows)]
 pub async fn symlink_dir(
     src: impl AsRef<std::path::Path>,
@@ -210,6 +384,23 @@ pub async fn symlink_dir(
     }
 }
 
+/// Creates a symbolic link to a directory.
+///
+/// This is the async version of [`std::os::unix::fs::symlink`].
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `symlinkat` syscall directly.
+/// - On other Unix platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::os::unix::fs::symlink`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `src` does not exist or is not a directory
+/// - `dst` already exists
+/// - The process lacks permissions to create the symlink
+/// - The platform does not support symbolic links
 #[cfg(target_os = "linux")]
 pub async fn symlink_dir(
     src: impl AsRef<std::path::Path>,
@@ -247,6 +438,22 @@ pub async fn symlink_dir(
     }
 }
 
+/// Creates a symbolic link to a directory.
+///
+/// This is the async version of [`std::os::unix::fs::symlink`].
+///
+/// # Platform-specific behavior
+///
+/// - On other Unix platforms (not Linux or Windows), this either offloads to a
+///   blocking thread pool or falls back to [`std::os::unix::fs::symlink`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `src` does not exist or is not a directory
+/// - `dst` already exists
+/// - The process lacks permissions to create the symlink
+/// - The platform does not support symbolic links
 #[cfg(not(any(windows, target_os = "linux")))]
 pub async fn symlink_dir(
     src: impl AsRef<std::path::Path>,
@@ -263,6 +470,25 @@ pub async fn symlink_dir(
     }
 }
 
+/// Creates a symbolic link to a file.
+///
+/// This is the async version of [`std::os::unix::fs::symlink`] (on Unix) or
+/// [`std::os::windows::fs::symlink_file`] (on Windows).
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `symlinkat` syscall directly.
+/// - On Windows, this uses the [`windows_symlink_file`] helper.
+/// - On other Unix platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::os::unix::fs::symlink`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `src` does not exist or is not a file
+/// - `dst` already exists
+/// - The process lacks permissions to create the symlink
+/// - The platform does not support symbolic links
 #[cfg(windows)]
 pub async fn symlink_file(
     src: impl AsRef<std::path::Path>,
@@ -288,6 +514,23 @@ pub async fn symlink_file(
     }
 }
 
+/// Creates a symbolic link to a file.
+///
+/// This is the async version of [`std::os::unix::fs::symlink`].
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `symlinkat` syscall directly.
+/// - On other Unix platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::os::unix::fs::symlink`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `src` does not exist or is not a file
+/// - `dst` already exists
+/// - The process lacks permissions to create the symlink
+/// - The platform does not support symbolic links
 #[cfg(target_os = "linux")]
 pub async fn symlink_file(
     src: impl AsRef<std::path::Path>,
@@ -325,6 +568,22 @@ pub async fn symlink_file(
     }
 }
 
+/// Creates a symbolic link to a file.
+///
+/// This is the async version of [`std::os::unix::fs::symlink`].
+///
+/// # Platform-specific behavior
+///
+/// - On other Unix platforms (not Linux or Windows), this either offloads to a
+///   blocking thread pool or falls back to [`std::os::unix::fs::symlink`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `src` does not exist or is not a file
+/// - `dst` already exists
+/// - The process lacks permissions to create the symlink
+/// - The platform does not support symbolic links
 #[cfg(not(any(windows, target_os = "linux")))]
 pub async fn symlink_file(
     src: impl AsRef<std::path::Path>,
@@ -341,6 +600,20 @@ pub async fn symlink_file(
     }
 }
 
+/// Creates a symbolic link.
+///
+/// This is a convenience function that calls [`symlink_file`]. Use this when you
+/// don't know or don't care whether the source is a file or directory.
+///
+/// For explicit symlink creation, use [`symlink_file`] or [`symlink_dir`] instead.
+///
+/// # Platform-specific behavior
+///
+/// See [`symlink_file`] for platform-specific behavior details.
+///
+/// # Errors
+///
+/// See [`symlink_file`] for error conditions.
 pub async fn symlink(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
@@ -348,6 +621,23 @@ pub async fn symlink(
     symlink_file(src, dst).await
 }
 
+/// Renames a file or directory to a new location.
+///
+/// This is the async version of [`std::fs::rename`].
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `renameat` syscall directly.
+/// - On other platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::rename`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `from` does not exist
+/// - `to` already exists and is not overwritable
+/// - The source and destination are on different filesystems
+/// - The process lacks permissions
 #[cfg(target_os = "linux")]
 pub async fn rename(
     from: impl AsRef<std::path::Path>,
@@ -384,6 +674,22 @@ pub async fn rename(
     }
 }
 
+/// Renames a file or directory to a new location.
+///
+/// This is the async version of [`std::fs::rename`].
+///
+/// # Platform-specific behavior
+///
+/// - On platforms other than Linux, this either offloads to a blocking thread pool
+///   or falls back to [`std::fs::rename`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `from` does not exist
+/// - `to` already exists and is not overwritable
+/// - The source and destination are on different filesystems
+/// - The process lacks permissions
 #[cfg(not(target_os = "linux"))]
 pub async fn rename(
     from: impl AsRef<std::path::Path>,
@@ -400,6 +706,23 @@ pub async fn rename(
     }
 }
 
+/// Removes an empty directory.
+///
+/// This is the async version of [`std::fs::remove_dir`].
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `unlinkat` syscall directly.
+/// - On other platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::remove_dir`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` does not exist
+/// - `path` is not a directory
+/// - The directory is not empty
+/// - The process lacks permissions
 #[cfg(target_os = "linux")]
 pub async fn remove_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     let path = path.as_ref();
@@ -425,6 +748,22 @@ pub async fn remove_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()
     }
 }
 
+/// Removes an empty directory.
+///
+/// This is the async version of [`std::fs::remove_dir`].
+///
+/// # Platform-specific behavior
+///
+/// - On platforms other than Linux, this either offloads to a blocking thread pool
+///   or falls back to [`std::fs::remove_dir`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` does not exist
+/// - `path` is not a directory
+/// - The directory is not empty
+/// - The process lacks permissions
 #[cfg(not(target_os = "linux"))]
 pub async fn remove_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     if crate::executor::offload_fs() {
@@ -437,6 +776,21 @@ pub async fn remove_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()
     }
 }
 
+/// Removes a file.
+///
+/// This is the async version of [`std::fs::remove_file`].
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `unlinkat` syscall directly.
+/// - On other platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::remove_file`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` does not exist
+/// - The process lacks permissions
 #[cfg(target_os = "linux")]
 pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     let path = path.as_ref();
@@ -462,6 +816,20 @@ pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<(
     }
 }
 
+/// Removes a file.
+///
+/// This is the async version of [`std::fs::remove_file`].
+///
+/// # Platform-specific behavior
+///
+/// - On platforms other than Linux, this either offloads to a blocking thread pool
+///   or falls back to [`std::fs::remove_file`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` does not exist
+/// - The process lacks permissions
 #[cfg(not(target_os = "linux"))]
 pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     if crate::executor::offload_fs() {
@@ -474,6 +842,23 @@ pub async fn remove_file(path: impl AsRef<std::path::Path>) -> std::io::Result<(
     }
 }
 
+/// Creates a directory.
+///
+/// This is the async version of [`std::fs::create_dir`].
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support, this uses the `mkdirat` syscall directly.
+/// - On other platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::create_dir`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - A component in the path does not exist
+/// - A component in the path is not a directory
+/// - The process lacks permissions
+/// - The directory already exists
 #[cfg(target_os = "linux")]
 pub async fn create_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     let path = path.as_ref();
@@ -500,6 +885,22 @@ pub async fn create_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()
     }
 }
 
+/// Creates a directory.
+///
+/// This is the async version of [`std::fs::create_dir`].
+///
+/// # Platform-specific behavior
+///
+/// - On platforms other than Linux, this either offloads to a blocking thread pool
+///   or falls back to [`std::fs::create_dir`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - A component in the path does not exist
+/// - A component in the path is not a directory
+/// - The process lacks permissions
+/// - The directory already exists
 #[cfg(not(target_os = "linux"))]
 pub async fn create_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     if crate::executor::offload_fs() {
@@ -512,6 +913,21 @@ pub async fn create_dir(path: impl AsRef<std::path::Path>) -> std::io::Result<()
     }
 }
 
+/// Creates a new, empty directory and all its parent components if they don't exist.
+///
+/// This is the async version of [`std::fs::create_dir_all`].
+///
+/// # Platform-specific behavior
+///
+/// - This function internally calls [`create_dir`] for each directory component,
+///   so it inherits the platform-specific behavior of that function.
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - A component in the path cannot be created
+/// - A component in the path is not a directory
+/// - The process lacks permissions
 pub async fn create_dir_all(path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     let path = path.as_ref();
     let mut stack = Vec::new();
@@ -562,6 +978,22 @@ pub async fn create_dir_all(path: impl AsRef<std::path::Path>) -> std::io::Resul
     Ok(())
 }
 
+/// Returns metadata about a file or directory.
+///
+/// This is the async version of [`std::fs::metadata`].
+///
+/// # Platform-specific behavior
+///
+/// - On Linux with io_uring support and glibc/musl v1.2.3+, this uses the `statx` syscall directly
+///   for better async performance.
+/// - On other platforms, this either offloads to a blocking thread pool or falls back
+///   to [`std::fs::metadata`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` does not exist
+/// - The process lacks permissions to access the path
 #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
 pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Metadata> {
     let path = path.as_ref();
@@ -590,6 +1022,20 @@ pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Meta
     }
 }
 
+/// Returns metadata about a file or directory.
+///
+/// This is the async version of [`std::fs::metadata`].
+///
+/// # Platform-specific behavior
+///
+/// - On platforms other than Linux with glibc/musl v1.2.3+, this either offloads
+///   to a blocking thread pool or falls back to [`std::fs::metadata`].
+///
+/// # Errors
+///
+/// This function will return an error in the following situations:
+/// - `path` does not exist
+/// - The process lacks permissions to access the path
 #[cfg(not(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3))))]
 pub async fn metadata(path: impl AsRef<std::path::Path>) -> std::io::Result<Metadata> {
     if crate::executor::offload_fs() {

@@ -27,11 +27,55 @@ use crate::fd_inner::RawOsHandle;
 
 use crate::fs::open_options::OpenOptions;
 
+/// A file handle for asynchronous file I/O operations.
+///
+/// This struct provides async versions of common file operations like reading,
+/// writing, and syncing. It supports both io_uring completion-based I/O on Linux
+/// and blocking thread pool fallback for other platforms.
+///
+/// # Examples
+///
+/// ```ignore
+/// use vibeio::fs::File;
+///
+/// // Open a file for reading
+/// let file = File::open("hello.txt").await?;
+///
+/// // Read from the file
+/// let mut buf = [0u8; 1024];
+/// let (read, buf) = file.read_at(buf, 0).await;
+/// let read = read?;
+///
+/// println!("Read {} bytes", read);
+/// Ok(())
+/// ```
 enum FileIo {
     Completion(ManuallyDrop<InnerRawHandle>),
     Blocking,
 }
 
+/// A file handle for asynchronous file I/O operations.
+///
+/// This struct provides async versions of common file operations like reading,
+/// writing, and syncing. It supports both io_uring completion-based I/O on Linux
+/// and blocking thread pool fallback for other platforms.
+///
+/// # Examples
+///
+/// ```ignore
+/// use vibeio::fs::File;
+///
+/// // Open a file for reading
+/// let file = File::open("hello.txt").await?;
+///
+/// // Read from the file
+/// let mut buf = [0u8; 1024];
+/// let (read, buf) = file.read_at(buf, 0).await;
+/// let read = read?;
+///
+/// println!("Read {} bytes", read);
+/// Ok(())
+/// ```
 pub struct File {
     inner: std::fs::File,
     io: FileIo,
@@ -39,11 +83,59 @@ pub struct File {
 }
 
 impl File {
+    /// Opens a file for reading.
+    ///
+    /// This is the async version of [`std::fs::File::open`].
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `openat` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to [`std::fs::File::open`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - `path` does not exist
+    /// - The process lacks permissions to read the file
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::open("hello.txt").await?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         OpenOptions::new().read(true).open(path).await
     }
 
+    /// Opens a file for writing, creating it if it does not exist.
+    ///
+    /// This is the async version of [`std::fs::File::create`].
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `openat` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to [`std::fs::File::create`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The file cannot be created
+    /// - The process lacks permissions to create the file
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::create("hello.txt").await?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn create(path: impl AsRef<Path>) -> io::Result<Self> {
         OpenOptions::new()
@@ -54,16 +146,25 @@ impl File {
             .await
     }
 
+    /// Returns a new `OpenOptions` builder.
+    ///
+    /// This is a convenience method equivalent to `OpenOptions::new()`.
     #[inline]
     pub fn options() -> OpenOptions {
         OpenOptions::new()
     }
 
+    /// Creates a new `File` from a standard library file.
+    ///
+    /// This is a convenience method equivalent to `File::from_std_with_cursor(inner, 0)`.
     #[inline]
     pub fn from_std(inner: std::fs::File) -> io::Result<Self> {
         Self::from_std_with_cursor(inner, 0)
     }
 
+    /// Creates a new `File` from a standard library file with a specified cursor position.
+    ///
+    /// This is an internal method used to create a `File` with a custom cursor position.
     #[inline]
     pub(crate) fn from_std_with_cursor(inner: std::fs::File, cursor: u64) -> io::Result<Self> {
         let io = if let Some(driver) = current_driver() {
@@ -92,6 +193,7 @@ impl File {
         Ok(Self { inner, io, cursor })
     }
 
+    /// Converts the `File` back into a standard library `std::fs::File`.
     #[inline]
     pub fn into_std(self) -> std::fs::File {
         let mut this = ManuallyDrop::new(self);
@@ -103,6 +205,7 @@ impl File {
         }
     }
 
+    /// Returns the completion handle if this file is using io_uring completion.
     #[inline]
     fn completion_handle(&self) -> Option<&InnerRawHandle> {
         match &self.io {
@@ -111,6 +214,34 @@ impl File {
         }
     }
 
+    /// Reads bytes from the file at a specific offset.
+    ///
+    /// This method reads into the provided buffer starting at the given offset.
+    /// The cursor position of the file is not modified.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `readv` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to synchronous reading.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The read operation fails
+    /// - The offset is invalid
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::open("hello.txt").await?;
+    /// let mut buf = [0u8; 1024];
+    /// let (read, buf) = file.read_at(buf, 0).await;
+    /// let read = read?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn read_at<B: IoBufMut>(&self, mut buf: B, offset: u64) -> (io::Result<usize>, B) {
         if buf.buf_len() == 0 {
@@ -130,6 +261,35 @@ impl File {
         }
     }
 
+    /// Reads bytes from the file at a specific offset, filling the entire buffer.
+    ///
+    /// This method reads into the provided buffer starting at the given offset,
+    /// ensuring the entire buffer is filled. The cursor position of the file is not modified.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `readv` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to synchronous reading.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The read operation fails
+    /// - The offset is invalid
+    /// - The file does not contain enough data to fill the buffer
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::open("hello.txt").await?;
+    /// let mut buf = [0u8; 1024];
+    /// let (result, buf) = file.read_exact_at(buf, 0).await;
+    /// result?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn read_exact_at<B: IoBufMut>(&self, buf: B, mut offset: u64) -> (io::Result<()>, B) {
         let mut buf = IoBufWithCursor::new(buf);
@@ -159,6 +319,34 @@ impl File {
         (Ok(()), buf.into_inner())
     }
 
+    /// Writes bytes to the file at a specific offset.
+    ///
+    /// This method writes from the provided buffer starting at the given offset.
+    /// The cursor position of the file is not modified.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `writev` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to synchronous writing.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The write operation fails
+    /// - The offset is invalid
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::create("hello.txt").await?;
+    /// let buf = b"Hello, world!";
+    /// let (written, buf) = file.write_at(buf.to_vec(), 0).await;
+    /// let written = written?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn write_at<B: IoBuf>(&self, buf: B, offset: u64) -> (io::Result<usize>, B) {
         if buf.buf_len() == 0 {
@@ -177,6 +365,35 @@ impl File {
         }
     }
 
+    /// Writes bytes to the file at a specific offset, writing the entire buffer.
+    ///
+    /// This method writes from the provided buffer starting at the given offset,
+    /// ensuring the entire buffer is written. The cursor position of the file is not modified.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `writev` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to synchronous writing.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The write operation fails
+    /// - The offset is invalid
+    /// - The write operation fails to write the entire buffer
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::create("hello.txt").await?;
+    /// let buf = b"Hello, world!";
+    /// let (result, buf) = file.write_exact_at(buf.to_vec(), 0).await;
+    /// result?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn write_exact_at<B: IoBuf>(&self, buf: B, mut offset: u64) -> (io::Result<()>, B) {
         let mut buf = IoBufWithCursor::new(buf);
@@ -206,6 +423,30 @@ impl File {
         (Ok(()), buf.into_inner())
     }
 
+    /// Synchronizes all data and metadata to disk.
+    ///
+    /// This is the async version of [`std::fs::File::sync_all`].
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `fsync` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to [`std::fs::File::sync_all`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The sync operation fails
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::create("hello.txt").await?;
+    /// file.sync_all().await?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn sync_all(&self) -> io::Result<()> {
         if let Some(handle) = self.completion_handle() {
@@ -226,6 +467,30 @@ impl File {
         }
     }
 
+    /// Synchronizes file data to disk without necessarily syncing metadata.
+    ///
+    /// This is the async version of [`std::fs::File::sync_data`].
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `fsync` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to [`std::fs::File::sync_data`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The sync operation fails
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::create("hello.txt").await?;
+    /// file.sync_data().await?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn sync_data(&self) -> io::Result<()> {
         if let Some(handle) = self.completion_handle() {
@@ -246,6 +511,31 @@ impl File {
         }
     }
 
+    /// Returns the metadata for this file.
+    ///
+    /// This is the async version of [`std::fs::File::metadata`].
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support and glibc/musl v1.2.3+, this uses the `statx` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to [`std::fs::File::metadata`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The metadata operation fails
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::File;
+    ///
+    /// let file = File::open("hello.txt").await?;
+    /// let metadata = file.metadata().await?;
+    /// println!("File size: {} bytes", metadata.len());
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn metadata(&self) -> io::Result<Metadata> {
         if let Some(handle) = self.completion_handle() {

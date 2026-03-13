@@ -20,6 +20,34 @@ use crate::fd_inner::RawOsHandle;
 
 use crate::fs::file::File;
 
+/// Options and flags for opening files.
+///
+/// This struct provides a builder-style interface for configuring how a file
+/// should be opened, similar to [`std::fs::OpenOptions`]. It supports both
+/// io_uring completion-based opening on Linux and blocking thread pool fallback
+/// for other platforms.
+///
+/// # Examples
+///
+/// ```ignore
+/// use vibeio::fs::OpenOptions;
+///
+/// // Open a file for reading
+/// let file = OpenOptions::new()
+///     .read(true)
+///     .open("hello.txt")
+///     .await?;
+///
+/// // Create a new file for writing (truncate if exists)
+/// let file = OpenOptions::new()
+///     .write(true)
+///     .create(true)
+///     .truncate(true)
+///     .open("output.txt")
+///     .await?;
+///
+/// Ok(())
+/// ```
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
     read: bool,
@@ -31,6 +59,9 @@ pub struct OpenOptions {
 }
 
 impl OpenOptions {
+    /// Creates a new `OpenOptions` with default values.
+    ///
+    /// By default, all options are set to `false`.
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -43,42 +74,51 @@ impl OpenOptions {
         }
     }
 
+    /// Sets whether the file should be opened for reading.
     #[inline]
     pub fn read(&mut self, read: bool) -> &mut Self {
         self.read = read;
         self
     }
 
+    /// Sets whether the file should be opened for writing.
     #[inline]
     pub fn write(&mut self, write: bool) -> &mut Self {
         self.write = write;
         self
     }
 
+    /// Sets whether the file should be opened in append mode.
     #[inline]
     pub fn append(&mut self, append: bool) -> &mut Self {
         self.append = append;
         self
     }
 
+    /// Sets whether the file should be truncated if it already exists.
     #[inline]
     pub fn truncate(&mut self, truncate: bool) -> &mut Self {
         self.truncate = truncate;
         self
     }
 
+    /// Sets whether the file should be created if it does not exist.
     #[inline]
     pub fn create(&mut self, create: bool) -> &mut Self {
         self.create = create;
         self
     }
 
+    /// Sets whether the file should be created exclusively (fails if it already exists).
     #[inline]
     pub fn create_new(&mut self, create_new: bool) -> &mut Self {
         self.create_new = create_new;
         self
     }
 
+    /// Validates the open options.
+    ///
+    /// This is an internal method used to ensure the options are valid.
     #[inline]
     fn validate(&self) -> io::Result<()> {
         let writing = self.write || self.append;
@@ -99,6 +139,9 @@ impl OpenOptions {
         Ok(())
     }
 
+    /// Returns the initial cursor position for the file.
+    ///
+    /// If append mode is enabled, the cursor is set to the end of the file.
     #[inline]
     fn initial_cursor_for_append(&self, file: &std::fs::File) -> io::Result<u64> {
         if self.append {
@@ -108,6 +151,33 @@ impl OpenOptions {
         }
     }
 
+    /// Opens a file with the configured options.
+    ///
+    /// This is the async version of [`std::fs::OpenOptions::open`].
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// - On Linux with io_uring support, this uses the `openat` syscall directly.
+    /// - On other platforms, this either offloads to a blocking thread pool or falls back
+    ///   to [`std::fs::OpenOptions::open`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error in the following situations:
+    /// - The file cannot be opened with the specified options
+    /// - The process lacks permissions to open the file
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use vibeio::fs::OpenOptions;
+    ///
+    /// let file = OpenOptions::new()
+    ///     .read(true)
+    ///     .open("hello.txt")
+    ///     .await?;
+    /// Ok(())
+    /// ```
     #[inline]
     pub async fn open(&self, path: impl AsRef<Path>) -> io::Result<File> {
         self.validate()?;
@@ -144,6 +214,9 @@ impl OpenOptions {
         File::from_std_with_cursor(std_file, cursor)
     }
 
+    /// Opens a file in the blocking thread pool.
+    ///
+    /// This is an internal method used when io_uring is not available.
     #[inline]
     async fn open_in_blocking_pool(&self, path: &Path) -> io::Result<std::fs::File> {
         let path = path.to_path_buf();
@@ -176,6 +249,9 @@ impl OpenOptions {
         .map_err(|_| crate::fs::file::blocking_pool_io_error())?
     }
 
+    /// Opens a file synchronously.
+    ///
+    /// This is an internal method used when io_uring is not available.
     #[inline]
     fn open_blocking(&self, path: &Path) -> io::Result<std::fs::File> {
         #[cfg(windows)]
@@ -196,6 +272,9 @@ impl OpenOptions {
         options.open(path)
     }
 
+    /// Builds an `OpenOp` for use with io_uring.
+    ///
+    /// This is an internal method used on Linux with io_uring support.
     #[cfg(target_os = "linux")]
     #[inline]
     fn build_open_op(&self, path: &Path) -> io::Result<OpenOp> {
@@ -242,6 +321,9 @@ impl OpenOptions {
 }
 
 impl Default for OpenOptions {
+    /// Returns the default `OpenOptions`.
+    ///
+    /// This is equivalent to `OpenOptions::new()`.
     #[inline]
     fn default() -> Self {
         Self::new()
