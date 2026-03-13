@@ -1,12 +1,10 @@
-//! Utility types and functions for internal use.
+//! Utility types and functions for `vibeio`.
 //!
 //! This module provides supporting infrastructure for the library:
 //! - `AsyncWrap`: a wrapper that adapts `AsyncRead`/`AsyncWrite` implementations
 //!   to the `tokio::io` traits, enabling interoperability with tokio-based code.
 //! - `supports_completion`: check if the current driver supports completion-based I/O.
 //! - `supports_io_uring`: check if the system supports io_uring with required operations.
-//!
-//! This module is **not** part of the public API and may change without notice.
 
 mod async_wrap;
 
