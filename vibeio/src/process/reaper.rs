@@ -18,12 +18,15 @@ pub(crate) type ZombieReaperMessage = (
     Option<oneshot::Sender<std::io::Result<ExitStatus>>>,
 );
 
+/// Zombie reaper process that waits on child processes asynchronously.
 impl ZombieReaper {
+    /// Creates a new zombie reaper instance.
     #[inline]
     pub(crate) fn new() -> Self {
         Self
     }
 
+    /// Waits on a child process asynchronously.
     #[inline]
     pub(crate) async fn wait(&self, mut child: std::process::Child) -> io::Result<ExitStatus> {
         let try_wait_result = child.try_wait();
@@ -44,6 +47,7 @@ impl ZombieReaper {
         }
     }
 
+    /// Reaps a child process on drop, waiting asynchronously if possible.
     #[inline]
     pub(crate) fn reap_on_drop(&self, mut child: std::process::Child) {
         if let Ok(Some(_)) = child.try_wait() {
