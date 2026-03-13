@@ -729,6 +729,7 @@ impl Child {
     /// The future completes when the process has fully exited and been reaped.
     #[inline]
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
+        let _ = self.stdin.take(); // Similarly to std::process::Child::wait
         let child = self.take_inner()?;
         self.reaper.wait(child).await
     }
@@ -746,6 +747,7 @@ impl Child {
 impl Drop for Child {
     #[inline]
     fn drop(&mut self) {
+        let _ = self.stdin.take(); // Similarly to std::process::Child::wait
         if let Some(child) = self.inner.take() {
             self.reaper.reap_on_drop(child);
         }

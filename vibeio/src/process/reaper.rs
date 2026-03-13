@@ -29,19 +29,13 @@ impl ZombieReaper {
     /// Waits on a child process asynchronously.
     #[inline]
     pub(crate) async fn wait(&self, mut child: std::process::Child) -> io::Result<ExitStatus> {
-        let try_wait_result = child.try_wait();
-        match try_wait_result {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {}
-            Err(e) => return Err(e),
-        }
         if let Some(reaper_send) = current_zombie_reaper().await {
             // Send the child to the zombie reaper to wait on it asynchronously.
             let (sender, recver) = oneshot::async_channel();
             let _ = reaper_send.send((child, Some(sender))).await;
-            recver.await.map_err(|_| {
-                std::io::Error::other("zombie reaper error")
-            })?
+            recver
+                .await
+                .map_err(|_| std::io::Error::other("zombie reaper error"))?
         } else {
             child.wait()
         }
@@ -274,11 +268,24 @@ async fn zombie_reaper_fn_unix(rx: async_channel::Receiver<ZombieReaperMessage>)
     loop {
         let select = futures_util::future::select(Box::pin(rx.recv()), Box::pin(signal.recv()));
         match select.await {
-            Either::Left((msg, _)) => {
-                let Ok(msg) = msg else {
+            Either::Left((process, _)) => {
+                let Ok(mut process) = process else {
                     break;
                 };
-                processes.push(msg);
+                let try_wait = process.0.try_wait();
+                match try_wait {
+                    Ok(Some(exit_code)) => {
+                        if let Some(sender) = process.1 {
+                            let _ = sender.send(Ok(exit_code));
+                        }
+                    }
+                    Ok(None) => processes.push(process),
+                    Err(err) => {
+                        if let Some(sender) = process.1 {
+                            let _ = sender.send(Err(err));
+                        }
+                    }
+                }
             }
             Either::Right((signal, _)) => {
                 if signal.is_err() {
