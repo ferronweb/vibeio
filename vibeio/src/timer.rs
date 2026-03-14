@@ -21,8 +21,10 @@ impl Timer {
         }
     }
 
-    pub fn submit(&self, duration: Duration, waker: Waker) -> Option<TimerHandle> {
-        let millis = duration.as_millis() as u64;
+    pub fn submit(&self, deadline: Instant, waker: Waker) -> Option<TimerHandle> {
+        let millis = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis() as u64;
         if millis < 1 {
             // If the duration is less than 1 millisecond, wake the task immediately
             // One tick is equivalent to 1 millisecond.
@@ -101,7 +103,7 @@ mod tests {
         let waker = mock_waker(counter.clone());
 
         // Submit a timer for 50 ms
-        let _handle = timer.submit(Duration::from_millis(50), waker);
+        let _handle = timer.submit(Instant::now() + Duration::from_millis(50), waker);
 
         // The deadline should be Some and close to 50 ms
         let (deadline, _woken_up) = timer.spin_and_get_deadline();
@@ -118,7 +120,7 @@ mod tests {
 
         // Submit a timer and then cancel it
         let handle = timer
-            .submit(Duration::from_millis(100), waker)
+            .submit(Instant::now() + Duration::from_millis(100), waker)
             .expect("Failed to submit timer");
         timer.cancel(handle);
 
@@ -134,7 +136,7 @@ mod tests {
         let waker = mock_waker(counter.clone());
 
         // Submit a timer for 1 ms
-        let _handle = timer.submit(Duration::from_millis(1), waker);
+        let _handle = timer.submit(Instant::now() + Duration::from_millis(1), waker);
 
         // Wait a bit and spin the wheel
         std::thread::sleep(Duration::from_millis(5));

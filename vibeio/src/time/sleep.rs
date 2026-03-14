@@ -75,8 +75,13 @@ impl Sleep {
     /// from `Instant::now()` to the provided `deadline`.
     #[inline]
     pub fn sleep_until(deadline: Instant) -> Self {
-        let duration = deadline.saturating_duration_since(Instant::now());
-        Self::new(duration)
+        Self {
+            handle: None,
+            fired: Cell::new(false),
+            yield_scheduled: Cell::new(false),
+            zero_behavior: ZeroBehavior::Immediate,
+            deadline,
+        }
     }
 
     /// Reset the sleep to a new absolute `deadline` (`Instant`).
@@ -113,38 +118,14 @@ impl Future for Sleep {
             return Poll::Ready(());
         }
 
-        let duration = this.deadline.saturating_duration_since(Instant::now());
         if this.handle.is_none() {
-            // First poll: if duration resolution is below 1ms, handle specially.
-            let millis = duration.as_millis() as u64;
-            if millis < 1 {
-                match this.zero_behavior {
-                    ZeroBehavior::Immediate => {
-                        this.fired.set(true);
-                        return Poll::Ready(());
-                    }
-                    ZeroBehavior::Yield => {
-                        // If we haven't scheduled the one-shot yield yet, schedule it
-                        // by waking ourselves and return Pending. On the subsequent
-                        // poll we will observe `yield_scheduled` and complete.
-                        if !this.yield_scheduled.replace(true) {
-                            cx.waker().wake_by_ref();
-                            return Poll::Pending;
-                        } else {
-                            this.fired.set(true);
-                            return Poll::Ready(());
-                        }
-                    }
-                }
-            }
-
-            // Normal path: schedule with runtime timer.
+            // Schedule with runtime timer.
             let timer_rc: Rc<Timer> =
                 current_timer().expect("Sleep::poll called outside of runtime");
 
             // The timer driver expects a task `Waker`. We clone the task waker here.
             let waker = cx.waker().clone();
-            match timer_rc.submit(duration, waker) {
+            match timer_rc.submit(this.deadline, waker) {
                 Some(handle) => {
                     this.handle = Some(handle);
                     // Not fired yet.
@@ -152,8 +133,24 @@ impl Future for Sleep {
                 }
                 None => {
                     // Timer driver woke us immediately (duration rounded to 0 or similar).
-                    this.fired.set(true);
-                    Poll::Ready(())
+                    match this.zero_behavior {
+                        ZeroBehavior::Immediate => {
+                            this.fired.set(true);
+                            Poll::Ready(())
+                        }
+                        ZeroBehavior::Yield => {
+                            // If we haven't scheduled the one-shot yield yet, schedule it
+                            // by waking ourselves and return Pending. On the subsequent
+                            // poll we will observe `yield_scheduled` and complete.
+                            if !this.yield_scheduled.replace(true) {
+                                cx.waker().wake_by_ref();
+                                Poll::Pending
+                            } else {
+                                this.fired.set(true);
+                                Poll::Ready(())
+                            }
+                        }
+                    }
                 }
             }
         } else {
@@ -175,7 +172,7 @@ impl Future for Sleep {
                     if let Some(timer_rc) = current_timer() {
                         timer_rc.cancel(handle);
                         let waker = cx.waker().clone();
-                        match timer_rc.submit(duration, waker) {
+                        match timer_rc.submit(this.deadline, waker) {
                             Some(handle) => {
                                 this.handle = Some(handle);
                                 // Not fired yet.
