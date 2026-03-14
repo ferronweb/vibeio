@@ -23,7 +23,7 @@ impl Timer {
 
     pub fn submit(&self, deadline: Instant, waker: Waker) -> Option<TimerHandle> {
         let millis = deadline
-            .saturating_duration_since(Instant::now())
+            .saturating_duration_since((&*self.instant.borrow()).to_owned())
             .as_millis() as u64;
         if millis < 1 {
             // If the duration is less than 1 millisecond, wake the task immediately
