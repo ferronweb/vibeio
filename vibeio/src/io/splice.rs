@@ -55,15 +55,15 @@ pub async fn splice<'a, 'b>(
 pub async fn splice_exact<'a, 'b>(
     from: &'a impl AsRawFd,
     to: &'b impl AsInnerRawHandle<'b>,
-    len: usize,
-) -> Result<usize, std::io::Error> {
+    len: u64,
+) -> Result<u64, std::io::Error> {
     let mut total = 0;
     while total < len {
-        let n = splice(from, to, len - total).await?;
+        let n = splice(from, to, (len - total).min(usize::MAX as u64) as usize).await?;
         if n == 0 {
             break;
         }
-        total += n;
+        total += n as u64;
     }
 
     Ok(total)
@@ -77,8 +77,8 @@ pub async fn splice_exact<'a, 'b>(
 pub async fn sendfile_exact<'a, 'b>(
     from: &'a impl AsRawFd,
     to: &'b impl AsInnerRawHandle<'b>,
-    len: usize,
-) -> Result<usize, std::io::Error> {
+    len: u64,
+) -> Result<u64, std::io::Error> {
     // splice() requires at least one of the file descriptors to be a pipe.
     // Therefore, we need to create a pipe and use it as the destination.
     let mut fds: Box<[MaybeUninit<RawFd>]> = Box::new_uninit_slice(2);
@@ -109,23 +109,24 @@ pub async fn sendfile_exact<'a, 'b>(
     let mut total_to_socket = 0;
     let mut file_eof = false;
     while (total_from_file < len && !file_eof) || total_to_socket < total_from_file {
-        let splice_from_file_len = len - total_from_file;
+        let splice_from_file_len = (len - total_from_file).min(usize::MAX as u64) as usize;
         if !file_eof && splice_from_file_len > 0 {
-            let n = splice(from, &pipe_writer_handle, len - total_from_file).await?;
+            let n = splice(from, &pipe_writer_handle, splice_from_file_len).await?;
             if n == 0 {
                 file_eof = true;
             } else {
-                total_from_file += n;
+                total_from_file += n as u64;
             }
         }
 
-        let splice_to_socket_len = total_from_file - total_to_socket;
+        let splice_to_socket_len =
+            (total_from_file - total_to_socket).min(usize::MAX as u64) as usize;
         if splice_to_socket_len > 0 {
-            let n = splice(&pipe_reader, to, total_from_file - total_to_socket).await?;
+            let n = splice(&pipe_reader, to, splice_to_socket_len).await?;
             if n == 0 {
                 break;
             }
-            total_to_socket += n;
+            total_to_socket += n as u64;
         }
     }
 
