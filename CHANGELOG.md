@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` 0.2.2
+
+**Released in March 17, 2026**
+
+- Fixed some compilation errors on Linux targets with musl libc
+ 
 ## `vibeio` 0.2.1
 
 **Released in March 17, 2026**

@@ -3,8 +3,8 @@ members = ["vibeio", "examples", "vibeio-hyper"]
 resolver = "2"
 
 [workspace.dependencies]
-vibeio = "=0.2.1"
-vibeio-hyper = "=0.2.1"
+vibeio = "=0.2.2"
+vibeio-hyper = "=0.2.2"
 shiba = "0.1.1"
 
 [patch.crates-io]
