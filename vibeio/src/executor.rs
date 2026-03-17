@@ -59,6 +59,7 @@ thread_local! {
 struct JoinState<T> {
     output: Option<T>,
     waker: Option<Waker>,
+    canceled: bool,
 }
 
 /// A handle to a spawned asynchronous task.
@@ -89,6 +90,11 @@ impl<T> JoinHandle<T> {
     fn try_take_output(&self) -> Option<T> {
         let mut state = self.state.borrow_mut();
         state.output.take()
+    }
+
+    #[inline]
+    pub fn cancel(self) {
+        (&mut *self.state.borrow_mut()).canceled = true;
     }
 }
 
@@ -314,10 +320,23 @@ impl RuntimeInner {
         let state = Rc::new(RefCell::new(JoinState {
             output: None,
             waker: None,
+            canceled: false,
         }));
         let state_for_task = state.clone();
         let future = async move {
-            let output = future.await;
+            let select = futures_util::future::select(
+                std::future::poll_fn(|_| {
+                    if state_for_task.borrow().canceled {
+                        std::task::Poll::Ready(())
+                    } else {
+                        std::task::Poll::Pending
+                    }
+                }),
+                Box::pin(future),
+            );
+            let futures_util::future::Either::Right((output, _)) = select.await else {
+                return;
+            };
             let mut state = state_for_task.borrow_mut();
             state.output = Some(output);
             if let Some(waker) = state.waker.take() {
