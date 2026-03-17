@@ -391,24 +391,23 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
             iov_len: buf.buf_len(),
         });
 
-        let msg = libc::msghdr {
-            msg_name: self
-                .completion_addr_storage
+        // SAFETY: We know the fields are initialized and the struct is zeroed
+        let mut msghdr = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        msghdr.msg_name = self
+            .completion_addr_storage
+            .as_mut()
+            .expect("completion_addr_storage should be initialized")
+            as *mut libc::sockaddr_storage as *mut libc::c_void;
+        msghdr.msg_namelen = self.completion_addr_len;
+        msghdr.msg_iov =
+            self.completion_iovec
                 .as_mut()
-                .expect("completion_addr_storage should be initialized")
-                as *mut libc::sockaddr_storage as *mut libc::c_void,
-            msg_namelen: self.completion_addr_len,
-            msg_iov: self
-                .completion_iovec
-                .as_mut()
-                .expect("completion_iovec should be initialized")
-                as *mut libc::iovec,
-            msg_iovlen: 1,
-            msg_control: std::ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: 0,
-        };
-        self.completion_msghdr = Some(msg);
+                .expect("completion_iovec should be initialized") as *mut libc::iovec;
+        msghdr.msg_iovlen = 1;
+        msghdr.msg_control = std::ptr::null_mut();
+        msghdr.msg_controllen = 1;
+        msghdr.msg_flags = 1;
+        self.completion_msghdr = Some(msghdr);
 
         let entry = opcode::SendMsg::new(
             types::Fd(self.handle.handle),
