@@ -419,7 +419,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "vibeio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "crossbeam-queue",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "vibeio-hyper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hyper",
  "tokio",

@@ -94,7 +94,7 @@ impl<T> JoinHandle<T> {
 
     #[inline]
     pub fn cancel(self) {
-        (&mut *self.state.borrow_mut()).canceled = true;
+        self.state.borrow_mut().canceled = true;
     }
 }
 
