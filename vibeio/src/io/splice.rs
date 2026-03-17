@@ -23,7 +23,7 @@
 //! ```
 
 use std::{
-    mem::MaybeUninit,
+    mem::ManuallyDrop,
     os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
 };
 
@@ -44,7 +44,7 @@ pub async fn splice<'a, 'b>(
     let to_handle = to.as_inner_raw_handle();
 
     let mut op = SpliceOp::new(from_handle, to_handle, len);
-    let result = std::future::poll_fn(|cx| to_handle.poll_op(cx, &mut op)).await;
+    let result = std::future::poll_fn(move |cx| to_handle.poll_op(cx, &mut op)).await;
     result
 }
 
@@ -81,29 +81,16 @@ pub async fn sendfile_exact<'a, 'b>(
 ) -> Result<u64, std::io::Error> {
     // splice() requires at least one of the file descriptors to be a pipe.
     // Therefore, we need to create a pipe and use it as the destination.
-    let mut fds: Box<[MaybeUninit<RawFd>]> = Box::new_uninit_slice(2);
-    let fds = unsafe {
-        libc::pipe(fds.as_mut_ptr().cast::<RawFd>());
-        fds.assume_init()
-    };
+    let mut fds: [RawFd; 2] = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        // pipe2 failed, can't continue
+        return Err(std::io::Error::last_os_error());
+    }
     let pipe_reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
     let pipe_writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
 
     // We only need to poll the pipe writer for writability.
-    let pipe_writer_handle = InnerRawHandle::new(pipe_writer.as_raw_fd(), Interest::WRITABLE)?;
-    if !pipe_writer_handle.uses_completion() {
-        // Set the pipe write side to non-blocking mode.
-        let flags = unsafe { libc::fcntl(pipe_writer.as_raw_fd(), libc::F_GETFL) };
-        if flags != -1 {
-            unsafe {
-                libc::fcntl(
-                    pipe_writer.as_raw_fd(),
-                    libc::F_SETFL,
-                    flags | libc::O_NONBLOCK,
-                )
-            };
-        }
-    }
+    let pipe_writer_handle = WriteOwnedFd::new(pipe_writer)?;
 
     let mut total_from_file = 0;
     let mut total_to_socket = 0;
@@ -130,5 +117,48 @@ pub async fn sendfile_exact<'a, 'b>(
         }
     }
 
+    drop(pipe_reader);
+    drop(pipe_writer_handle);
+
     Ok(total_to_socket)
+}
+
+struct WriteOwnedFd {
+    _writer: OwnedFd,
+    handle: ManuallyDrop<InnerRawHandle>,
+}
+
+impl WriteOwnedFd {
+    fn new(writer: OwnedFd) -> std::io::Result<Self> {
+        let handle =
+            ManuallyDrop::new(InnerRawHandle::new(writer.as_raw_fd(), Interest::WRITABLE)?);
+        if !handle.uses_completion() {
+            // Set the pipe write side to non-blocking mode.
+            let flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) };
+            if flags != -1 {
+                unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
+            }
+        }
+        Ok(Self {
+            _writer: writer,
+            handle,
+        })
+    }
+}
+
+impl<'a> AsInnerRawHandle<'a> for WriteOwnedFd {
+    #[inline]
+    fn as_inner_raw_handle(&'a self) -> &'a InnerRawHandle {
+        &self.handle
+    }
+}
+
+impl Drop for WriteOwnedFd {
+    #[inline]
+    fn drop(&mut self) {
+        // Safety: The struct is dropped after the handle is dropped.
+        unsafe {
+            ManuallyDrop::drop(&mut self.handle);
+        }
+    }
 }
