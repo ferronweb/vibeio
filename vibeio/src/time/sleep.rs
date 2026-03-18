@@ -42,6 +42,8 @@ pub struct Sleep {
     zero_behavior: ZeroBehavior,
     /// The absolute deadline when this sleep should complete.
     deadline: Instant,
+    /// The timer used to schedule the sleep.
+    timer: Option<Rc<Timer>>,
 }
 
 impl Sleep {
@@ -54,6 +56,7 @@ impl Sleep {
             yield_scheduled: Cell::new(false),
             zero_behavior: ZeroBehavior::Immediate,
             deadline: Instant::now() + duration,
+            timer: None,
         }
     }
 
@@ -66,6 +69,7 @@ impl Sleep {
             yield_scheduled: Cell::new(false),
             zero_behavior,
             deadline: Instant::now() + duration,
+            timer: None,
         }
     }
 
@@ -81,6 +85,7 @@ impl Sleep {
             yield_scheduled: Cell::new(false),
             zero_behavior: ZeroBehavior::Immediate,
             deadline,
+            timer: None,
         }
     }
 
@@ -120,8 +125,9 @@ impl Future for Sleep {
 
         if this.handle.is_none() {
             // Schedule with runtime timer.
-            let timer_rc: Rc<Timer> =
-                current_timer().expect("Sleep::poll called outside of runtime");
+            let timer_rc = this.timer.get_or_insert_with(|| {
+                current_timer().expect("Sleep::poll called outside of runtime")
+            });
 
             // The timer driver expects a task `Waker`. We clone the task waker here.
             let waker = cx.waker().clone();
@@ -197,7 +203,7 @@ impl Drop for Sleep {
         // If we still have an outstanding timer handle, cancel it so the timer
         // won't hold onto our waker.
         if let Some(handle) = self.handle.take() {
-            if let Some(timer_rc) = current_timer() {
+            if let Some(timer_rc) = self.timer.take() {
                 timer_rc.cancel(handle);
             }
         }

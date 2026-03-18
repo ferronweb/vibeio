@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not released yet**
+
+- Fixed some panics when dropping the runtime with timer structs
+
 ## `vibeio` 0.2.2
 
 **Released in March 17, 2026**

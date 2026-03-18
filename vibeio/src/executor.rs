@@ -626,7 +626,7 @@ mod tests {
     fn runtime_spawn_returns_join_handle() {
         let runtime = crate::executor::Runtime::new(AnyDriver::new_mock());
         let handle = runtime.spawn(async { 7usize });
-        let value = runtime.block_on(async move { handle.await });
+        let value = runtime.block_on(handle);
         assert_eq!(value, 7);
     }
 
