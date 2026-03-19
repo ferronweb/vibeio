@@ -87,6 +87,12 @@ pub trait Driver {
     #[inline]
     fn flush(&self) {}
 
+    /// Returns whether the executor should call `flush` after polling a task batch.
+    #[inline]
+    fn should_flush(&self) -> bool {
+        true
+    }
+
     /// Waits for the I/O.
     fn wait(&self, timeout: Option<Duration>);
 
@@ -238,6 +244,19 @@ impl AnyDriver {
             AnyDriver::Mock(driver) => driver.flush(),
             #[cfg(target_os = "linux")]
             AnyDriver::IoUring(driver) => driver.flush(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn should_flush(&self) -> bool {
+        match self {
+            #[cfg(windows)]
+            AnyDriver::Iocp(driver) => driver.should_flush(),
+            #[cfg(unix)]
+            AnyDriver::Mio(driver) => driver.should_flush(),
+            AnyDriver::Mock(driver) => driver.should_flush(),
+            #[cfg(target_os = "linux")]
+            AnyDriver::IoUring(driver) => driver.should_flush(),
         }
     }
 

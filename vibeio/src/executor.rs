@@ -734,7 +734,7 @@ impl Runtime {
                 }
             }
 
-            if !next_task_taken {
+            if !next_task_taken && inner.driver.should_flush() {
                 inner.driver.flush();
             }
         }

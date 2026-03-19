@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::io::{self, ErrorKind};
 use std::os::fd::RawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc as StdArc;
 use std::task::Waker;
 use std::time::Duration;
@@ -70,6 +71,7 @@ pub struct UringDriver {
     state: RefCell<DriverState>,
     interrupt_eventfd: Option<StdArc<RawFd>>,
     interrupt_buffer: RefCell<Box<[u8; 8]>>,
+    pending_submissions: AtomicBool,
     ext_arg: bool,
     timespec: RefCell<Box<Timespec>>,
 }
@@ -102,6 +104,7 @@ impl UringDriver {
             }),
             interrupt_eventfd: Some(StdArc::new(eventfd)),
             interrupt_buffer: RefCell::new(Box::new([0; 8])),
+            pending_submissions: AtomicBool::new(false),
             ext_arg,
             timespec: RefCell::new(Box::new(Timespec::new())),
         };
@@ -176,6 +179,8 @@ impl UringDriver {
             sq.push(&entry)
                 .map_err(|_| io::Error::other("io_uring submission queue is full"))?;
         }
+
+        self.pending_submissions.store(true, Ordering::Release);
 
         Ok(())
     }
@@ -256,10 +261,15 @@ impl UringDriver {
                     ring.submit()
                 };
                 Self::submitter_call_result(submit_result)?;
+                self.pending_submissions
+                    .store(!ring.submission().is_empty(), Ordering::Release);
+            } else {
+                self.pending_submissions.store(false, Ordering::Release);
             }
         }
 
         let mut interrupt = false;
+        let mut wakers = Vec::new();
 
         {
             let mut ring = self.ring.borrow_mut();
@@ -283,31 +293,43 @@ impl UringDriver {
                 let key_kind = Self::decode_key_kind(key);
 
                 if key_kind == POLL_KEY_KIND {
-                    if let Some(HandleRegistration::Poll(registration)) =
-                        state.registrations.get_mut(token.0)
-                    {
-                        registration.poll_armed = false;
-                        if let Some(waiter) = registration.waiter.take() {
-                            waiter.wake();
+                    let waiter = match state.registrations.get_mut(token.0) {
+                        Some(HandleRegistration::Poll(registration)) => {
+                            registration.poll_armed = false;
+                            registration.waiter.take()
                         }
+                        _ => None,
+                    };
+                    if let Some(waiter) = waiter {
+                        wakers.push(waiter);
                     }
                     continue;
                 }
 
-                if let Some(completion) = state.completions.get_mut(token.0) {
-                    completion.completed = Some(result);
-                    if let Some(waiter) = completion.waiter.take() {
-                        waiter.wake();
+                let mut remove_completion = false;
+                let waiter = match state.completions.get_mut(token.0) {
+                    Some(completion) => {
+                        completion.completed = Some(result);
+                        remove_completion = completion.ignored_data.is_some();
+                        completion.waiter.take()
                     }
-                    if completion.ignored_data.is_some() {
-                        state.completions.remove(token.0);
-                    }
+                    None => None,
+                };
+                if remove_completion {
+                    state.completions.remove(token.0);
+                }
+                if let Some(waiter) = waiter {
+                    wakers.push(waiter);
                 }
             }
         }
 
         if interrupt {
             self.submit_interrupt();
+        }
+
+        for waker in wakers {
+            waker.wake();
         }
 
         Ok(())
@@ -350,6 +372,11 @@ impl Driver for UringDriver {
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => panic!("io_uring submit failed while processing I/O completions: {err}"),
         }
+    }
+
+    #[inline]
+    fn should_flush(&self) -> bool {
+        self.pending_submissions.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -461,10 +488,10 @@ impl Driver for UringDriver {
         interest: Interest,
     ) -> Result<(), io::Error> {
         let token = handle.token();
-        {
-            let state = self.state.borrow();
-            match state.registrations.get(token.0) {
-                Some(HandleRegistration::Poll(_)) => (),
+        let poll_spec = {
+            let mut state = self.state.borrow_mut();
+            let registration = match state.registrations.get_mut(token.0) {
+                Some(HandleRegistration::Poll(registration)) => registration,
                 Some(HandleRegistration::Completion) => {
                     return Err(io::Error::new(
                         ErrorKind::Unsupported,
@@ -480,26 +507,6 @@ impl Driver for UringDriver {
                         format!("I/O token {} is not registered with this driver", token.0),
                     ));
                 }
-            }
-        }
-
-        let poll_spec = {
-            let mut state = self.state.borrow_mut();
-            let registration = state.registrations.get_mut(token.0).ok_or_else(|| {
-                io::Error::new(
-                    ErrorKind::NotFound,
-                    format!("I/O token {} is not registered with this driver", token.0),
-                )
-            })?;
-
-            let HandleRegistration::Poll(registration) = registration else {
-                return Err(io::Error::new(
-                    ErrorKind::Unsupported,
-                    format!(
-                        "I/O token {} is registered for completion mode, not poll mode",
-                        token.0
-                    ),
-                ));
             };
 
             Self::update_waiter(&mut registration.waiter, waker);
@@ -575,7 +582,7 @@ impl Driver for UringDriver {
     fn set_completion_waker(&self, token: usize, waker: Waker) {
         let mut state = self.state.borrow_mut();
         if let Some(c) = state.completions.get_mut(token) {
-            c.waiter = Some(waker);
+            Self::update_waiter(&mut c.waiter, waker);
         }
     }
 
