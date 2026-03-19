@@ -475,7 +475,7 @@ impl Op for AcceptOp<'_> {
                 }
             };
 
-            return Poll::Ready(Ok((RawOsHandle::Socket(accept_socket as u64), address)));
+            return Poll::Ready(Ok((RawOsHandle::Socket(accept_socket as _), address)));
         }
     }
 

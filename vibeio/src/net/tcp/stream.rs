@@ -196,7 +196,7 @@ fn new_socket(
         let _ = unsafe { WinSock::WSACleanup() };
         return Err(err);
     }
-    let stream = unsafe { std::net::TcpStream::from_raw_socket(socket as u64) };
+    let stream = unsafe { std::net::TcpStream::from_raw_socket(socket as _) };
     Ok((stream, raw_addr, raw_addr_len))
 }
 
