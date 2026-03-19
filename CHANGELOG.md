@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` 0.2.5
+
+**Released in March 19, 2026**
+
+- Performed some performance optimizations
+
 ## `vibeio` 0.2.4
 
 **Released in March 19, 2026**
