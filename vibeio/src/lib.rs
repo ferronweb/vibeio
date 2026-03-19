@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # vibeio
 //!
 //! A high-performance, cross-platform asynchronous runtime for Rust.
