@@ -33,16 +33,15 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crossbeam_queue::SegQueue;
-use futures_util::FutureExt;
 use slab::Slab;
 
 #[cfg(feature = "blocking-default")]
 use crate::blocking::DefaultBlockingThreadPool;
 use crate::blocking::{BlockingThreadPool, SpawnBlockingError};
-use crate::driver::AnyDriver;
+use crate::driver::{AnyDriver, AnyInterruptor};
 #[cfg(feature = "process")]
 use crate::process::{start_zombie_reaper, ZombieReaperMessage};
 use crate::task::Task;
@@ -60,6 +59,51 @@ struct JoinState<T> {
     output: Option<T>,
     waker: Option<Waker>,
     canceled: bool,
+}
+
+#[inline]
+fn update_waker_slot(waiter_slot: &mut Option<Waker>, waker: &Waker) {
+    if !waiter_slot
+        .as_ref()
+        .is_some_and(|waiter| waiter.will_wake(waker))
+    {
+        *waiter_slot = Some(waker.clone());
+    }
+}
+
+struct SpawnFuture<F, T> {
+    future: F,
+    state: Rc<RefCell<JoinState<T>>>,
+}
+
+impl<F, T> Future for SpawnFuture<F, T>
+where
+    F: Future<Output = T>,
+{
+    type Output = ();
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: once `self` is pinned we never move `future`.
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if this.state.borrow().canceled {
+            return Poll::Ready(());
+        }
+
+        // SAFETY: `future` is pinned together with `self`.
+        match unsafe { Pin::new_unchecked(&mut this.future) }.poll(cx) {
+            Poll::Ready(output) => {
+                let mut state = this.state.borrow_mut();
+                state.output = Some(output);
+                if let Some(waker) = state.waker.take() {
+                    waker.wake();
+                }
+                Poll::Ready(())
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 /// A handle to a spawned asynchronous task.
@@ -83,15 +127,6 @@ impl<T> JoinHandle<T> {
         Self { state }
     }
 
-    /// Attempts to retrieve the task's output without blocking.
-    ///
-    /// Returns `Some(output)` if the task has completed, or `None` if it's still running.
-    #[inline]
-    fn try_take_output(&self) -> Option<T> {
-        let mut state = self.state.borrow_mut();
-        state.output.take()
-    }
-
     #[inline]
     pub fn cancel(self) {
         self.state.borrow_mut().canceled = true;
@@ -107,9 +142,100 @@ impl<T> Future for JoinHandle<T> {
         if let Some(output) = state.output.take() {
             Poll::Ready(output)
         } else {
-            state.waker = Some(cx.waker().clone());
+            update_waker_slot(&mut state.waker, cx.waker());
             Poll::Pending
         }
+    }
+}
+
+struct BlockOnNotify {
+    ready: AtomicBool,
+    thread_id: std::thread::ThreadId,
+    interruptor: AnyInterruptor,
+    waiting: Arc<AtomicBool>,
+    interrupt_pending: Arc<AtomicBool>,
+}
+
+impl BlockOnNotify {
+    #[inline]
+    fn new(
+        interruptor: AnyInterruptor,
+        waiting: Arc<AtomicBool>,
+        interrupt_pending: Arc<AtomicBool>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            ready: AtomicBool::new(true),
+            thread_id: std::thread::current().id(),
+            interruptor,
+            waiting,
+            interrupt_pending,
+        })
+    }
+
+    #[inline]
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn take_ready(&self) -> bool {
+        self.ready.swap(false, Ordering::AcqRel)
+    }
+
+    #[inline]
+    fn wake_by_ref(&self) {
+        self.ready.store(true, Ordering::Release);
+
+        if std::thread::current().id() != self.thread_id
+            && self.waiting.load(Ordering::Acquire)
+            && !self.interrupt_pending.swap(true, Ordering::AcqRel)
+        {
+            self.interruptor.interrupt();
+        }
+    }
+
+    #[inline]
+    fn waker(self: &Arc<Self>) -> Waker {
+        // SAFETY: the vtable methods correctly clone/drop the Arc reference count.
+        unsafe { Waker::from_raw(Self::raw_waker(Arc::into_raw(Arc::clone(self)) as *const ())) }
+    }
+
+    #[inline]
+    unsafe fn raw_waker(ptr: *const ()) -> RawWaker {
+        RawWaker::new(ptr, &Self::VTABLE)
+    }
+
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        Self::raw_waker_clone,
+        Self::raw_waker_wake,
+        Self::raw_waker_wake_by_ref,
+        Self::raw_waker_drop,
+    );
+
+    #[inline]
+    unsafe fn raw_waker_clone(ptr: *const ()) -> RawWaker {
+        let notify = Arc::<Self>::from_raw(ptr as *const Self);
+        let cloned = Arc::clone(&notify);
+        let _ = Arc::into_raw(notify);
+        Self::raw_waker(Arc::into_raw(cloned) as *const ())
+    }
+
+    #[inline]
+    unsafe fn raw_waker_wake(ptr: *const ()) {
+        let notify = Arc::<Self>::from_raw(ptr as *const Self);
+        notify.wake_by_ref();
+    }
+
+    #[inline]
+    unsafe fn raw_waker_wake_by_ref(ptr: *const ()) {
+        let notify = Arc::<Self>::from_raw(ptr as *const Self);
+        notify.wake_by_ref();
+        let _ = Arc::into_raw(notify);
+    }
+
+    #[inline]
+    unsafe fn raw_waker_drop(ptr: *const ()) {
+        drop(Arc::<Self>::from_raw(ptr as *const Self));
     }
 }
 
@@ -283,6 +409,7 @@ pub(crate) struct RuntimeInner {
     token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
     waiting: Arc<AtomicBool>,
+    interrupt_pending: Arc<AtomicBool>,
     blocking_pool: Option<Box<dyn BlockingThreadPool>>,
     #[cfg(feature = "fs")]
     fs_offload: bool,
@@ -322,28 +449,10 @@ impl RuntimeInner {
             waker: None,
             canceled: false,
         }));
-        let state_for_task = state.clone();
-        let future = async move {
-            let select = futures_util::future::select(
-                std::future::poll_fn(|_| {
-                    if state_for_task.borrow().canceled {
-                        std::task::Poll::Ready(())
-                    } else {
-                        std::task::Poll::Pending
-                    }
-                }),
-                Box::pin(future),
-            );
-            let futures_util::future::Either::Right((output, _)) = select.await else {
-                return;
-            };
-            let mut state = state_for_task.borrow_mut();
-            state.output = Some(output);
-            if let Some(waker) = state.waker.take() {
-                waker.wake();
-            }
-        }
-        .boxed_local();
+        let future = Box::pin(SpawnFuture {
+            future,
+            state: state.clone(),
+        });
 
         let mut slab = self.token_to_task.borrow_mut();
         let vacant_slab_entry = slab.vacant_entry();
@@ -357,6 +466,7 @@ impl RuntimeInner {
             thread_id: std::thread::current().id(),
             interruptor: self.driver.get_interruptor(),
             waiting: Arc::downgrade(&self.waiting),
+            interrupt_pending: Arc::downgrade(&self.interrupt_pending),
             token: vacant_slab_entry.key(),
         });
         vacant_slab_entry.insert(task.clone());
@@ -392,13 +502,17 @@ impl RuntimeInner {
     /// Drain ready tasks into the given batch.
     #[inline]
     fn drain_ready(&self, batch: &mut Vec<Arc<Task>>) {
-        let slab = self.token_to_task.borrow();
-        while let Some(token) = self.remote_queue.pop() {
-            if let Some(task) = slab.get(token) {
-                // SAFETY: this runtime is single-threaded. All ready-queue mutation goes
-                // through runtime/task wake paths on the same thread.
-                unsafe {
-                    (&mut *self.queue.get()).push_front(task.clone());
+        let mut budget = 256;
+        if budget != 0 {
+            let slab = self.token_to_task.borrow();
+            while budget != 0 {
+                let Some(token) = self.remote_queue.pop() else {
+                    break;
+                };
+                if let Some(task) = slab.get(token) {
+                    task.mark_dequeued();
+                    batch.push(task.clone());
+                    budget -= 1;
                 }
             }
         }
@@ -406,15 +520,30 @@ impl RuntimeInner {
         // SAFETY: this runtime is single-threaded and we only hold this mutable
         // access while draining the queue before polling any task futures.
         let queue = unsafe { &mut *self.queue.get() };
-        let mut budget = 256;
-        while let Some(task) = queue.pop_front() {
+        while budget != 0 {
+            let Some(task) = queue.pop_front() else {
+                break;
+            };
             task.mark_dequeued();
             batch.push(task);
             budget -= 1;
-            if budget == 0 {
-                break;
-            }
         }
+    }
+
+    #[inline]
+    fn stop_waiting(&self) {
+        self.waiting.store(false, Ordering::Release);
+        self.interrupt_pending.store(false, Ordering::Release);
+    }
+
+    #[inline]
+    fn should_skip_wait(&self) -> bool {
+        if self.next_task.borrow().is_some() || !self.remote_queue.is_empty() {
+            return true;
+        }
+
+        // SAFETY: the runtime only mutates the local ready queue on the runtime thread.
+        unsafe { !(&*self.queue.get()).is_empty() }
     }
 
     /// Take the next task to run, if any.
@@ -463,6 +592,7 @@ impl Runtime {
                 token_to_task: RefCell::new(Slab::with_capacity(4096)),
                 driver: Rc::new(driver),
                 waiting: Arc::new(AtomicBool::new(false)),
+                interrupt_pending: Arc::new(AtomicBool::new(false)),
                 blocking_pool,
                 #[cfg(feature = "fs")]
                 fs_offload,
@@ -515,12 +645,21 @@ impl Runtime {
         let inner = self.inner.as_ref().expect("runtime has been dropped");
         let _runtime_guard = CurrentRuntimeGuard::enter(inner.clone());
 
-        let spawned_task = inner.spawn(future);
+        let mut future = std::pin::pin!(future);
+        let root_notify = BlockOnNotify::new(
+            inner.driver.get_interruptor(),
+            inner.waiting.clone(),
+            inner.interrupt_pending.clone(),
+        );
+        let root_waker = root_notify.waker();
         let mut batch = Vec::with_capacity(256);
 
         loop {
-            if let Some(output) = spawned_task.try_take_output() {
-                return output;
+            if root_notify.take_ready() {
+                let mut context = Context::from_waker(&root_waker);
+                if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+                    return output;
+                }
             }
 
             let mut next_task_taken = false;
@@ -535,7 +674,18 @@ impl Runtime {
             }
 
             if batch.is_empty() {
+                if root_notify.is_ready() {
+                    continue;
+                }
+
+                inner.interrupt_pending.store(false, Ordering::Release);
                 inner.waiting.store(true, Ordering::Release);
+
+                if root_notify.is_ready() || inner.should_skip_wait() {
+                    inner.stop_waiting();
+                    continue;
+                }
+
                 #[cfg(feature = "time")]
                 let (deadline, woken_up) = if let Some(timer) = inner.timer.as_ref() {
                     // Spin the timing wheel
@@ -545,13 +695,17 @@ impl Runtime {
                 };
 
                 #[cfg(feature = "time")]
-                if !woken_up {
-                    inner.driver.wait(deadline);
+                if woken_up {
+                    inner.stop_waiting();
+                    continue;
                 }
+
+                #[cfg(feature = "time")]
+                inner.driver.wait(deadline);
                 #[cfg(not(feature = "time"))]
                 inner.driver.wait(None);
 
-                inner.waiting.store(false, Ordering::Release);
+                inner.stop_waiting();
                 continue;
             }
 
@@ -628,6 +782,22 @@ mod tests {
         let handle = runtime.spawn(async { 7usize });
         let value = runtime.block_on(handle);
         assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn block_on_repolls_root_future_after_self_wake() {
+        let runtime = crate::executor::Runtime::new(AnyDriver::new_mock());
+        let mut polled_once = false;
+        let value = runtime.block_on(std::future::poll_fn(move |cx| {
+            if polled_once {
+                Poll::Ready(11usize)
+            } else {
+                polled_once = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }));
+        assert_eq!(value, 11);
     }
 
     #[cfg(feature = "blocking-default")]

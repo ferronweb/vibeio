@@ -20,6 +20,7 @@ pub struct Task {
     pub thread_id: std::thread::ThreadId,
     pub token: usize,
     pub waiting: std::sync::Weak<AtomicBool>,
+    pub interrupt_pending: std::sync::Weak<AtomicBool>,
 }
 
 impl Task {
@@ -105,8 +106,14 @@ impl Task {
             .upgrade()
             .is_some_and(|waiting| waiting.load(Ordering::Acquire))
         {
-            // Interrupt the driver if the waker is not on the same thread as the runtime
-            task.interruptor.interrupt();
+            let should_interrupt = task
+                .interrupt_pending
+                .upgrade()
+                .is_none_or(|pending| !pending.swap(true, Ordering::AcqRel));
+            if should_interrupt {
+                // Interrupt the driver if the waker is not on the same thread as the runtime
+                task.interruptor.interrupt();
+            }
         }
     }
 
