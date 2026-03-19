@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.4
 
-**Not released yet**
+**Released in March 19, 2026**
 
 - Fixed compilation errors for 32-bit Windows targets
 
