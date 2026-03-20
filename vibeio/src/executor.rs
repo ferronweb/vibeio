@@ -127,6 +127,9 @@ impl<T> JoinHandle<T> {
         Self { state }
     }
 
+    /// Cancels the task associated with this handle.
+    ///
+    /// The task will be interrupted and not resumed.
     #[inline]
     pub fn cancel(self) {
         self.state.borrow_mut().canceled = true;
