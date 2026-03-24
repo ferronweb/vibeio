@@ -15,7 +15,6 @@ repository = "https://github.com/ferronweb/vibeio"
 futures-util = "0.3.32"
 mio = "1.1.1"
 slab = "0.4.12"
-tm-wheel = { version = "0.1.1", optional = true }
 tokio = { version = "1.49.0", features = ["io-util"] }
 crossbeam-queue = "0.3"
 oneshot = { version = "0.2.1", features = ["async", "std"] }
@@ -57,7 +56,7 @@ pipe = []
 stdio = []
 process = ["async-channel"]
 signal = ["once_cell"]
-time = ["tm-wheel"]
+time = []
 blocking-default = ["rusty_pool"]
 
 [package.metadata.docs.rs]

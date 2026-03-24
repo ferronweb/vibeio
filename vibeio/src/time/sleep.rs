@@ -9,10 +9,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tm_wheel::TimerHandle;
-
 use crate::executor::current_timer;
-use crate::timer::Timer;
+use crate::timer::{Timer, TimerHandle};
 
 /// Behavior for zero-duration sleeps (duration < 1 ms).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
