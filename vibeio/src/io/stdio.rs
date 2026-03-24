@@ -34,7 +34,7 @@ use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
 
 use crate::executor::current_driver;
-use crate::io::{AsyncRead, AsyncWrite, IoBuf, IoBufMut};
+use crate::io::{iobuf_to_slice, iobufmut_to_slice, AsyncRead, AsyncWrite, IoBuf, IoBufMut};
 
 /// Async-aware stdin reader.
 #[derive(Debug, Default, Clone, Copy)]
@@ -117,8 +117,7 @@ async fn read_in_blocking_pool<B: IoBufMut>(buf: B) -> (io::Result<usize>, B) {
             .ok()
             .and_then(|rc| rc.take())
             .expect("buf is none");
-        let temp_slice: &'static mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+        let temp_slice = iobufmut_to_slice(&mut buf);
         let result = read_stdin_blocking(temp_slice);
         (result, buf)
     })
@@ -144,8 +143,7 @@ async fn write_stdout_in_blocking_pool<B: IoBuf>(buf: B) -> (io::Result<usize>, 
             .ok()
             .and_then(|rc| rc.take())
             .expect("buf is none");
-        let temp_slice: &'static [u8] =
-            unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+        let temp_slice = iobuf_to_slice(&buf);
         let result = write_stdout_blocking(temp_slice);
         (result, buf)
     })
@@ -171,8 +169,7 @@ async fn write_stderr_in_blocking_pool<B: IoBuf>(buf: B) -> (io::Result<usize>, 
             .ok()
             .and_then(|rc| rc.take())
             .expect("buf is none");
-        let temp_slice: &'static [u8] =
-            unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+        let temp_slice = iobuf_to_slice(&buf);
         let result = write_stderr_blocking(temp_slice);
         (result, buf)
     })
@@ -212,8 +209,7 @@ impl AsyncRead for Stdin {
         if current_driver().is_some() {
             read_in_blocking_pool(buf).await
         } else {
-            let slice =
-                unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+            let slice = iobufmut_to_slice(&mut buf);
             (read_stdin_blocking(slice), buf)
         }
     }
@@ -229,7 +225,7 @@ impl AsyncWrite for Stdout {
         if current_driver().is_some() {
             write_stdout_in_blocking_pool(buf).await
         } else {
-            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+            let slice = iobuf_to_slice(&buf);
             (write_stdout_blocking(slice), buf)
         }
     }
@@ -254,7 +250,7 @@ impl AsyncWrite for Stderr {
         if current_driver().is_some() {
             write_stderr_in_blocking_pool(buf).await
         } else {
-            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+            let slice = iobuf_to_slice(&buf);
             (write_stderr_blocking(slice), buf)
         }
     }

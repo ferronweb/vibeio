@@ -13,7 +13,7 @@ use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
 use std::os::windows::io::{AsRawHandle, IntoRawHandle, RawHandle};
 
 use crate::fs::Metadata;
-use crate::io::{IoBuf, IoBufMut, IoBufWithCursor};
+use crate::io::{iobuf_to_slice, iobufmut_to_slice, IoBuf, IoBufMut, IoBufWithCursor};
 use crate::{
     driver::RegistrationMode,
     executor::current_driver,
@@ -250,8 +250,7 @@ impl File {
         } else if crate::executor::offload_fs() && current_driver().is_some() {
             read_at_in_blocking_pool(&self.inner, buf, offset).await
         } else {
-            let slice =
-                unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+            let slice = iobufmut_to_slice(&mut buf);
             (read_at_blocking(&self.inner, slice, offset), buf)
         }
     }
@@ -353,7 +352,7 @@ impl File {
         } else if crate::executor::offload_fs() && current_driver().is_some() {
             write_at_in_blocking_pool(&self.inner, buf, offset).await
         } else {
-            let slice = unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+            let slice = iobuf_to_slice(&buf);
             (write_at_blocking(&self.inner, slice, offset), buf)
         }
     }
@@ -620,8 +619,7 @@ async fn read_at_in_blocking_pool<B: IoBufMut>(
             .ok()
             .and_then(|rc| rc.take())
             .expect("buf is none");
-        let temp_slice: &'static mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+        let temp_slice = iobufmut_to_slice(&mut buf);
         let result = read_at_blocking(&file, temp_slice, offset);
         (result, buf)
     })
@@ -655,8 +653,7 @@ async fn write_at_in_blocking_pool<B: IoBuf>(
             .ok()
             .and_then(|rc| rc.take())
             .expect("buf is none");
-        let temp_slice: &'static [u8] =
-            unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+        let temp_slice = iobuf_to_slice(&buf);
         let result = write_at_blocking(&file, temp_slice, offset);
         (result, buf)
     })

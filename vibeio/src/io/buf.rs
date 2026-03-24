@@ -446,3 +446,13 @@ impl IoVectoredBufMut for IoVectoredBufTemporaryPoll {
         self.as_iovecs()
     }
 }
+
+#[inline]
+pub(crate) fn iobuf_to_slice(buf: &impl IoBuf) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) }
+}
+
+#[inline]
+pub(crate) fn iobufmut_to_slice(buf: &mut impl IoBufMut) -> &mut [u8] {
+    unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) }
+}

@@ -45,7 +45,7 @@ use crate::driver::RegistrationMode;
 use crate::executor::current_driver;
 #[cfg(unix)]
 use crate::fd_inner::InnerRawHandle;
-use crate::io::{AsyncRead, AsyncWrite, IoBuf, IoBufMut};
+use crate::io::{iobuf_to_slice, iobufmut_to_slice, AsyncRead, AsyncWrite, IoBuf, IoBufMut};
 #[cfg(unix)]
 use crate::op::{ReadOp, WriteOp};
 
@@ -138,8 +138,7 @@ where
             .ok()
             .and_then(|rc| rc.take())
             .expect("inner/buf is none");
-        let temp_slice: &'static mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+        let temp_slice = iobufmut_to_slice(&mut buf);
         let result = inner.read(temp_slice);
         (result, inner, buf)
     })
@@ -172,8 +171,7 @@ where
             .ok()
             .and_then(|rc| rc.take())
             .expect("inner/buf is none");
-        let temp_slice: &'static [u8] =
-            unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+        let temp_slice = iobuf_to_slice(&buf);
         let result = inner.write(temp_slice);
         (result, inner, buf)
     })
@@ -422,8 +420,7 @@ impl AsyncWrite for ChildStdin {
                 Some(inner) => inner,
                 None => return (Err(stdio_closed_error()), buf),
             };
-            let temp_slice: &'static [u8] =
-                unsafe { std::slice::from_raw_parts(buf.as_buf_ptr(), buf.buf_len()) };
+            let temp_slice = iobuf_to_slice(&buf);
             (inner.write(temp_slice), buf)
         }
     }
@@ -503,8 +500,7 @@ impl AsyncRead for ChildStdout {
                 None => return (Err(stdio_closed_error()), buf),
             };
             let mut buf = buf;
-            let temp_slice: &'static mut [u8] =
-                unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+            let temp_slice = iobufmut_to_slice(&mut buf);
             (inner.read(temp_slice), buf)
         }
     }
@@ -538,8 +534,7 @@ impl AsyncRead for ChildStderr {
                 None => return (Err(stdio_closed_error()), buf),
             };
             let mut buf = buf;
-            let temp_slice: &'static mut [u8] =
-                unsafe { std::slice::from_raw_parts_mut(buf.as_buf_mut_ptr(), buf.buf_len()) };
+            let temp_slice = iobufmut_to_slice(&mut buf);
             (inner.read(temp_slice), buf)
         }
     }
