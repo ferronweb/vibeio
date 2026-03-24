@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.6
 
-**Not released yet**
+**Released in March 24, 2026**
 
 - Dropped the `tm-wheel` dependency in favor of a custom implementation
 

@@ -1,6 +1,6 @@
 [package]
 name = "vibeio-hyper"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 authors = ["Dorian Niemiec <dorian@ferron.sh>"]
 description = "A compatibility layer for using `hyper` with the `vibeio` async runtime"
