@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.7
 
-**Not yet released**
+**Released in April 2, 2026**
 
 - Fixed some panics related to integer underflow in the timer
 - Fixed bugs related to dangling buffer pointers for stack-allocated buffers
