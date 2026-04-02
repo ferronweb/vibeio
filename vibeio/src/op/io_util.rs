@@ -6,6 +6,54 @@ use mio::Interest;
 use crate::driver::AnyDriver;
 use crate::fd_inner::InnerRawHandle;
 
+pub(crate) enum CompletionBuffer<B> {
+    Inline(B),
+    Boxed(Box<B>),
+}
+
+impl<B> CompletionBuffer<B> {
+    #[inline]
+    pub(crate) fn new(buf: B, stable: bool) -> Self {
+        if stable {
+            Self::Boxed(Box::new(buf))
+        } else {
+            Self::Inline(buf)
+        }
+    }
+
+    #[inline]
+    pub(crate) fn as_ref(&self) -> &B {
+        match self {
+            Self::Inline(buf) => buf,
+            Self::Boxed(buf) => buf.as_ref(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn as_mut(&mut self) -> &mut B {
+        match self {
+            Self::Inline(buf) => buf,
+            Self::Boxed(buf) => buf.as_mut(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn into_inner(self) -> B {
+        match self {
+            Self::Inline(buf) => buf,
+            Self::Boxed(buf) => *buf,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn into_stable_box(self) -> Box<B> {
+        match self {
+            Self::Inline(buf) => Box::new(buf),
+            Self::Boxed(buf) => buf,
+        }
+    }
+}
+
 #[inline]
 pub(crate) fn poll_result_or_wait(
     result: io::Result<usize>,

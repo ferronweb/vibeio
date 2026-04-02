@@ -14,11 +14,12 @@ use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
 use crate::io::IoBufMut;
+use crate::op::io_util::CompletionBuffer;
 use crate::op::Op;
 
 pub struct ReadAtOp<'a, B: IoBufMut> {
     handle: &'a InnerRawHandle,
-    buf: Option<B>,
+    buf: Option<CompletionBuffer<B>>,
     offset: u64,
     completion_token: Option<usize>,
 }
@@ -28,7 +29,7 @@ impl<'a, B: IoBufMut> ReadAtOp<'a, B> {
     pub fn new(handle: &'a InnerRawHandle, buf: B, offset: u64) -> Self {
         Self {
             handle,
-            buf: Some(buf),
+            buf: Some(CompletionBuffer::new(buf, handle.uses_completion())),
             offset,
             completion_token: None,
         }
@@ -36,7 +37,7 @@ impl<'a, B: IoBufMut> ReadAtOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap()
+        self.buf.take().unwrap().into_inner()
     }
 }
 
@@ -75,7 +76,7 @@ impl<B: IoBufMut> Op for ReadAtOp<'_, B> {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
         let read = result as usize;
-        let buf = self.buf.as_mut().unwrap();
+        let buf = self.buf.as_mut().unwrap().as_mut();
         unsafe { buf.set_buf_init(read) };
         Poll::Ready(Ok(read))
     }
@@ -83,7 +84,7 @@ impl<B: IoBufMut> Op for ReadAtOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_mut().unwrap();
+        let buf = self.buf.as_mut().unwrap().as_mut();
         let RawOsHandle::Handle(handle) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -133,7 +134,7 @@ impl<B: IoBufMut> Op for ReadAtOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_mut().unwrap();
+        let buf = self.buf.as_mut().unwrap().as_mut();
         let read_len = u32::try_from(buf.buf_capacity()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -159,11 +160,8 @@ impl<B: IoBufMut> Drop for ReadAtOp<'_, B> {
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                // If the operation is still pending, we must ensure the buffer is not dropped
-                // while the kernel is still writing to it. We transfer ownership of the buffer
-                // to the driver to be dropped when the completion arrives.
                 if let Some(buf) = self.buf.take() {
-                    driver.ignore_completion(completion_token, Box::new(buf));
+                    driver.ignore_completion(completion_token, Box::new(buf.into_stable_box()));
                 } else {
                     driver.ignore_completion(completion_token, Box::new(()));
                 }

@@ -20,6 +20,7 @@ use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
 use crate::io::IoBufMut;
+use crate::op::io_util::CompletionBuffer;
 use crate::op::Op;
 
 #[cfg(unix)]
@@ -130,24 +131,29 @@ fn socket_recvfrom(socket: SOCKET, buf: &mut [u8], peek: bool) -> io::Result<(us
     Ok((bytes as usize, address))
 }
 
+#[cfg(windows)]
+struct RecvfromWindowsCompletion {
+    socket_buf: WSABUF,
+    addr: SOCKADDR_STORAGE,
+    addr_len: i32,
+    flags: u32,
+}
+
+#[cfg(target_os = "linux")]
+struct RecvfromLinuxCompletion {
+    addr: libc::sockaddr_storage,
+    iovec: libc::iovec,
+    msghdr: libc::msghdr,
+}
+
 pub struct RecvfromOp<'a, B: IoBufMut> {
     handle: &'a InnerRawHandle,
-    buf: Option<B>,
+    buf: Option<CompletionBuffer<B>>,
     completion_token: Option<usize>,
     #[cfg(windows)]
-    socket_buf: Option<WSABUF>,
-    #[cfg(windows)]
-    completion_addr: Option<SOCKADDR_STORAGE>,
-    #[cfg(windows)]
-    completion_addr_len: i32,
-    #[cfg(windows)]
-    completion_flags: u32,
+    completion_state: Option<Box<RecvfromWindowsCompletion>>,
     #[cfg(target_os = "linux")]
-    completion_addr: Option<libc::sockaddr_storage>,
-    #[cfg(target_os = "linux")]
-    completion_iovec: Option<libc::iovec>,
-    #[cfg(target_os = "linux")]
-    completion_msghdr: Option<libc::msghdr>,
+    completion_state: Option<Box<RecvfromLinuxCompletion>>,
     peek: bool,
 }
 
@@ -156,22 +162,12 @@ impl<'a, B: IoBufMut> RecvfromOp<'a, B> {
     pub fn new(handle: &'a InnerRawHandle, buf: B) -> Self {
         Self {
             handle,
-            buf: Some(buf),
+            buf: Some(CompletionBuffer::new(buf, handle.uses_completion())),
             completion_token: None,
             #[cfg(windows)]
-            socket_buf: None,
-            #[cfg(windows)]
-            completion_addr: None,
-            #[cfg(windows)]
-            completion_addr_len: 0,
-            #[cfg(windows)]
-            completion_flags: 0,
+            completion_state: None,
             #[cfg(target_os = "linux")]
-            completion_addr: None,
-            #[cfg(target_os = "linux")]
-            completion_iovec: None,
-            #[cfg(target_os = "linux")]
-            completion_msghdr: None,
+            completion_state: None,
             peek: false,
         }
     }
@@ -180,29 +176,19 @@ impl<'a, B: IoBufMut> RecvfromOp<'a, B> {
     pub fn new_peek(handle: &'a InnerRawHandle, buf: B) -> Self {
         Self {
             handle,
-            buf: Some(buf),
+            buf: Some(CompletionBuffer::new(buf, handle.uses_completion())),
             completion_token: None,
             #[cfg(windows)]
-            socket_buf: None,
-            #[cfg(windows)]
-            completion_addr: None,
-            #[cfg(windows)]
-            completion_addr_len: 0,
-            #[cfg(windows)]
-            completion_flags: 0,
+            completion_state: None,
             #[cfg(target_os = "linux")]
-            completion_addr: None,
-            #[cfg(target_os = "linux")]
-            completion_iovec: None,
-            #[cfg(target_os = "linux")]
-            completion_msghdr: None,
+            completion_state: None,
             peek: true,
         }
     }
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap()
+        self.buf.take().unwrap().into_inner()
     }
 }
 
@@ -216,7 +202,7 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let buf = self.buf.as_mut().unwrap();
+        let buf = self.buf.as_mut().unwrap().as_mut();
 
         #[cfg(unix)]
         let result = {
@@ -299,10 +285,6 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
             }
         };
         if result < 0 {
-            #[cfg(windows)]
-            {
-                self.completion_addr = None;
-            }
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
         let read = result as usize;
@@ -310,11 +292,11 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
         #[cfg(target_os = "linux")]
         {
             let address = self
-                .completion_addr
+                .completion_state
                 .as_ref()
                 .ok_or_else(|| io::Error::other("recvfrom completion missing source address"))
-                .and_then(sockaddr_storage_to_socketaddr);
-            let buf = self.buf.as_mut().unwrap();
+                .and_then(|state| sockaddr_storage_to_socketaddr(&state.addr));
+            let buf = self.buf.as_mut().unwrap().as_mut();
             unsafe { buf.set_buf_init(read) };
             Poll::Ready(address.map(|address| (read, address)))
         }
@@ -330,7 +312,7 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
         #[cfg(windows)]
         {
             let address = self
-                .completion_addr
+                .completion_state
                 .as_ref()
                 .ok_or_else(|| {
                     io::Error::new(
@@ -338,9 +320,8 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
                         "recvfrom completion missing source address",
                     )
                 })
-                .and_then(sockaddr_storage_to_socketaddr);
-            self.completion_addr = None;
-            let buf = self.buf.as_mut().unwrap();
+                .and_then(|state| sockaddr_storage_to_socketaddr(&state.addr));
+            let buf = self.buf.as_mut().unwrap().as_mut();
             unsafe { buf.set_buf_init(read) };
             return Poll::Ready(address.map(|address| (read, address)));
         }
@@ -349,7 +330,7 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_mut().unwrap();
+        let buf = self.buf.as_mut().unwrap().as_mut();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -364,32 +345,31 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
             )
         })?;
 
-        let wsabuf = self.socket_buf.get_or_insert(WSABUF {
-            len: 0,
-            buf: std::ptr::null_mut(),
+        let completion = self.completion_state.get_or_insert_with(|| {
+            Box::new(RecvfromWindowsCompletion {
+                socket_buf: WSABUF {
+                    len: 0,
+                    buf: std::ptr::null_mut(),
+                },
+                addr: SOCKADDR_STORAGE::default(),
+                addr_len: 0,
+                flags: 0,
+            })
         });
-        wsabuf.len = read_len;
-        wsabuf.buf = buf.as_buf_mut_ptr().cast();
+        completion.socket_buf.len = read_len;
+        completion.socket_buf.buf = buf.as_buf_mut_ptr().cast();
+        completion.addr_len = std::mem::size_of::<SOCKADDR_STORAGE>() as i32;
+        completion.flags = if self.peek { MSG_PEEK as u32 } else { 0 };
 
-        if self.completion_addr.is_none() {
-            self.completion_addr = Some(SOCKADDR_STORAGE::default());
-        }
-        self.completion_addr_len = std::mem::size_of::<SOCKADDR_STORAGE>() as i32;
-        self.completion_flags = if self.peek { MSG_PEEK as u32 } else { 0 };
-
-        let addr_ptr = self
-            .completion_addr
-            .as_mut()
-            .expect("completion_addr should be initialized");
         let recv_result = unsafe {
             WinSock::WSARecvFrom(
                 socket as SOCKET,
-                wsabuf as *mut WSABUF,
+                &mut completion.socket_buf as *mut WSABUF,
                 1,
                 std::ptr::null_mut(),
-                &mut self.completion_flags,
-                (addr_ptr as *mut SOCKADDR_STORAGE).cast::<SOCKADDR>(),
-                &mut self.completion_addr_len,
+                &mut completion.flags,
+                (&mut completion.addr as *mut SOCKADDR_STORAGE).cast::<SOCKADDR>(),
+                &mut completion.addr_len,
                 overlapped,
                 None,
             )
@@ -403,7 +383,7 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
         if err == WSA_IO_PENDING {
             Ok(())
         } else {
-            self.completion_addr = None;
+            self.completion_state = None;
             Err(io::Error::from_raw_os_error(err))
         }
     }
@@ -416,35 +396,36 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        self.completion_addr = Some(unsafe { std::mem::zeroed() });
-        let buf = self.buf.as_mut().unwrap();
-        self.completion_iovec = Some(libc::iovec {
+        let buf = self.buf.as_mut().unwrap().as_mut();
+        let completion = self.completion_state.get_or_insert_with(|| {
+            Box::new(RecvfromLinuxCompletion {
+                addr: unsafe { std::mem::zeroed() },
+                iovec: libc::iovec {
+                    iov_base: std::ptr::null_mut(),
+                    iov_len: 0,
+                },
+                msghdr: unsafe { std::mem::zeroed() },
+            })
+        });
+        completion.addr = unsafe { std::mem::zeroed() };
+        completion.iovec = libc::iovec {
             iov_base: buf.as_buf_mut_ptr().cast::<libc::c_void>(),
             iov_len: buf.buf_capacity(),
-        });
-        // SAFETY: We know the fields are initialized and the struct is zeroed
-        let mut msghdr = unsafe { std::mem::zeroed::<libc::msghdr>() };
-        msghdr.msg_name = self
-            .completion_addr
-            .as_mut()
-            .expect("completion_addr should be initialized")
-            as *mut libc::sockaddr_storage as *mut libc::c_void;
-        msghdr.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-        msghdr.msg_iov =
-            self.completion_iovec
-                .as_mut()
-                .expect("completion_iovec should be initialized") as *mut libc::iovec;
-        msghdr.msg_iovlen = 1;
-        msghdr.msg_control = std::ptr::null_mut();
-        msghdr.msg_controllen = 0;
-        msghdr.msg_flags = 0;
-        self.completion_msghdr = Some(msghdr);
+        };
+        completion.msghdr = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        completion.msghdr.msg_name =
+            &mut completion.addr as *mut libc::sockaddr_storage as *mut libc::c_void;
+        completion.msghdr.msg_namelen =
+            std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        completion.msghdr.msg_iov = &mut completion.iovec as *mut libc::iovec;
+        completion.msghdr.msg_iovlen = 1;
+        completion.msghdr.msg_control = std::ptr::null_mut();
+        completion.msghdr.msg_controllen = 0;
+        completion.msghdr.msg_flags = 0;
 
         let entry = opcode::RecvMsg::new(
             types::Fd(self.handle.handle),
-            self.completion_msghdr
-                .as_mut()
-                .expect("completion_msghdr should be initialized") as *mut libc::msghdr,
+            &mut completion.msghdr as *mut libc::msghdr,
         )
         .flags(if self.peek { libc::MSG_PEEK as u32 } else { 0 })
         .build()
@@ -459,14 +440,18 @@ impl<B: IoBufMut> Drop for RecvfromOp<'_, B> {
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                // If the operation is still pending, we must ensure the buffer is not dropped
-                // while the kernel is still writing to it. We transfer ownership of the buffer
-                // to the driver to be dropped when the completion arrives.
-                if let Some(buf) = self.buf.take() {
-                    driver.ignore_completion(completion_token, Box::new(buf));
-                } else {
-                    driver.ignore_completion(completion_token, Box::new(()));
-                }
+                #[cfg(any(windows, target_os = "linux"))]
+                let completion_state = self.completion_state.take();
+                #[cfg(not(any(windows, target_os = "linux")))]
+                let completion_state = ();
+
+                driver.ignore_completion(
+                    completion_token,
+                    Box::new((
+                        completion_state,
+                        self.buf.take().map(CompletionBuffer::into_stable_box),
+                    )),
+                );
             }
         }
     }

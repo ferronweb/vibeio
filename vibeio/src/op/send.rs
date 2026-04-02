@@ -14,7 +14,7 @@ use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
 use crate::io::IoBuf;
-use crate::op::io_util::poll_result_or_wait;
+use crate::op::io_util::{poll_result_or_wait, CompletionBuffer};
 use crate::op::Op;
 
 #[cfg(windows)]
@@ -57,10 +57,10 @@ fn socket_send<B: IoBuf>(socket: SOCKET, buf: &B) -> io::Result<usize> {
 
 pub struct SendOp<'a, B: IoBuf> {
     handle: &'a InnerRawHandle,
-    buf: Option<B>,
+    buf: Option<CompletionBuffer<B>>,
     completion_token: Option<usize>,
     #[cfg(windows)]
-    socket_buf: Option<WSABUF>,
+    socket_buf: Option<Box<WSABUF>>,
 }
 
 impl<'a, B: IoBuf> SendOp<'a, B> {
@@ -68,7 +68,7 @@ impl<'a, B: IoBuf> SendOp<'a, B> {
     pub fn new(handle: &'a InnerRawHandle, buf: B) -> Self {
         Self {
             handle,
-            buf: Some(buf),
+            buf: Some(CompletionBuffer::new(buf, handle.uses_completion())),
             completion_token: None,
             #[cfg(windows)]
             socket_buf: None,
@@ -77,7 +77,7 @@ impl<'a, B: IoBuf> SendOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap()
+        self.buf.take().unwrap().into_inner()
     }
 }
 
@@ -91,7 +91,7 @@ impl<B: IoBuf> Op for SendOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let buf = self.buf.as_ref().unwrap();
+        let buf = self.buf.as_ref().unwrap().as_ref();
 
         #[cfg(unix)]
         let result = {
@@ -164,7 +164,7 @@ impl<B: IoBuf> Op for SendOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_ref().unwrap();
+        let buf = self.buf.as_ref().unwrap().as_ref();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -179,9 +179,11 @@ impl<B: IoBuf> Op for SendOp<'_, B> {
             )
         })?;
 
-        let wsabuf = self.socket_buf.get_or_insert(WSABUF {
-            len: 0,
-            buf: std::ptr::null_mut(),
+        let wsabuf = self.socket_buf.get_or_insert_with(|| {
+            Box::new(WSABUF {
+                len: 0,
+                buf: std::ptr::null_mut(),
+            })
         });
         wsabuf.len = write_len;
         wsabuf.buf = buf.as_buf_ptr().cast_mut().cast();
@@ -189,7 +191,7 @@ impl<B: IoBuf> Op for SendOp<'_, B> {
         let send_result = unsafe {
             WinSock::WSASend(
                 socket as SOCKET,
-                wsabuf as *mut WSABUF,
+                wsabuf.as_mut() as *mut WSABUF,
                 1,
                 std::ptr::null_mut(),
                 0,
@@ -218,7 +220,7 @@ impl<B: IoBuf> Op for SendOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_ref().unwrap();
+        let buf = self.buf.as_ref().unwrap().as_ref();
         let entry = opcode::Send::new(
             types::Fd(self.handle.handle),
             buf.as_buf_ptr(),
@@ -236,14 +238,18 @@ impl<B: IoBuf> Drop for SendOp<'_, B> {
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                // If the operation is still pending, we must ensure the buffer is not dropped
-                // while the kernel is still writing to it. We transfer ownership of the buffer
-                // to the driver to be dropped when the completion arrives.
-                if let Some(buf) = self.buf.take() {
-                    driver.ignore_completion(completion_token, Box::new(buf));
-                } else {
-                    driver.ignore_completion(completion_token, Box::new(()));
-                }
+                #[cfg(windows)]
+                let completion_state = self.socket_buf.take();
+                #[cfg(not(windows))]
+                let completion_state = ();
+
+                driver.ignore_completion(
+                    completion_token,
+                    Box::new((
+                        completion_state,
+                        self.buf.take().map(CompletionBuffer::into_stable_box),
+                    )),
+                );
             }
         }
     }

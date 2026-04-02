@@ -14,11 +14,12 @@ use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
 use crate::io::IoBuf;
+use crate::op::io_util::CompletionBuffer;
 use crate::op::Op;
 
 pub struct WriteAtOp<'a, B: IoBuf> {
     handle: &'a InnerRawHandle,
-    buf: Option<B>,
+    buf: Option<CompletionBuffer<B>>,
     offset: u64,
     completion_token: Option<usize>,
 }
@@ -28,7 +29,7 @@ impl<'a, B: IoBuf> WriteAtOp<'a, B> {
     pub fn new(handle: &'a InnerRawHandle, buf: B, offset: u64) -> Self {
         Self {
             handle,
-            buf: Some(buf),
+            buf: Some(CompletionBuffer::new(buf, handle.uses_completion())),
             offset,
             completion_token: None,
         }
@@ -36,7 +37,7 @@ impl<'a, B: IoBuf> WriteAtOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap()
+        self.buf.take().unwrap().into_inner()
     }
 }
 
@@ -88,7 +89,7 @@ impl<B: IoBuf> Op for WriteAtOp<'_, B> {
             ));
         };
 
-        let buf = self.buf.as_ref().unwrap();
+        let buf = self.buf.as_ref().unwrap().as_ref();
         let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -131,7 +132,7 @@ impl<B: IoBuf> Op for WriteAtOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_ref().unwrap();
+        let buf = self.buf.as_ref().unwrap().as_ref();
         let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -154,7 +155,7 @@ impl<B: IoBuf> Drop for WriteAtOp<'_, B> {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
                 if let Some(buf) = self.buf.take() {
-                    driver.ignore_completion(completion_token, Box::new(buf));
+                    driver.ignore_completion(completion_token, Box::new(buf.into_stable_box()));
                 } else {
                     driver.ignore_completion(completion_token, Box::new(()));
                 }

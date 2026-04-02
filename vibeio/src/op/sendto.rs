@@ -20,7 +20,7 @@ use crate::fd_inner::InnerRawHandle;
 #[cfg(windows)]
 use crate::fd_inner::RawOsHandle;
 use crate::io::IoBuf;
-use crate::op::io_util::poll_result_or_wait;
+use crate::op::io_util::{poll_result_or_wait, CompletionBuffer};
 use crate::op::Op;
 
 #[cfg(unix)]
@@ -179,25 +179,30 @@ fn socket_sendto<B: IoBuf>(socket: SOCKET, buf: &B, addr: SocketAddr) -> io::Res
     Ok(bytes as usize)
 }
 
+#[cfg(windows)]
+struct SendtoWindowsCompletion {
+    socket_buf: WSABUF,
+    addr: SOCKADDR_STORAGE,
+    addr_len: i32,
+}
+
+#[cfg(target_os = "linux")]
+struct SendtoLinuxCompletion {
+    addr: libc::sockaddr_storage,
+    addr_len: libc::socklen_t,
+    iovec: libc::iovec,
+    msghdr: libc::msghdr,
+}
+
 pub struct SendtoOp<'a, B: IoBuf> {
     handle: &'a InnerRawHandle,
-    buf: Option<B>,
+    buf: Option<CompletionBuffer<B>>,
     addr: SocketAddr,
     completion_token: Option<usize>,
     #[cfg(windows)]
-    socket_buf: Option<WSABUF>,
-    #[cfg(windows)]
-    completion_addr: Option<SOCKADDR_STORAGE>,
-    #[cfg(windows)]
-    completion_addr_len: i32,
+    completion_state: Option<Box<SendtoWindowsCompletion>>,
     #[cfg(target_os = "linux")]
-    completion_addr_storage: Option<libc::sockaddr_storage>,
-    #[cfg(target_os = "linux")]
-    completion_addr_len: libc::socklen_t,
-    #[cfg(target_os = "linux")]
-    completion_iovec: Option<libc::iovec>,
-    #[cfg(target_os = "linux")]
-    completion_msghdr: Option<libc::msghdr>,
+    completion_state: Option<Box<SendtoLinuxCompletion>>,
 }
 
 impl<'a, B: IoBuf> SendtoOp<'a, B> {
@@ -205,29 +210,19 @@ impl<'a, B: IoBuf> SendtoOp<'a, B> {
     pub fn new(handle: &'a InnerRawHandle, buf: B, addr: SocketAddr) -> Self {
         Self {
             handle,
-            buf: Some(buf),
+            buf: Some(CompletionBuffer::new(buf, handle.uses_completion())),
             addr,
             completion_token: None,
             #[cfg(windows)]
-            socket_buf: None,
-            #[cfg(windows)]
-            completion_addr: None,
-            #[cfg(windows)]
-            completion_addr_len: 0,
+            completion_state: None,
             #[cfg(target_os = "linux")]
-            completion_addr_storage: None,
-            #[cfg(target_os = "linux")]
-            completion_addr_len: 0,
-            #[cfg(target_os = "linux")]
-            completion_iovec: None,
-            #[cfg(target_os = "linux")]
-            completion_msghdr: None,
+            completion_state: None,
         }
     }
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap()
+        self.buf.take().unwrap().into_inner()
     }
 }
 
@@ -241,7 +236,7 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let buf = self.buf.as_ref().unwrap();
+        let buf = self.buf.as_ref().unwrap().as_ref();
 
         #[cfg(unix)]
         let result = {
@@ -317,7 +312,7 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_ref().unwrap();
+        let buf = self.buf.as_ref().unwrap().as_ref();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -332,30 +327,31 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
             )
         })?;
 
-        let wsabuf = self.socket_buf.get_or_insert(WSABUF {
-            len: 0,
-            buf: std::ptr::null_mut(),
-        });
-        wsabuf.len = write_len;
-        wsabuf.buf = buf.as_buf_ptr().cast_mut().cast();
-
         let (raw_addr, raw_addr_len) = socket_addr_to_raw(self.addr);
-        self.completion_addr = Some(raw_addr);
-        self.completion_addr_len = raw_addr_len;
+        let completion = self.completion_state.get_or_insert_with(|| {
+            Box::new(SendtoWindowsCompletion {
+                socket_buf: WSABUF {
+                    len: 0,
+                    buf: std::ptr::null_mut(),
+                },
+                addr: SOCKADDR_STORAGE::default(),
+                addr_len: 0,
+            })
+        });
+        completion.socket_buf.len = write_len;
+        completion.socket_buf.buf = buf.as_buf_ptr().cast_mut().cast();
+        completion.addr = raw_addr;
+        completion.addr_len = raw_addr_len;
 
-        let addr_ptr = self
-            .completion_addr
-            .as_ref()
-            .expect("completion_addr should be initialized");
         let send_result = unsafe {
             WinSock::WSASendTo(
                 socket as SOCKET,
-                wsabuf as *mut WSABUF,
+                &mut completion.socket_buf as *mut WSABUF,
                 1,
                 std::ptr::null_mut(),
                 0,
-                (addr_ptr as *const SOCKADDR_STORAGE).cast::<SOCKADDR>(),
-                self.completion_addr_len,
+                (&completion.addr as *const SOCKADDR_STORAGE).cast::<SOCKADDR>(),
+                completion.addr_len,
                 overlapped,
                 None,
             )
@@ -369,7 +365,7 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
         if err == WSA_IO_PENDING {
             Ok(())
         } else {
-            self.completion_addr = None;
+            self.completion_state = None;
             Err(io::Error::from_raw_os_error(err))
         }
     }
@@ -383,38 +379,38 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
         use io_uring::{opcode, types};
 
         let (raw_addr, raw_addr_len) = socket_addr_to_raw(self.addr);
-        self.completion_addr_storage = Some(raw_addr);
-        self.completion_addr_len = raw_addr_len;
-        let buf = self.buf.as_ref().unwrap();
-        self.completion_iovec = Some(libc::iovec {
+        let buf = self.buf.as_ref().unwrap().as_ref();
+        let completion = self.completion_state.get_or_insert_with(|| {
+            Box::new(SendtoLinuxCompletion {
+                addr: unsafe { std::mem::zeroed() },
+                addr_len: 0,
+                iovec: libc::iovec {
+                    iov_base: std::ptr::null_mut(),
+                    iov_len: 0,
+                },
+                msghdr: unsafe { std::mem::zeroed() },
+            })
+        });
+        completion.addr = raw_addr;
+        completion.addr_len = raw_addr_len;
+        completion.iovec = libc::iovec {
             iov_base: buf.as_buf_ptr().cast_mut().cast::<libc::c_void>(),
             iov_len: buf.buf_len(),
-        });
+        };
 
-        // SAFETY: We know the fields are initialized and the struct is zeroed
-        let mut msghdr = unsafe { std::mem::zeroed::<libc::msghdr>() };
-        msghdr.msg_name = self
-            .completion_addr_storage
-            .as_mut()
-            .expect("completion_addr_storage should be initialized")
-            as *mut libc::sockaddr_storage as *mut libc::c_void;
-        msghdr.msg_namelen = self.completion_addr_len;
-        msghdr.msg_iov =
-            self.completion_iovec
-                .as_mut()
-                .expect("completion_iovec should be initialized") as *mut libc::iovec;
-        msghdr.msg_iovlen = 1;
-        msghdr.msg_control = std::ptr::null_mut();
-        msghdr.msg_controllen = 1;
-        msghdr.msg_flags = 1;
-        self.completion_msghdr = Some(msghdr);
+        completion.msghdr = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        completion.msghdr.msg_name =
+            &mut completion.addr as *mut libc::sockaddr_storage as *mut libc::c_void;
+        completion.msghdr.msg_namelen = completion.addr_len;
+        completion.msghdr.msg_iov = &mut completion.iovec as *mut libc::iovec;
+        completion.msghdr.msg_iovlen = 1;
+        completion.msghdr.msg_control = std::ptr::null_mut();
+        completion.msghdr.msg_controllen = 1;
+        completion.msghdr.msg_flags = 1;
 
         let entry = opcode::SendMsg::new(
             types::Fd(self.handle.handle),
-            self.completion_msghdr
-                .as_ref()
-                .expect("completion_msghdr should be initialized")
-                as *const libc::msghdr,
+            &completion.msghdr as *const libc::msghdr,
         )
         .build()
         .user_data(user_data);
@@ -428,14 +424,18 @@ impl<B: IoBuf> Drop for SendtoOp<'_, B> {
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
             if let Some(driver) = crate::current_driver() {
-                // If the operation is still pending, we must ensure the buffer is not dropped
-                // while the kernel is still writing to it. We transfer ownership of the buffer
-                // to the driver to be dropped when the completion arrives.
-                if let Some(buf) = self.buf.take() {
-                    driver.ignore_completion(completion_token, Box::new(buf));
-                } else {
-                    driver.ignore_completion(completion_token, Box::new(()));
-                }
+                #[cfg(any(windows, target_os = "linux"))]
+                let completion_state = self.completion_state.take();
+                #[cfg(not(any(windows, target_os = "linux")))]
+                let completion_state = ();
+
+                driver.ignore_completion(
+                    completion_token,
+                    Box::new((
+                        completion_state,
+                        self.buf.take().map(CompletionBuffer::into_stable_box),
+                    )),
+                );
             }
         }
     }

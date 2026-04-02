@@ -5,7 +5,8 @@
 **Not yet released**
 
 - Fixed some panics related to integer underflow in the timer
-- 
+- Fixed bugs related to dangling buffer pointers for stack-allocated buffers
+
 ## `vibeio` 0.2.6
 
 **Released in March 24, 2026**
