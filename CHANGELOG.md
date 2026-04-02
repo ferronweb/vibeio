@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Fixed some panics related to integer underflow in the timer
+- 
 ## `vibeio` 0.2.6
 
 **Released in March 24, 2026**

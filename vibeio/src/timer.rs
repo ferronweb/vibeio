@@ -359,7 +359,7 @@ impl Timer {
         (
             wheel
                 .nearest_wakeup()
-                .map(|deadline| Duration::from_millis(deadline.get() - now)),
+                .map(|deadline| Duration::from_millis(deadline.get().saturating_sub(now))),
             woken_up,
         )
     }
