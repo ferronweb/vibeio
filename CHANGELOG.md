@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` 0.2.8
+
+**Released in April 13, 2026**
+
+- Added `fs::symlink_metadata` utility function
+
 ## `vibeio` 0.2.7
 
 **Released in April 2, 2026**
