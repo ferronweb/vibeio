@@ -1355,6 +1355,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlink_metadata_works() {
         let runtime = Runtime::new(AnyDriver::new_mock());
