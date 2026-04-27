@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Fixed an inconsistency on Windows when reading a file that has reached EOF
+
 ## `vibeio` 0.2.8
 
 **Released in April 13, 2026**

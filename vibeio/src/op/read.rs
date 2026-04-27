@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 use mio::Interest;
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{ERROR_IO_PENDING, HANDLE},
+    Foundation::{ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE},
     Networking::WinSock::{self, SOCKET, WSABUF, WSA_IO_PENDING},
     Storage::FileSystem::ReadFile,
     System::IO::OVERLAPPED,
@@ -169,6 +169,12 @@ impl<B: IoBufMut> Op for ReadOp<'_, B> {
             }
         };
         if result < 0 {
+            #[cfg(windows)]
+            if -result == ERROR_HANDLE_EOF as i32 {
+                let buf = self.buf.as_mut().unwrap().as_mut();
+                unsafe { buf.set_buf_init(0) };
+                return Poll::Ready(Ok(0));
+            }
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
         let read = result as usize;
