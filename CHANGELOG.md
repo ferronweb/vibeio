@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.10
 
-**Not yet released**
+**Released in May 2, 2026**
 
 - Fixed busy looping related to timing events causing high CPU usage
 
