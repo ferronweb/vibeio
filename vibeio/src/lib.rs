@@ -31,7 +31,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! vibeio = "0.1"
+//! vibeio = "0.2"
 //! ```
 //!
 //! ### Example: TCP echo server
