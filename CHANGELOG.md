@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not released yet**
+
+- Fixed file descriptors not being freed when `io_uring` is used and there are pending operations on Linux 5.19+
+
 ## `vibeio` 0.2.10
 
 **Released in May 2, 2026**

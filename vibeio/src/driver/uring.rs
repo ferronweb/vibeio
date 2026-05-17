@@ -461,6 +461,15 @@ impl Driver for UringDriver {
 
     #[inline]
     fn deregister_handle(&self, handle: &InnerRawHandle) -> Result<(), io::Error> {
+        {
+            // Cancel any pending io_uring operations for this handle
+            let ring = self.ring.borrow_mut();
+            let _ = ring.submitter().register_sync_cancel(
+                Some(Timespec::new().nsec(0).sec(0)),
+                types::CancelBuilder::fd(types::Fd(handle.handle)),
+            );
+        }
+
         let mut state = self.state.borrow_mut();
         if state.registrations.try_remove(handle.token.0).is_none() {
             return Err(io::Error::new(
