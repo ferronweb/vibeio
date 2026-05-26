@@ -1,5 +1,7 @@
 use std::{
     cell::RefCell,
+    cmp::Reverse,
+    collections::BinaryHeap,
     task::Waker,
     time::{Duration, Instant},
 };
@@ -49,6 +51,9 @@ struct TimingWheel {
     generation_counter: u64,
     /// The minimum expiration tick among all entries (for O(1) nearest_wakeup)
     min_expiration_tick: Option<u64>,
+    /// Binary heap of (expiration_tick, slab_index, generation) for O(log n)
+    /// min-expiration tracking instead of O(n) scan on remove/expire.
+    expiration_heap: BinaryHeap<Reverse<(u64, usize, u64)>>,
 }
 
 impl TimingWheel {
@@ -60,6 +65,7 @@ impl TimingWheel {
             current_tick: 0,
             generation_counter: 0,
             min_expiration_tick: None,
+            expiration_heap: BinaryHeap::new(),
         }
     }
 
@@ -76,9 +82,10 @@ impl TimingWheel {
     }
 
     /// Get the nearest wakeup tick (absolute), if any timer is scheduled
-    /// This is O(1) because we track the minimum expiration tick
+    /// This is amortized O(1) because stale heap entries are lazily cleaned.
     #[inline]
-    pub fn nearest_wakeup(&self) -> Option<std::num::NonZeroU64> {
+    pub fn nearest_wakeup(&mut self) -> Option<std::num::NonZeroU64> {
+        self.refresh_min_expiration();
         self.min_expiration_tick.and_then(std::num::NonZeroU64::new)
     }
 
@@ -91,18 +98,20 @@ impl TimingWheel {
         );
     }
 
-    /// Update the minimum expiration tick after a remove or expire
-    /// This requires scanning all entries, but is only called when entries are removed
-    fn update_min_on_remove(&mut self) {
-        if self.entries.is_empty() {
-            self.min_expiration_tick = None;
-        } else {
-            self.min_expiration_tick = self
-                .entries
-                .iter()
-                .map(|(_, entry)| entry.expiration_tick)
-                .min();
+    /// Lazily refresh the minimum expiration tick by popping stale entries
+    /// from the binary heap. Amortized O(1) — only the heap top is inspected.
+    #[inline]
+    fn refresh_min_expiration(&mut self) {
+        while let Some(&Reverse((_tick, idx, gen))) = self.expiration_heap.peek() {
+            if let Some(entry) = self.entries.get(idx) {
+                if entry.generation == gen {
+                    self.min_expiration_tick = Some(entry.expiration_tick);
+                    return;
+                }
+            }
+            self.expiration_heap.pop();
         }
+        self.min_expiration_tick = None;
     }
 
     /// Insert a timer that expires at the given tick
@@ -123,6 +132,8 @@ impl TimingWheel {
         });
 
         self.wheels[level][slot].push(slab_index);
+        self.expiration_heap
+            .push(Reverse((expiration_tick, slab_index, generation)));
         self.update_min_on_insert(expiration_tick);
 
         TimerHandle {
@@ -150,7 +161,7 @@ impl TimingWheel {
 
                 // Remove from slab
                 self.entries.remove(slab_index);
-                self.update_min_on_remove();
+                self.refresh_min_expiration();
             }
         }
     }
@@ -196,11 +207,9 @@ impl TimingWheel {
             }
         }
 
-        // Update the minimum expiration time after processing,
-        // to save on `update_min_on_remove` calls
-        if !expired_wakers.is_empty() {
-            self.update_min_on_remove();
-        }
+        // Refresh the minimum expiration time after processing.
+        // The binary heap lazily cleans stale entries in O(log n).
+        self.refresh_min_expiration();
 
         expired_wakers
     }
@@ -451,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_timing_wheel_empty() {
-        let wheel = TimingWheel::new();
+        let mut wheel = TimingWheel::new();
         assert!(wheel.is_empty());
         assert_eq!(wheel.now(), 0);
         assert!(wheel.nearest_wakeup().is_none());
