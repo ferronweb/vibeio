@@ -504,8 +504,7 @@ impl RuntimeInner {
 
     /// Drain ready tasks into the given batch.
     #[inline]
-    fn drain_ready(&self, batch: &mut Vec<Arc<Task>>) {
-        let mut budget = 256;
+    fn drain_ready(&self, batch: &mut Vec<Arc<Task>>, mut budget: usize) {
         if budget != 0 {
             let slab = self.token_to_task.borrow();
             while budget != 0 {
@@ -668,12 +667,16 @@ impl Runtime {
             let mut next_task_taken = false;
 
             batch.clear();
+
+            let mut budget = 256;
             if let Some(next_task) = inner.take_next_task() {
-                // Fast path: if there's a task ready, run it immediately
                 batch.push(next_task);
                 next_task_taken = true;
-            } else {
-                inner.drain_ready(&mut batch);
+                budget -= 1;
+            }
+            // Always drain to fill the rest of the batch
+            if budget > 0 {
+                inner.drain_ready(&mut batch, budget);
             }
 
             if batch.is_empty() {
@@ -713,7 +716,7 @@ impl Runtime {
             }
 
             #[cfg(feature = "time")]
-            if !next_task_taken && batch.len() > 64 {
+            if batch.len() > 64 {
                 if let Some(timer) = inner.timer.as_ref() {
                     // Spin the timing wheel to avoid starving timers
                     let _ = timer.spin_and_get_deadline();
