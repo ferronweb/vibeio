@@ -1,5 +1,12 @@
 # `vibeio` change log
 
+## `vibeio` 0.2.12
+
+**Released in May 27, 2026**
+
+- Fixed a crash when mio (epoll, kqueue, poll) operation was interrupted.
+- Performed several timer and executor optimizations
+
 ## `vibeio` 0.2.11
 
 **Released in May 17, 2026**
