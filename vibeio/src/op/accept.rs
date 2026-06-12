@@ -16,7 +16,7 @@ use windows_sys::Win32::{
     Networking::WinSock::{
         self as WinSock, AF_INET, AF_INET6, INVALID_SOCKET, IPPROTO_TCP, SOCKADDR, SOCKADDR_IN,
         SOCKADDR_IN6, SOCKADDR_STORAGE, SOCKET, SOCK_STREAM, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
-        WSAID_ACCEPTEX, WSA_FLAG_OVERLAPPED, WSA_IO_PENDING,
+        WSAID_ACCEPTEX, WSAID_GETACCEPTEXSOCKADDRS, WSA_FLAG_OVERLAPPED, WSA_IO_PENDING,
     },
     System::IO::OVERLAPPED,
 };
@@ -143,6 +143,43 @@ fn load_accept_ex(socket: SOCKET) -> Result<WinSock::LPFN_ACCEPTEX, io::Error> {
 }
 
 #[cfg(windows)]
+fn load_get_accept_ex_sockaddrs(
+    socket: SOCKET,
+) -> Result<WinSock::LPFN_GETACCEPTEXSOCKADDRS, io::Error> {
+    let mut bytes_returned: u32 = 0;
+    let mut get_accept_ex_sockaddrs: WinSock::LPFN_GETACCEPTEXSOCKADDRS = None;
+    let mut guid = WSAID_GETACCEPTEXSOCKADDRS;
+
+    let ioctl_result = unsafe {
+        WinSock::WSAIoctl(
+            socket,
+            WinSock::SIO_GET_EXTENSION_FUNCTION_POINTER,
+            (&mut guid as *mut _) as *mut c_void,
+            std::mem::size_of_val(&guid) as u32,
+            (&mut get_accept_ex_sockaddrs as *mut _) as *mut c_void,
+            std::mem::size_of_val(&get_accept_ex_sockaddrs) as u32,
+            &mut bytes_returned,
+            ptr::null_mut(),
+            None,
+        )
+    };
+
+    if ioctl_result == WinSock::SOCKET_ERROR {
+        let err_code = unsafe { WinSock::WSAGetLastError() };
+        return Err(io::Error::from_raw_os_error(err_code));
+    }
+
+    if get_accept_ex_sockaddrs.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "GetAcceptExSockaddrs extension function is unavailable",
+        ));
+    }
+
+    Ok(get_accept_ex_sockaddrs)
+}
+
+#[cfg(windows)]
 fn listener_socket_family(listener_socket: SOCKET) -> Result<i32, io::Error> {
     let mut addr = SOCKADDR_IN6::default();
     let mut addr_len = std::mem::size_of::<SOCKADDR_IN6>() as i32;
@@ -218,6 +255,8 @@ pub struct AcceptOp<'a> {
     #[cfg(windows)]
     accept_ex: Option<WinSock::LPFN_ACCEPTEX>,
     #[cfg(windows)]
+    get_accept_ex_sockaddrs: Option<WinSock::LPFN_GETACCEPTEXSOCKADDRS>,
+    #[cfg(windows)]
     accept_socket: Option<SOCKET>,
     #[cfg(windows)]
     bytes_received: u32,
@@ -233,6 +272,8 @@ impl<'a> AcceptOp<'a> {
             handle,
             #[cfg(windows)]
             accept_ex: None,
+            #[cfg(windows)]
+            get_accept_ex_sockaddrs: None,
             #[cfg(windows)]
             accept_socket: None,
             #[cfg(windows)]
@@ -437,6 +478,8 @@ impl Op for AcceptOp<'_> {
 
         #[cfg(windows)]
         {
+            use windows_sys::Win32::Storage::FileSystem::ACCESS_DELETE;
+
             let RawOsHandle::Socket(listener_socket) = self.handle.handle else {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -465,9 +508,48 @@ impl Op for AcceptOp<'_> {
                     )));
                 }
             };
-            let address = match sockaddr_storage_to_socketaddr(unsafe {
-                &*(peer.as_ptr() as *const SOCKADDR_STORAGE)
-            }) {
+
+            let mut local_sockaddr: *mut SOCKADDR_STORAGE = std::ptr::null_mut();
+            let mut local_sockaddr_len: i32 = 0;
+            let mut remote_sockaddr: *mut SOCKADDR_STORAGE = std::ptr::null_mut();
+            let mut remote_sockaddr_len: i32 = 0;
+
+            let get_accept_ex_sockaddrs = self.get_accept_ex_sockaddrs.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "GetAcceptExSockaddrs extension function is unavailable",
+                )
+            })?;
+            let Some(get_accept_ex_sockaddrs_fn) = get_accept_ex_sockaddrs else {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "GetAcceptExSockaddrs extension function is unavailable",
+                )));
+            };
+
+            let _ = unsafe {
+                get_accept_ex_sockaddrs_fn(
+                    peer.as_ptr() as *const c_void,
+                    0,
+                    0,
+                    ACCEPTEX_ADDR_LEN as _,
+                    &mut local_sockaddr as *mut *mut SOCKADDR_STORAGE as *mut *mut SOCKADDR,
+                    &mut local_sockaddr_len as *mut i32,
+                    &mut remote_sockaddr as *mut *mut SOCKADDR_STORAGE as *mut *mut SOCKADDR,
+                    &mut remote_sockaddr_len as *mut i32,
+                )
+            };
+
+            if remote_sockaddr.is_null() {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "can't obtain remote socket address",
+                )));
+            }
+
+            let address = match sockaddr_storage_to_socketaddr(
+                &(unsafe { std::ptr::read_unaligned(remote_sockaddr as *const SOCKADDR_STORAGE) }),
+            ) {
                 Ok(address) => address,
                 Err(err) => {
                     unsafe { WinSock::closesocket(accept_socket) };
@@ -492,6 +574,9 @@ impl Op for AcceptOp<'_> {
 
         if self.accept_ex.is_none() {
             self.accept_ex = Some(load_accept_ex(listener_socket)?);
+        }
+        if self.get_accept_ex_sockaddrs.is_none() {
+            self.get_accept_ex_sockaddrs = Some(load_get_accept_ex_sockaddrs(listener_socket)?);
         }
         let accept_ex = self.accept_ex.ok_or_else(|| {
             io::Error::new(

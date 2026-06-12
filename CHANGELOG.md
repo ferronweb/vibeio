@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Fixed accepting TCP sockets for 32-bit Windows failing out with "unsupported socket family" error ([GitHub issue](https://github.com/ferronweb/ferron/issues/662))
+
 ## `vibeio` 0.2.12
 
 **Released in May 27, 2026**
