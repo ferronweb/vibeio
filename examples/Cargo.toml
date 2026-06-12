@@ -19,9 +19,6 @@ hyper = { version = "1.8.1", features = ["server", "http1"] }
 vibeio = { workspace = true }
 vibeio-hyper = { workspace = true }
 
-[target.'cfg(unix)'.dev-dependencies]
-shiba = { workspace = true }
-
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
