@@ -349,6 +349,25 @@ impl TcpListener {
         Ok(Self { inner, handle })
     }
 
+    /// Creates a new `TcpListener` from a standard library `TcpListener` in poll mode.
+    ///
+    /// This could be useful when using cloned `TcpListener` on Windows.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if registration with the async driver fails.
+    #[cfg(windows)]
+    #[inline]
+    pub fn from_std_poll(inner: std::net::TcpListener) -> Result<Self, io::Error> {
+        let handle = ManuallyDrop::new(InnerRawHandle::new(
+            crate::fd_inner::RawOsHandle::Socket(inner.as_raw_socket()),
+            Interest::READABLE,
+            crate::driver::RegistrationMode::Poll,
+        )?);
+        inner.set_nonblocking(!handle.uses_completion())?;
+        Ok(Self { inner, handle })
+    }
+
     /// Returns the local address of this listener.
     ///
     /// # Errors
