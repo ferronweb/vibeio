@@ -357,12 +357,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shiba"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46e999d3caafdbe07de20db4c787b3be9d669574ef397aa6efc6b19f7c8eef62"
-
-[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -414,7 +408,6 @@ dependencies = [
  "once_cell",
  "oneshot",
  "rusty_pool",
- "shiba",
  "slab",
  "tokio",
  "windows-sys",
@@ -427,7 +420,6 @@ dependencies = [
  "bytes",
  "http-body-util",
  "hyper",
- "shiba",
  "vibeio",
  "vibeio-hyper",
 ]
