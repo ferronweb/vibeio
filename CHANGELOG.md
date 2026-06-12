@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.13
 
-**Not yet released**
+**Released in June 12, 2026**
 
 - Added `TcpListener::from_std_poll` method for Windows.
 - Fixed accepting TCP sockets for 32-bit Windows failing out with "unsupported socket family" error ([GitHub issue](https://github.com/ferronweb/ferron/issues/662))

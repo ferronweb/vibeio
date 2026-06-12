@@ -359,7 +359,7 @@ impl TcpListener {
     #[cfg(windows)]
     #[inline]
     pub fn from_std_poll(inner: std::net::TcpListener) -> Result<Self, io::Error> {
-        let handle = ManuallyDrop::new(InnerRawHandle::new(
+        let handle = ManuallyDrop::new(InnerRawHandle::new_with_mode(
             crate::fd_inner::RawOsHandle::Socket(inner.as_raw_socket()),
             Interest::READABLE,
             crate::driver::RegistrationMode::Poll,
