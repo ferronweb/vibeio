@@ -43,9 +43,6 @@ windows-sys = { version = "0.61.2", features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.6"
 
-[target.'cfg(unix)'.dev-dependencies]
-shiba = { workspace = true }
-
 [dev-dependencies]
 
 [features]
