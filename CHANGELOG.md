@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Optimized async task executor performance.
+
 ## `vibeio` 0.2.13
 
 **Released in June 12, 2026**

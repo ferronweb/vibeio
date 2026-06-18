@@ -27,9 +27,12 @@
 //! - The runtime supports timers, blocking pools, and file I/O offloading via features.
 
 use std::cell::{RefCell, UnsafeCell};
+use std::alloc::{alloc, Layout};
 use std::collections::VecDeque;
 use std::future::Future;
+use std::mem::MaybeUninit;
 use std::pin::Pin;
+use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -68,6 +71,30 @@ fn update_waker_slot(waiter_slot: &mut Option<Waker>, waker: &Waker) {
         .is_some_and(|waiter| waiter.will_wake(waker))
     {
         *waiter_slot = Some(waker.clone());
+    }
+}
+
+/// Pin-heap-allocate a `SpawnFuture<F, T>` by writing each field directly to
+/// its final heap location via `ptr::write`. This avoids constructing the full
+/// `SpawnFuture` struct on the stack, preventing large stack-to-stack copies
+/// when `F` is a large future (e.g. contains a big I/O buffer).
+///
+/// # Safety
+/// The caller must ensure the layout is non-zero (guaranteed for `SpawnFuture`
+/// since it contains at least an `Rc` and a future).
+#[inline]
+unsafe fn pin_spawn_future<F, T>(
+    future: F,
+    state: Rc<RefCell<JoinState<T>>>,
+) -> Pin<Box<SpawnFuture<F, T>>> {
+    let layout = Layout::new::<MaybeUninit<SpawnFuture<F, T>>>();
+    // SAFETY: layout is non-zero because SpawnFuture contains Rc and F (which is
+    // 'static and therefore non-zero-sized in practice).
+    let raw = unsafe { alloc(layout) as *mut SpawnFuture<F, T> };
+    unsafe {
+        ptr::write(&mut (*raw).future, future);
+        ptr::write(&mut (*raw).state, state);
+        Pin::new_unchecked(Box::from_raw(raw))
     }
 }
 
@@ -457,15 +484,24 @@ impl RuntimeInner {
     where
         T: 'static,
     {
+        self.spawn_inner(future)
+    }
+
+    #[inline]
+    fn spawn_inner<F: Future<Output = T> + 'static, T: 'static>(
+        &self,
+        future: F,
+    ) -> JoinHandle<T> {
         let state = Rc::new(RefCell::new(JoinState {
             output: None,
             waker: None,
             canceled: false,
         }));
-        let future = Box::pin(SpawnFuture {
-            future,
-            state: state.clone(),
-        });
+
+        // Use raw allocation + ptr::write to move the future directly into its
+        // final heap location, avoiding an intermediate stack construction of
+        // SpawnFuture<F, T> which could be expensive for large futures.
+        let future = unsafe { pin_spawn_future(future, state.clone()) };
 
         let mut slab = self.token_to_task.borrow_mut();
         let vacant_slab_entry = slab.vacant_entry();
