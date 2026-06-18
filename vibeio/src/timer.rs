@@ -7,11 +7,14 @@ use std::{
 };
 
 use slab::Slab;
+use smallvec::SmallVec;
 
 /// Number of levels in the hierarchical timing wheel
 const NUM_LEVELS: usize = 7;
 /// Number of slots per level
 const SLOTS_PER_LEVEL: usize = 64;
+/// Capacity of each slot (number of entries per slot)
+const SLOT_CAPACITY: usize = 4;
 
 /// Unique identifier for a timer
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,7 +47,7 @@ struct TimingWheel {
     /// Slab storage for all timer entries
     entries: Slab<TimerEntry>,
     /// The wheels for each level
-    wheels: [Vec<Vec<usize>>; NUM_LEVELS],
+    wheels: [[SmallVec<[usize; SLOT_CAPACITY]>; SLOTS_PER_LEVEL]; NUM_LEVELS],
     /// Current tick count (milliseconds since creation)
     current_tick: u64,
     /// Generation counter for handling timer reuse
@@ -61,7 +64,7 @@ impl TimingWheel {
     pub fn new() -> Self {
         Self {
             entries: Slab::new(),
-            wheels: std::array::from_fn(|_| vec![Vec::new(); SLOTS_PER_LEVEL]),
+            wheels: std::array::from_fn(|_| std::array::from_fn(|_| SmallVec::new())),
             current_tick: 0,
             generation_counter: 0,
             min_expiration_tick: None,
@@ -227,7 +230,8 @@ impl TimingWheel {
     fn cascade_level(&mut self, level: usize, expired_wakers: &mut Vec<Waker>) {
         // Take all slots at this level
         for slot in 0..SLOTS_PER_LEVEL {
-            let timers_to_cascade: Vec<usize> = std::mem::take(&mut self.wheels[level][slot]);
+            let timers_to_cascade: SmallVec<[usize; SLOT_CAPACITY]> =
+                std::mem::take(&mut self.wheels[level][slot]);
 
             for slab_index in timers_to_cascade {
                 if let Some(entry) = self.entries.get(slab_index) {
@@ -253,7 +257,8 @@ impl TimingWheel {
 
     /// Process a specific slot at level 0
     fn process_slot_at_level_0(&mut self, slot: usize, expired_wakers: &mut Vec<Waker>) {
-        let timers_to_process: Vec<usize> = std::mem::take(&mut self.wheels[0][slot]);
+        let timers_to_process: SmallVec<[usize; SLOT_CAPACITY]> =
+            std::mem::take(&mut self.wheels[0][slot]);
 
         for slab_index in timers_to_process {
             if let Some(entry) = self.entries.get(slab_index) {
