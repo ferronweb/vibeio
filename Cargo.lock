@@ -409,6 +409,7 @@ dependencies = [
  "oneshot",
  "rusty_pool",
  "slab",
+ "smallvec",
  "tokio",
  "windows-sys",
 ]

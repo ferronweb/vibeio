@@ -10,6 +10,7 @@ use io_uring::types::{SubmitArgs, Timespec};
 use io_uring::{opcode, squeue, types, IoUring};
 use mio::{Interest, Token};
 use slab::Slab;
+use smallvec::SmallVec;
 
 use crate::driver::{CompletionIoResult, Interruptor};
 use crate::{
@@ -273,9 +274,7 @@ impl UringDriver {
         // Collect wakers in a small inline array to avoid heap allocation
         // in the common case (0-8 completions per collect_completions call).
         // Most flush/wait calls produce very few completions.
-        let mut fast_wakers: [Option<Waker>; 8] = Default::default();
-        let mut fast_count = 0;
-        let mut overflow_wakers: Vec<Waker> = Vec::new();
+        let mut wakers: SmallVec<[Waker; 8]> = SmallVec::new();
 
         {
             let mut ring = self.ring.borrow_mut();
@@ -307,12 +306,7 @@ impl UringDriver {
                         _ => None,
                     };
                     if let Some(waiter) = waiter {
-                        if fast_count < fast_wakers.len() {
-                            fast_wakers[fast_count] = Some(waiter);
-                        } else {
-                            overflow_wakers.push(waiter);
-                        }
-                        fast_count += 1;
+                        wakers.push(waiter);
                     }
                     continue;
                 }
@@ -330,12 +324,7 @@ impl UringDriver {
                     state.completions.remove(token.0);
                 }
                 if let Some(waiter) = waiter {
-                    if fast_count < fast_wakers.len() {
-                        fast_wakers[fast_count] = Some(waiter);
-                    } else {
-                        overflow_wakers.push(waiter);
-                    }
-                    fast_count += 1;
+                    wakers.push(waiter);
                 }
             }
         }
@@ -344,12 +333,7 @@ impl UringDriver {
             self.submit_interrupt();
         }
 
-        for waker in fast_wakers.iter_mut().take(fast_count) {
-            if let Some(w) = waker.take() {
-                w.wake();
-            }
-        }
-        for waker in overflow_wakers {
+        for waker in wakers {
             waker.wake();
         }
 

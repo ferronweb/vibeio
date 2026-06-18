@@ -4,7 +4,8 @@
 
 **Not yet released**
 
-- Optimized async task executor performance.
+- Slightly optimized async task executor performance.
+- Optimized async timer performance.
 
 ## `vibeio` 0.2.13
 
