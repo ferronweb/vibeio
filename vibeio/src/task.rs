@@ -90,7 +90,7 @@ impl Task {
             return;
         }
 
-            // Cross-thread wake path
+        // Cross-thread wake path
         if let Some(shared) = task.runtime.upgrade() {
             if !task.queued.swap(true, Ordering::Relaxed) {
                 shared.remote_queue.push(task.token);

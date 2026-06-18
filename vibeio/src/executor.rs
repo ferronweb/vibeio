@@ -26,8 +26,8 @@
 //! - Tasks are polled in batches for better performance.
 //! - The runtime supports timers, blocking pools, and file I/O offloading via features.
 
-use std::cell::{RefCell, UnsafeCell};
 use std::alloc::{alloc, Layout};
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::mem::MaybeUninit;
@@ -488,10 +488,7 @@ impl RuntimeInner {
     }
 
     #[inline]
-    fn spawn_inner<F: Future<Output = T> + 'static, T: 'static>(
-        &self,
-        future: F,
-    ) -> JoinHandle<T> {
+    fn spawn_inner<F: Future<Output = T> + 'static, T: 'static>(&self, future: F) -> JoinHandle<T> {
         let state = Rc::new(RefCell::new(JoinState {
             output: None,
             waker: None,
@@ -734,7 +731,10 @@ impl Runtime {
                     continue;
                 }
 
-                inner.runtime_shared.interrupt_pending.store(false, Ordering::Release);
+                inner
+                    .runtime_shared
+                    .interrupt_pending
+                    .store(false, Ordering::Release);
                 inner.runtime_shared.waiting.store(true, Ordering::Release);
 
                 if root_notify.is_ready() || inner.should_skip_wait() {
