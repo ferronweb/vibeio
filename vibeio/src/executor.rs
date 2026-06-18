@@ -154,7 +154,7 @@ impl<T> Future for JoinHandle<T> {
 struct BlockOnNotify {
     ready: AtomicBool,
     thread_id: std::thread::ThreadId,
-    interruptor: AnyInterruptor,
+    interruptor: Arc<AnyInterruptor>,
     waiting: Arc<AtomicBool>,
     interrupt_pending: Arc<AtomicBool>,
 }
@@ -162,7 +162,7 @@ struct BlockOnNotify {
 impl BlockOnNotify {
     #[inline]
     fn new(
-        interruptor: AnyInterruptor,
+        interruptor: Arc<AnyInterruptor>,
         waiting: Arc<AtomicBool>,
         interrupt_pending: Arc<AtomicBool>,
     ) -> Arc<Self> {
@@ -405,14 +405,24 @@ pub(crate) fn offload_fs() -> bool {
     })
 }
 
+/// Shared runtime state for cross-thread coordination.
+///
+/// Groups the remote queue, waiting flag, interrupt flag, and interruptor
+/// into a single allocation. Tasks hold a `Weak<RuntimeShared>` instead of
+/// three separate `Arc::Weak` pointers, reducing atomic operations on wake.
+pub(crate) struct RuntimeShared {
+    pub remote_queue: SegQueue<usize>,
+    pub waiting: Arc<AtomicBool>,
+    pub interrupt_pending: Arc<AtomicBool>,
+    pub interruptor: Arc<AnyInterruptor>,
+}
+
 pub(crate) struct RuntimeInner {
     queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
     next_task: Rc<RefCell<Option<Arc<Task>>>>,
-    remote_queue: Arc<SegQueue<usize>>,
+    runtime_shared: Arc<RuntimeShared>,
     token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
-    waiting: Arc<AtomicBool>,
-    interrupt_pending: Arc<AtomicBool>,
     blocking_pool: Option<Box<dyn BlockingThreadPool>>,
     #[cfg(feature = "fs")]
     fs_offload: bool,
@@ -464,12 +474,9 @@ impl RuntimeInner {
             future: RefCell::new(Some(future)),
             queue: Rc::downgrade(&self.queue),
             next_task: Rc::downgrade(&self.next_task),
-            remote_queue: Arc::downgrade(&self.remote_queue),
+            runtime: Arc::downgrade(&self.runtime_shared),
             queued: AtomicBool::new(true),
             thread_id: std::thread::current().id(),
-            interruptor: self.driver.get_interruptor(),
-            waiting: Arc::downgrade(&self.waiting),
-            interrupt_pending: Arc::downgrade(&self.interrupt_pending),
             token: vacant_slab_entry.key(),
         });
         vacant_slab_entry.insert(task.clone());
@@ -508,7 +515,7 @@ impl RuntimeInner {
         if budget != 0 {
             let slab = self.token_to_task.borrow();
             while budget != 0 {
-                let Some(token) = self.remote_queue.pop() else {
+                let Some(token) = self.runtime_shared.remote_queue.pop() else {
                     break;
                 };
                 if let Some(task) = slab.get(token) {
@@ -534,13 +541,15 @@ impl RuntimeInner {
 
     #[inline]
     fn stop_waiting(&self) {
-        self.waiting.store(false, Ordering::Release);
-        self.interrupt_pending.store(false, Ordering::Release);
+        self.runtime_shared.waiting.store(false, Ordering::Release);
+        self.runtime_shared
+            .interrupt_pending
+            .store(false, Ordering::Release);
     }
 
     #[inline]
     fn should_skip_wait(&self) -> bool {
-        if self.next_task.borrow().is_some() || !self.remote_queue.is_empty() {
+        if self.next_task.borrow().is_some() || !self.runtime_shared.remote_queue.is_empty() {
             return true;
         }
 
@@ -586,15 +595,20 @@ impl Runtime {
         let _ = fs_offload;
 
         let ready_queue = Rc::new(UnsafeCell::new(VecDeque::with_capacity(4096)));
+        let interruptor = driver.get_interruptor();
+        let runtime_shared = Arc::new(RuntimeShared {
+            remote_queue: SegQueue::new(),
+            waiting: Arc::new(AtomicBool::new(false)),
+            interrupt_pending: Arc::new(AtomicBool::new(false)),
+            interruptor: Arc::new(interruptor),
+        });
         Runtime {
             inner: Some(Rc::new(RuntimeInner {
                 queue: ready_queue,
                 next_task: Rc::new(RefCell::new(None)),
-                remote_queue: Arc::new(SegQueue::new()),
+                runtime_shared,
                 token_to_task: RefCell::new(Slab::with_capacity(4096)),
                 driver: Rc::new(driver),
-                waiting: Arc::new(AtomicBool::new(false)),
-                interrupt_pending: Arc::new(AtomicBool::new(false)),
                 blocking_pool,
                 #[cfg(feature = "fs")]
                 fs_offload,
@@ -649,9 +663,9 @@ impl Runtime {
 
         let mut future = std::pin::pin!(future);
         let root_notify = BlockOnNotify::new(
-            inner.driver.get_interruptor(),
-            inner.waiting.clone(),
-            inner.interrupt_pending.clone(),
+            inner.runtime_shared.interruptor.clone(),
+            Arc::clone(&inner.runtime_shared.waiting),
+            Arc::clone(&inner.runtime_shared.interrupt_pending),
         );
         let root_waker = root_notify.waker();
         let mut batch = Vec::with_capacity(256);
@@ -684,8 +698,8 @@ impl Runtime {
                     continue;
                 }
 
-                inner.interrupt_pending.store(false, Ordering::Release);
-                inner.waiting.store(true, Ordering::Release);
+                inner.runtime_shared.interrupt_pending.store(false, Ordering::Release);
+                inner.runtime_shared.waiting.store(true, Ordering::Release);
 
                 if root_notify.is_ready() || inner.should_skip_wait() {
                     inner.stop_waiting();

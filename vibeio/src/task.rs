@@ -5,22 +5,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{RawWaker, RawWakerVTable, Waker};
 
-use crossbeam_queue::SegQueue;
 use futures_util::future::LocalBoxFuture;
 
-use crate::driver::AnyInterruptor;
+use crate::executor::RuntimeShared;
 
 pub struct Task {
     pub future: RefCell<Option<LocalBoxFuture<'static, ()>>>,
     pub queue: Weak<UnsafeCell<VecDeque<Arc<Task>>>>,
     pub next_task: Weak<RefCell<Option<Arc<Task>>>>,
-    pub remote_queue: std::sync::Weak<SegQueue<usize>>,
-    pub interruptor: AnyInterruptor,
+    pub runtime: std::sync::Weak<RuntimeShared>,
     pub queued: AtomicBool,
     pub thread_id: std::thread::ThreadId,
     pub token: usize,
-    pub waiting: std::sync::Weak<AtomicBool>,
-    pub interrupt_pending: std::sync::Weak<AtomicBool>,
 }
 
 impl Task {
@@ -94,25 +90,17 @@ impl Task {
             return;
         }
 
-        if !task.queued.swap(true, Ordering::Relaxed) {
-            if let Some(remote_queue) = task.remote_queue.upgrade() {
-                remote_queue.push(task.token);
+            // Cross-thread wake path
+        if let Some(shared) = task.runtime.upgrade() {
+            if !task.queued.swap(true, Ordering::Relaxed) {
+                shared.remote_queue.push(task.token);
             }
-        }
 
-        // Interrupt the driver if it's waiting
-        if task
-            .waiting
-            .upgrade()
-            .is_some_and(|waiting| waiting.load(Ordering::Acquire))
-        {
-            let should_interrupt = task
-                .interrupt_pending
-                .upgrade()
-                .is_none_or(|pending| !pending.swap(true, Ordering::AcqRel));
-            if should_interrupt {
-                // Interrupt the driver if the waker is not on the same thread as the runtime
-                task.interruptor.interrupt();
+            // Interrupt the driver if it's waiting
+            if shared.waiting.load(Ordering::Acquire)
+                && !shared.interrupt_pending.swap(true, Ordering::AcqRel)
+            {
+                shared.interruptor.interrupt();
             }
         }
     }
