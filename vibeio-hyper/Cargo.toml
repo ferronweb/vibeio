@@ -15,3 +15,7 @@ repository = "https://github.com/ferronweb/vibeio"
 hyper = "1.8.1"
 tokio = "1.50.0"
 vibeio = { workspace = true }
+
+[features]
+default = ["time"]
+time = ["vibeio/time"]

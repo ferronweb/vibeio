@@ -20,6 +20,7 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::task::{Context, Poll};
 
 use mio::Interest;
@@ -238,6 +239,8 @@ pub struct TcpStream {
 /// - Can be converted to [`TcpStream`] with adaptive or completion mode.
 pub struct PollTcpStream {
     stream: TcpStream,
+    write_ready: AtomicBool,
+    read_ready: AtomicBool,
 }
 
 impl TcpStream {
@@ -390,7 +393,11 @@ impl TcpStream {
         stream
             .inner
             .set_nonblocking(!stream.handle.uses_completion())?;
-        Ok(PollTcpStream { stream })
+        Ok(PollTcpStream {
+            stream,
+            write_ready: AtomicBool::new(false),
+            read_ready: AtomicBool::new(false),
+        })
     }
 }
 
@@ -432,6 +439,8 @@ impl PollTcpStream {
     pub fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
         Ok(Self {
             stream: TcpStream::from_std_with_mode(inner, RegistrationMode::Poll)?,
+            write_ready: AtomicBool::new(false),
+            read_ready: AtomicBool::new(false),
         })
     }
 
@@ -491,6 +500,42 @@ impl PollTcpStream {
         let buf = unsafe { IoBufTemporaryPoll::new(buf.as_mut_ptr(), buf.len()) };
         let mut op = RecvOp::new_peek(handle, buf);
         poll_fn(move |cx| handle.poll_op_poll(cx, &mut op)).await
+    }
+
+    /// Tries to perform an I/O operation on the socket, returning an error if it is not ready.
+    #[inline]
+    pub fn try_io_readable<Io, IoR>(&self, io: Io) -> io::Result<IoR>
+    where
+        Io: FnOnce() -> io::Result<IoR>,
+    {
+        if self.read_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            let result = io();
+            if result.is_err() {
+                self.read_ready
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            result
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "read not ready"))
+        }
+    }
+
+    /// Tries to perform an I/O operation on the socket, returning an error if it is not ready.
+    #[inline]
+    pub fn try_io_writable<Io, IoR>(&self, io: Io) -> io::Result<IoR>
+    where
+        Io: FnOnce() -> io::Result<IoR>,
+    {
+        if self.write_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            let result = io();
+            if result.is_err() {
+                self.write_ready
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            result
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "write not ready"))
+        }
     }
 }
 
@@ -713,18 +758,32 @@ impl TokioAsyncWrite for PollTcpStream {
 impl AsyncReadPoll for PollTcpStream {
     #[inline]
     fn poll_readable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
-        self.stream
+        if self.read_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            return Poll::Ready(Ok(()));
+        }
+        let poll = self
+            .stream
             .handle
-            .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.stream.handle))
+            .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.stream.handle))?;
+        self.read_ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        poll.map(Ok)
     }
 }
 
 impl AsyncWritePoll for PollTcpStream {
     #[inline]
     fn poll_writable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
-        self.stream
+        if self.write_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            return Poll::Ready(Ok(()));
+        }
+        let poll = self
+            .stream
             .handle
-            .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.stream.handle))
+            .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.stream.handle))?;
+        self.write_ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        poll.map(Ok)
     }
 }
 

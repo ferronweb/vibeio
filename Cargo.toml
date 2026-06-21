@@ -1,11 +1,12 @@
 [workspace]
-members = ["vibeio", "examples", "vibeio-hyper"]
+members = ["vibeio", "examples", "vibeio-hyper", "vibeio-quinn"]
 resolver = "2"
 
 [workspace.dependencies]
-vibeio = "=0.2.13"
+vibeio = { version = "=0.2.13", default-features = false }
 vibeio-hyper = "=0.2.13"
 
 [patch.crates-io]
 vibeio = { path = "./vibeio" }
 vibeio-hyper = { path = "./vibeio-hyper" }
+vibeio-quinn = { path = "./vibeio-quinn" }

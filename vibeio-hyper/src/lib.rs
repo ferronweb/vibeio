@@ -49,7 +49,9 @@ use std::{
     task::{Context, Poll},
 };
 
-use hyper::rt::{Executor, Sleep, Timer};
+use hyper::rt::Executor;
+#[cfg(feature = "time")]
+use hyper::rt::{Sleep, Timer};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// An executor that spawns tasks onto the `vibeio` runtime.
@@ -74,9 +76,11 @@ where
 ///
 /// This type implements `hyper::rt::Timer` and uses `vibeio::time::sleep`
 /// to implement delay operations.
+#[cfg(feature = "time")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct VibeioTimer;
 
+#[cfg(feature = "time")]
 impl Timer for VibeioTimer {
     #[inline]
     fn sleep(&self, duration: std::time::Duration) -> Pin<Box<dyn Sleep>> {
@@ -101,10 +105,12 @@ impl Timer for VibeioTimer {
 }
 
 /// A sleep future that wraps `vibeio::time::Sleep` and implements `hyper::rt::Sleep`.
+#[cfg(feature = "time")]
 struct VibeioSleep {
     inner: Pin<Box<vibeio::time::Sleep>>,
 }
 
+#[cfg(feature = "time")]
 impl std::future::Future for VibeioSleep {
     type Output = ();
 
@@ -114,11 +120,15 @@ impl std::future::Future for VibeioSleep {
     }
 }
 
+#[cfg(feature = "time")]
 impl Sleep for VibeioSleep {}
 
+#[cfg(feature = "time")]
 unsafe impl Send for VibeioSleep {}
+#[cfg(feature = "time")]
 unsafe impl Sync for VibeioSleep {}
 
+#[cfg(feature = "time")]
 impl VibeioSleep {
     #[inline]
     fn reset(&mut self, new_deadline: std::time::Instant) {

@@ -20,6 +20,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{SocketAddr, UnixStream as StdUnixStream};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::task::{Context, Poll};
 
 use mio::Interest;
@@ -137,6 +138,8 @@ pub struct UnixStream {
 /// - Can be converted to [`UnixStream`] with adaptive or completion mode.
 pub struct PollUnixStream {
     stream: UnixStream,
+    read_ready: AtomicBool,
+    write_ready: AtomicBool,
 }
 
 impl UnixStream {
@@ -229,7 +232,11 @@ impl UnixStream {
         stream
             .inner
             .set_nonblocking(!stream.handle.uses_completion())?;
-        Ok(PollUnixStream { stream })
+        Ok(PollUnixStream {
+            stream,
+            read_ready: AtomicBool::new(false),
+            write_ready: AtomicBool::new(false),
+        })
     }
 }
 
@@ -253,6 +260,8 @@ impl PollUnixStream {
     pub fn from_std(inner: StdUnixStream) -> Result<Self, io::Error> {
         Ok(Self {
             stream: UnixStream::from_std_with_mode(inner, RegistrationMode::Poll)?,
+            read_ready: AtomicBool::new(false),
+            write_ready: AtomicBool::new(false),
         })
     }
 
@@ -289,6 +298,42 @@ impl PollUnixStream {
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.stream.shutdown(how)
+    }
+
+    /// Tries to perform an I/O operation on the socket, returning an error if it is not ready.
+    #[inline]
+    pub fn try_io_readable<Io, IoR>(&self, io: Io) -> io::Result<IoR>
+    where
+        Io: FnOnce() -> io::Result<IoR>,
+    {
+        if self.read_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            let result = io();
+            if result.is_err() {
+                self.read_ready
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            result
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "read not ready"))
+        }
+    }
+
+    /// Tries to perform an I/O operation on the socket, returning an error if it is not ready.
+    #[inline]
+    pub fn try_io_writable<Io, IoR>(&self, io: Io) -> io::Result<IoR>
+    where
+        Io: FnOnce() -> io::Result<IoR>,
+    {
+        if self.write_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            let result = io();
+            if result.is_err() {
+                self.write_ready
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            result
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "write not ready"))
+        }
     }
 }
 
@@ -393,6 +438,8 @@ impl UnixStream {
         inner.set_nonblocking(!handle.uses_completion())?;
         Ok(PollUnixStream {
             stream: Self { inner, handle },
+            read_ready: AtomicBool::new(false),
+            write_ready: AtomicBool::new(false),
         })
     }
 }
@@ -485,18 +532,32 @@ impl AsyncWrite for UnixStream {
 impl AsyncReadPoll for PollUnixStream {
     #[inline]
     fn poll_readable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
-        self.stream
+        if self.read_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            return Poll::Ready(Ok(()));
+        }
+        let poll = self
+            .stream
             .handle
-            .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.stream.handle))
+            .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.stream.handle))?;
+        self.read_ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        poll.map(Ok)
     }
 }
 
 impl AsyncWritePoll for PollUnixStream {
     #[inline]
     fn poll_writable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
-        self.stream
+        if self.write_ready.load(std::sync::atomic::Ordering::Relaxed) {
+            return Poll::Ready(Ok(()));
+        }
+        let poll = self
+            .stream
             .handle
-            .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.stream.handle))
+            .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.stream.handle))?;
+        self.write_ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        poll.map(Ok)
     }
 }
 

@@ -1,0 +1,17 @@
+[package]
+name = "vibeio-quinn"
+version = "0.2.13"
+edition = "2021"
+authors = ["Dorian Niemiec <dorian@ferron.sh>"]
+description = "A compatibility layer for using `quinn` with the `vibeio` async runtime"
+license = "MIT"
+readme = "../README.md"
+keywords = ["async", "quinn", "quic"]
+categories = ["network-programming"]
+documentation = "https://docs.rs/vibeio-quinn"
+repository = "https://github.com/ferronweb/vibeio"
+
+[dependencies]
+quinn = { version = "0.11.9", default-features = false }
+quinn-udp = "0.5.14"
+vibeio = { workspace = true, features = ["time"] }
