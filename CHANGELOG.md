@@ -5,6 +5,7 @@
 **Not yet released**
 
 - Added `AsyncReadPoll` and `AsyncWritePoll` traits for poll-based async read/write readiness interfaces.
+- Added `PollUdpSocket` struct for poll-based UDP socket readiness interfaces.
 
 ## `vibeio` 0.2.13
 
