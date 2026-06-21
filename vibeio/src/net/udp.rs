@@ -10,6 +10,7 @@
 //! - For platforms without native async support, operations fall back to synchronous std::net calls.
 //! - The runtime must be active when calling these types' methods; otherwise they will panic.
 
+use std::cell::RefCell;
 use std::future::poll_fn;
 use std::io;
 use std::mem::ManuallyDrop;
@@ -21,7 +22,6 @@ use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, IntoRawSocket, RawSocket};
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -272,8 +272,8 @@ impl UdpSocket {
             .set_nonblocking(!socket.handle.uses_completion())?;
         Ok(PollUdpSocket {
             socket,
-            read_ready: AtomicBool::new(false),
-            write_ready: AtomicBool::new(false),
+            read_ready: RefCell::new(false),
+            write_ready: RefCell::new(false),
         })
     }
 
@@ -762,8 +762,8 @@ impl<'a> AsInnerRawHandle<'a> for UdpSocket {
 /// ```
 pub struct PollUdpSocket {
     socket: UdpSocket,
-    read_ready: AtomicBool,
-    write_ready: AtomicBool,
+    read_ready: RefCell<bool>,
+    write_ready: RefCell<bool>,
 }
 
 impl PollUdpSocket {
@@ -791,8 +791,8 @@ impl PollUdpSocket {
     pub fn from_std(inner: StdUdpSocket) -> Result<Self, io::Error> {
         Ok(Self {
             socket: UdpSocket::from_std_with_mode(inner, RegistrationMode::Poll)?,
-            read_ready: AtomicBool::new(false),
-            write_ready: AtomicBool::new(false),
+            read_ready: RefCell::new(false),
+            write_ready: RefCell::new(false),
         })
     }
 
@@ -918,8 +918,8 @@ impl PollUdpSocket {
     pub fn try_clone(&self) -> Result<Self, io::Error> {
         Ok(Self {
             socket: self.socket.try_clone()?,
-            read_ready: AtomicBool::new(false),
-            write_ready: AtomicBool::new(false),
+            read_ready: RefCell::new(false),
+            write_ready: RefCell::new(false),
         })
     }
 
@@ -1239,11 +1239,10 @@ impl PollUdpSocket {
     where
         Io: FnOnce() -> io::Result<IoR>,
     {
-        if self.read_ready.load(std::sync::atomic::Ordering::Relaxed) {
+        if *self.read_ready.borrow() {
             let result = io();
             if result.is_err() {
-                self.read_ready
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                *self.read_ready.borrow_mut() = false;
             }
             result
         } else {
@@ -1257,11 +1256,10 @@ impl PollUdpSocket {
     where
         Io: FnOnce() -> io::Result<IoR>,
     {
-        if self.write_ready.load(std::sync::atomic::Ordering::Relaxed) {
+        if *self.write_ready.borrow() {
             let result = io();
             if result.is_err() {
-                self.write_ready
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                *self.write_ready.borrow_mut() = false;
             }
             result
         } else {
@@ -1273,15 +1271,14 @@ impl PollUdpSocket {
 impl AsyncReadPoll for PollUdpSocket {
     #[inline]
     fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.read_ready.load(std::sync::atomic::Ordering::Relaxed) {
+        if *self.read_ready.borrow() {
             return Poll::Ready(Ok(()));
         }
         let poll = self
             .socket
             .handle
             .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.socket.handle))?;
-        self.read_ready
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        *self.read_ready.borrow_mut() = true;
         poll.map(Ok)
     }
 }
@@ -1289,15 +1286,14 @@ impl AsyncReadPoll for PollUdpSocket {
 impl AsyncWritePoll for PollUdpSocket {
     #[inline]
     fn poll_writable(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.write_ready.load(std::sync::atomic::Ordering::Relaxed) {
+        if *self.write_ready.borrow() {
             return Poll::Ready(Ok(()));
         }
         let poll = self
             .socket
             .handle
             .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.socket.handle))?;
-        self.write_ready
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        *self.write_ready.borrow_mut() = true;
         poll.map(Ok)
     }
 }
