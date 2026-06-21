@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Added `AsyncReadPoll` and `AsyncWritePoll` traits for poll-based async read/write readiness interfaces.
+
 ## `vibeio` 0.2.13
 
 **Released in June 12, 2026**

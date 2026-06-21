@@ -26,10 +26,10 @@ use mio::Interest;
 use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
 use crate::io::{
-    AsInnerRawHandle, IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
-    IoVectoredBufTemporaryPoll,
+    AsInnerRawHandle, AsyncReadPoll, AsyncWritePoll, IoBuf, IoBufMut, IoBufTemporaryPoll,
+    IoVectoredBuf, IoVectoredBufMut, IoVectoredBufTemporaryPoll,
 };
-use crate::op::{ConnectOp, ReadOp, ReadvOp, WriteOp, WritevOp};
+use crate::op::{ConnectOp, ReadOp, ReadinessOp, ReadvOp, WriteOp, WritevOp};
 use crate::{
     driver::RegistrationMode,
     fd_inner::InnerRawHandle,
@@ -479,6 +479,24 @@ impl AsyncWrite for UnixStream {
         let mut op = WritevOp::new(handle, bufs);
         let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
         (result, op.take_bufs())
+    }
+}
+
+impl AsyncReadPoll for PollUnixStream {
+    #[inline]
+    fn poll_readable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
+        self.stream
+            .handle
+            .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.stream.handle))
+    }
+}
+
+impl AsyncWritePoll for PollUnixStream {
+    #[inline]
+    fn poll_writable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
+        self.stream
+            .handle
+            .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.stream.handle))
     }
 }
 

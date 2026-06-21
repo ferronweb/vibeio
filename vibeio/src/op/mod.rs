@@ -14,6 +14,7 @@ mod open;
 mod read;
 #[cfg(feature = "fs")]
 mod readat;
+mod readiness;
 mod readv;
 mod recv;
 mod recvfrom;
@@ -59,6 +60,7 @@ pub use open::OpenOp;
 pub use read::ReadOp;
 #[cfg(feature = "fs")]
 pub use readat::ReadAtOp;
+pub use readiness::ReadinessOp;
 pub use readv::ReadvOp;
 pub use recv::RecvOp;
 pub use recvfrom::RecvfromOp;

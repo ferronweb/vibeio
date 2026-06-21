@@ -2,6 +2,7 @@
 //!
 //! This module provides the core async I/O abstractions used by vibeio:
 //! - `AsyncRead` and `AsyncWrite`: async traits for reading and writing.
+//! - `AsyncReadPoll` and `AsyncWritePoll`: poll-based async read/write readiness interfaces.
 //! - `IoBuf` and `IoBufMut`: buffer traits for async I/O operations.
 //! - `pipe()`: create async-aware pipe endpoints.
 //! - `splice()` and `sendfile_exact()`: zero-copy I/O operations (Linux only).
@@ -121,5 +122,29 @@ impl<'a> AsInnerRawHandle<'a> for InnerRawHandle {
     #[inline]
     fn as_inner_raw_handle(&'a self) -> &'a InnerRawHandle {
         self
+    }
+}
+
+/// Trait to poll for read readiness.
+pub trait AsyncReadPoll {
+    /// Polls to check if the reader is readable.
+    fn poll_readable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>>;
+
+    /// Returns a future that resolves when the reader becomes readable.
+    #[inline]
+    async fn readable(&self) -> Result<(), io::Error> {
+        std::future::poll_fn(|cx| self.poll_readable(cx)).await
+    }
+}
+
+/// Trait to poll for write readiness.
+pub trait AsyncWritePoll {
+    /// Polls to check if the writer is writable.
+    fn poll_writable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>>;
+
+    /// Returns a future that resolves when the writer becomes writable.
+    #[inline]
+    async fn writable(&self) -> Result<(), io::Error> {
+        std::future::poll_fn(|cx| self.poll_writable(cx)).await
     }
 }

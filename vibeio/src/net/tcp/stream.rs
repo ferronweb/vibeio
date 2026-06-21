@@ -32,10 +32,10 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 
 use crate::io::{
-    AsInnerRawHandle, IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
-    IoVectoredBufTemporaryPoll,
+    AsInnerRawHandle, AsyncReadPoll, AsyncWritePoll, IoBuf, IoBufMut, IoBufTemporaryPoll,
+    IoVectoredBuf, IoVectoredBufMut, IoVectoredBufTemporaryPoll,
 };
-use crate::op::{ConnectOp, ReadOp, ReadvOp, RecvOp, WriteOp, WritevOp};
+use crate::op::{ConnectOp, ReadOp, ReadinessOp, ReadvOp, RecvOp, WriteOp, WritevOp};
 use crate::{
     driver::RegistrationMode,
     fd_inner::InnerRawHandle,
@@ -707,6 +707,24 @@ impl TokioAsyncWrite for PollTcpStream {
     #[inline]
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(self.get_mut().shutdown(Shutdown::Write))
+    }
+}
+
+impl AsyncReadPoll for PollTcpStream {
+    #[inline]
+    fn poll_readable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
+        self.stream
+            .handle
+            .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.stream.handle))
+    }
+}
+
+impl AsyncWritePoll for PollTcpStream {
+    #[inline]
+    fn poll_writable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
+        self.stream
+            .handle
+            .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.stream.handle))
     }
 }
 
