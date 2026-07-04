@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.14
 
-**Not yet released**
+**Released in July 4, 2026**
 
 - Added `AsyncReadPoll` and `AsyncWritePoll` traits for poll-based async read/write readiness interfaces.
 - Added `PollUdpSocket` struct for poll-based UDP socket readiness interfaces.

@@ -592,7 +592,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -685,7 +685,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "vibeio"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "async-channel",
  "crossbeam-queue",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "vibeio-hyper"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "hyper",
  "tokio",
