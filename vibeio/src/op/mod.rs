@@ -176,6 +176,10 @@ mod vectored_uring_tests {
         runtime.block_on(async {
             // create a pipe (pair of fds)
             let mut fds: [libc::c_int; 2] = [0, 0];
+            #[cfg(syscall_pipe2)]
+            let res =
+                unsafe { libc::pipe2(fds.as_mut_ptr() as *mut libc::c_int, libc::O_NONBLOCK) };
+            #[cfg(not(syscall_pipe2))]
             let res = unsafe { libc::pipe(fds.as_mut_ptr() as *mut libc::c_int) };
             assert_eq!(res, 0, "pipe() failed");
 

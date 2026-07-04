@@ -8,6 +8,7 @@
 - Added `PollUdpSocket` struct for poll-based UDP socket readiness interfaces.
 - Added `time` Cargo feature to `vibeio-hyper` that can be optionally disabled.
 - Added `try_io_readable` and `try_io_writable` methods to `PollUdpSocket`, `PollTcpStream`, and `PollUnixStream`.
+- Applied some Linux-specific optimizations (`accept4`, `pipe2` system calls).
 - Initial version of `vibeio-quinn` crate for poll-based QUIC socket readiness interfaces.
 - `vibeio-hyper` now no longer depends on all the Cargo features of `vibeio`.
 

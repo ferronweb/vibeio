@@ -88,6 +88,8 @@ fn blocking_pool_io_error() -> io::Error {
 #[cfg(unix)]
 #[inline]
 fn configure_nonblocking(fd: RawFd, uses_completion: bool) {
+    // On Linux, pipe2() already sets O_NONBLOCK at creation time, so
+    // we only need to adjust flags when the mode doesn't match.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags == -1 {
         return;
@@ -97,8 +99,10 @@ fn configure_nonblocking(fd: RawFd, uses_completion: bool) {
     if uses_completion {
         new_flags &= !libc::O_NONBLOCK;
     }
-    unsafe {
-        libc::fcntl(fd, libc::F_SETFL, new_flags);
+    if new_flags != flags {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFL, new_flags);
+        }
     }
 }
 

@@ -43,11 +43,11 @@ use crate::{
 };
 
 fn pipe_inner() -> std::io::Result<(OwnedFd, OwnedFd)> {
-    let mut fds: Box<[MaybeUninit<RawFd>]> = Box::new_uninit_slice(2);
-    let fds = unsafe {
-        libc::pipe(fds.as_mut_ptr().cast::<RawFd>());
-        fds.assume_init()
-    };
+    let mut fds: [RawFd; 2] = [-1; 2];
+    let result = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
     Ok((unsafe { OwnedFd::from_raw_fd(fds[0]) }, unsafe {
         OwnedFd::from_raw_fd(fds[1])
     }))

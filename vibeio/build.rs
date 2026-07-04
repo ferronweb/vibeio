@@ -6,4 +6,37 @@ fn main() {
     if musl && musl_v1_2_3 {
         println!("cargo:rustc-cfg=musl_v1_2_3");
     }
+
+    println!("cargo:rustc-check-cfg=cfg(syscall_pipe2)");
+    println!("cargo:rustc-check-cfg=cfg(syscall_accept4)");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if [
+        "linux",
+        "android",
+        "freebsd",
+        "illumos",
+        "solaris",
+        "emscripten",
+        "hurd",
+        "redox",
+        "netbsd",
+        "cygwin",
+    ]
+    .contains(&target_os.as_str())
+    {
+        println!("cargo:rustc-cfg=syscall_pipe2");
+    }
+    if [
+        "freebsd",
+        "netbsd",
+        "emscripten",
+        "fuchsia",
+        "solaris",
+        "illumos",
+        "linux",
+    ]
+    .contains(&target_os.as_str())
+    {
+        println!("cargo:rustc-cfg=syscall_accept4");
+    }
 }

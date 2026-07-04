@@ -199,6 +199,18 @@ impl UringDriver {
         wait_for_one: bool,
         timeout: Option<Duration>,
     ) -> Result<(), io::Error> {
+        // Drain already-available completions before submitting, to avoid
+        // an unnecessary syscall when completions are pending.
+        let mut need_interrupt;
+        {
+            let mut ring = self.ring.borrow_mut();
+            let mut state = self.state.borrow_mut();
+            need_interrupt = Self::drain_cq(&mut ring, &mut state);
+        }
+        if need_interrupt {
+            self.submit_interrupt();
+        }
+
         {
             let mut ring = self.ring.borrow_mut();
             let should_submit = if wait_for_one {
@@ -268,6 +280,22 @@ impl UringDriver {
             }
         }
 
+        // Drain any new completions produced by the submit above.
+        {
+            let mut ring = self.ring.borrow_mut();
+            let mut state = self.state.borrow_mut();
+            need_interrupt = Self::drain_cq(&mut ring, &mut state);
+        }
+        if need_interrupt {
+            self.submit_interrupt();
+        }
+
+        Ok(())
+    }
+
+    /// Drain the completion queue and wake any registered waiters.
+    #[inline]
+    fn drain_cq(ring: &mut IoUring, state: &mut DriverState) -> bool {
         let mut interrupt = false;
 
         // Collect wakers in a small inline array to avoid heap allocation
@@ -278,8 +306,6 @@ impl UringDriver {
         let mut overflow_wakers: Vec<Waker> = Vec::new();
 
         {
-            let mut ring = self.ring.borrow_mut();
-            let mut state = self.state.borrow_mut();
             let cq = ring.completion();
 
             for cqe in cq {
@@ -340,10 +366,6 @@ impl UringDriver {
             }
         }
 
-        if interrupt {
-            self.submit_interrupt();
-        }
-
         for waker in fast_wakers.iter_mut().take(fast_count) {
             if let Some(w) = waker.take() {
                 w.wake();
@@ -353,7 +375,7 @@ impl UringDriver {
             waker.wake();
         }
 
-        Ok(())
+        interrupt
     }
 
     #[inline]

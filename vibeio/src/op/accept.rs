@@ -297,6 +297,16 @@ impl Op for AcceptOp<'_> {
     ) -> Poll<io::Result<Self::Output>> {
         #[cfg(unix)]
         {
+            #[cfg(syscall_accept4)]
+            let accepted_fd = unsafe {
+                libc::accept4(
+                    self.handle.handle,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                )
+            };
+            #[cfg(not(syscall_accept4))]
             let accepted_fd = unsafe {
                 libc::accept(
                     self.handle.handle,
@@ -319,7 +329,9 @@ impl Op for AcceptOp<'_> {
 
             let fd = accepted_fd as RawFd;
 
-            // Ensure close-on-exec for the accepted fd
+            // On non-Linux Unix, set close-on-exec + non-blocking manually.
+            // Linux accept4() above already set these atomically.
+            #[cfg(not(syscall_accept4))]
             if let Err(err) = set_cloexec(fd) {
                 return Poll::Ready(Err(err));
             }

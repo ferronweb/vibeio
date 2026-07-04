@@ -62,8 +62,11 @@ impl WaitPidOp {
         if fd < 0 {
             Err(io::Error::last_os_error())
         } else {
-            // Set non-blocking + close-on-exec
             let raw = fd as RawFd;
+            // Set non-blocking + close-on-exec atomically via a single fcntl
+            // call chain. O_NONBLOCK is required so that read() on the pidfd
+            // returns EAGAIN instead of blocking when the child hasn't exited
+            // yet, and FD_CLOEXEC prevents leaking across exec.
             let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
             if flags != -1 {
                 unsafe {

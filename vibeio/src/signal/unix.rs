@@ -412,30 +412,38 @@ unsafe fn restore_handler(signum: libc::c_int, prev: &libc::sigaction) -> io::Re
 
 fn create_pipe() -> io::Result<(RawFd, RawFd)> {
     let mut fds = [0; 2];
+    #[cfg(syscall_pipe2)]
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    #[cfg(not(syscall_pipe2))]
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if rc == -1 {
         return Err(io::Error::last_os_error());
     }
 
-    if let Err(err) = set_cloexec(fds[0]).and_then(|_| set_cloexec(fds[1])) {
-        unsafe {
-            let _ = libc::close(fds[0]);
-            let _ = libc::close(fds[1]);
+    // On non-Linux, set close-on-exec and non-blocking manually.
+    #[cfg(not(syscall_pipe2))]
+    {
+        if let Err(err) = set_cloexec(fds[0]).and_then(|_| set_cloexec(fds[1])) {
+            unsafe {
+                let _ = libc::close(fds[0]);
+                let _ = libc::close(fds[1]);
+            }
+            return Err(err);
         }
-        return Err(err);
-    }
 
-    if let Err(err) = set_nonblock(fds[1]) {
-        unsafe {
-            let _ = libc::close(fds[0]);
-            let _ = libc::close(fds[1]);
+        if let Err(err) = set_nonblock(fds[1]) {
+            unsafe {
+                let _ = libc::close(fds[0]);
+                let _ = libc::close(fds[1]);
+            }
+            return Err(err);
         }
-        return Err(err);
     }
 
     Ok((fds[0], fds[1]))
 }
 
+#[cfg(not(target_os = "linux"))]
 fn set_cloexec(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags == -1 {
@@ -448,6 +456,7 @@ fn set_cloexec(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn set_nonblock(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags == -1 {
