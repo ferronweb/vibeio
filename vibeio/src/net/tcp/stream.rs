@@ -11,6 +11,7 @@
 //! - For platforms without native async support, operations fall back to synchronous std::net calls.
 //! - The runtime must be active when calling these types' methods; otherwise they will panic.
 
+use std::cell::RefCell;
 use std::future::poll_fn;
 use std::io::{self, IoSlice};
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -32,10 +33,10 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 
 use crate::io::{
-    AsInnerRawHandle, IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
-    IoVectoredBufTemporaryPoll,
+    AsInnerRawHandle, AsyncReadPoll, AsyncWritePoll, IoBuf, IoBufMut, IoBufTemporaryPoll,
+    IoVectoredBuf, IoVectoredBufMut, IoVectoredBufTemporaryPoll,
 };
-use crate::op::{ConnectOp, ReadOp, ReadvOp, RecvOp, WriteOp, WritevOp};
+use crate::op::{ConnectOp, ReadOp, ReadinessOp, ReadvOp, RecvOp, WriteOp, WritevOp};
 use crate::{
     driver::RegistrationMode,
     fd_inner::InnerRawHandle,
@@ -238,6 +239,8 @@ pub struct TcpStream {
 /// - Can be converted to [`TcpStream`] with adaptive or completion mode.
 pub struct PollTcpStream {
     stream: TcpStream,
+    write_ready: RefCell<bool>,
+    read_ready: RefCell<bool>,
 }
 
 impl TcpStream {
@@ -390,7 +393,11 @@ impl TcpStream {
         stream
             .inner
             .set_nonblocking(!stream.handle.uses_completion())?;
-        Ok(PollTcpStream { stream })
+        Ok(PollTcpStream {
+            stream,
+            write_ready: RefCell::new(false),
+            read_ready: RefCell::new(false),
+        })
     }
 }
 
@@ -432,6 +439,8 @@ impl PollTcpStream {
     pub fn from_std(inner: std::net::TcpStream) -> Result<Self, io::Error> {
         Ok(Self {
             stream: TcpStream::from_std_with_mode(inner, RegistrationMode::Poll)?,
+            write_ready: RefCell::new(false),
+            read_ready: RefCell::new(false),
         })
     }
 
@@ -491,6 +500,40 @@ impl PollTcpStream {
         let buf = unsafe { IoBufTemporaryPoll::new(buf.as_mut_ptr(), buf.len()) };
         let mut op = RecvOp::new_peek(handle, buf);
         poll_fn(move |cx| handle.poll_op_poll(cx, &mut op)).await
+    }
+
+    /// Tries to perform an I/O operation on the socket, returning an error if it is not ready.
+    #[inline]
+    pub fn try_io_readable<Io, IoR>(&self, io: Io) -> io::Result<IoR>
+    where
+        Io: FnOnce() -> io::Result<IoR>,
+    {
+        if *self.read_ready.borrow() {
+            let result = io();
+            if result.is_err() {
+                *self.read_ready.borrow_mut() = false;
+            }
+            result
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "read not ready"))
+        }
+    }
+
+    /// Tries to perform an I/O operation on the socket, returning an error if it is not ready.
+    #[inline]
+    pub fn try_io_writable<Io, IoR>(&self, io: Io) -> io::Result<IoR>
+    where
+        Io: FnOnce() -> io::Result<IoR>,
+    {
+        if *self.write_ready.borrow() {
+            let result = io();
+            if result.is_err() {
+                *self.write_ready.borrow_mut() = false;
+            }
+            result
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "write not ready"))
+        }
     }
 }
 
@@ -707,6 +750,36 @@ impl TokioAsyncWrite for PollTcpStream {
     #[inline]
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(self.get_mut().shutdown(Shutdown::Write))
+    }
+}
+
+impl AsyncReadPoll for PollTcpStream {
+    #[inline]
+    fn poll_readable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
+        if *self.read_ready.borrow() {
+            return Poll::Ready(Ok(()));
+        }
+        let poll = self
+            .stream
+            .handle
+            .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.stream.handle))?;
+        *self.read_ready.borrow_mut() = true;
+        poll.map(Ok)
+    }
+}
+
+impl AsyncWritePoll for PollTcpStream {
+    #[inline]
+    fn poll_writable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
+        if *self.write_ready.borrow() {
+            return Poll::Ready(Ok(()));
+        }
+        let poll = self
+            .stream
+            .handle
+            .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.stream.handle))?;
+        *self.write_ready.borrow_mut() = true;
+        poll.map(Ok)
     }
 }
 

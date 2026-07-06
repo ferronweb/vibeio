@@ -7,6 +7,18 @@
 - Slightly optimized async task executor performance.
 - Optimized async timer performance.
 
+## `vibeio` 0.2.14
+
+**Released in July 4, 2026**
+
+- Added `AsyncReadPoll` and `AsyncWritePoll` traits for poll-based async read/write readiness interfaces.
+- Added `PollUdpSocket` struct for poll-based UDP socket readiness interfaces.
+- Added `time` Cargo feature to `vibeio-hyper` that can be optionally disabled.
+- Added `try_io_readable` and `try_io_writable` methods to `PollUdpSocket`, `PollTcpStream`, and `PollUnixStream`.
+- Applied some Linux-specific optimizations (`accept4`, `pipe2` system calls).
+- Initial version of `vibeio-quinn` crate for poll-based QUIC socket readiness interfaces.
+- `vibeio-hyper` now no longer depends on all the Cargo features of `vibeio`.
+
 ## `vibeio` 0.2.13
 
 **Released in June 12, 2026**

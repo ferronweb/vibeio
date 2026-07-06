@@ -14,6 +14,7 @@ mod open;
 mod read;
 #[cfg(feature = "fs")]
 mod readat;
+mod readiness;
 mod readv;
 mod recv;
 mod recvfrom;
@@ -59,6 +60,7 @@ pub use open::OpenOp;
 pub use read::ReadOp;
 #[cfg(feature = "fs")]
 pub use readat::ReadAtOp;
+pub use readiness::ReadinessOp;
 pub use readv::ReadvOp;
 pub use recv::RecvOp;
 pub use recvfrom::RecvfromOp;
@@ -174,6 +176,10 @@ mod vectored_uring_tests {
         runtime.block_on(async {
             // create a pipe (pair of fds)
             let mut fds: [libc::c_int; 2] = [0, 0];
+            #[cfg(syscall_pipe2)]
+            let res =
+                unsafe { libc::pipe2(fds.as_mut_ptr() as *mut libc::c_int, libc::O_NONBLOCK) };
+            #[cfg(not(syscall_pipe2))]
             let res = unsafe { libc::pipe(fds.as_mut_ptr() as *mut libc::c_int) };
             assert_eq!(res, 0, "pipe() failed");
 

@@ -11,6 +11,7 @@
 //! - For platforms without native async support, operations fall back to synchronous std::os::unix::net calls.
 //! - The runtime must be active when calling these types' methods; otherwise they will panic.
 
+use std::cell::RefCell;
 use std::future::poll_fn;
 use std::io::{self, IoSlice};
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -26,10 +27,10 @@ use mio::Interest;
 use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
 use crate::io::{
-    AsInnerRawHandle, IoBuf, IoBufMut, IoBufTemporaryPoll, IoVectoredBuf, IoVectoredBufMut,
-    IoVectoredBufTemporaryPoll,
+    AsInnerRawHandle, AsyncReadPoll, AsyncWritePoll, IoBuf, IoBufMut, IoBufTemporaryPoll,
+    IoVectoredBuf, IoVectoredBufMut, IoVectoredBufTemporaryPoll,
 };
-use crate::op::{ConnectOp, ReadOp, ReadvOp, WriteOp, WritevOp};
+use crate::op::{ConnectOp, ReadOp, ReadinessOp, ReadvOp, WriteOp, WritevOp};
 use crate::{
     driver::RegistrationMode,
     fd_inner::InnerRawHandle,
@@ -137,6 +138,8 @@ pub struct UnixStream {
 /// - Can be converted to [`UnixStream`] with adaptive or completion mode.
 pub struct PollUnixStream {
     stream: UnixStream,
+    read_ready: RefCell<bool>,
+    write_ready: RefCell<bool>,
 }
 
 impl UnixStream {
@@ -229,7 +232,11 @@ impl UnixStream {
         stream
             .inner
             .set_nonblocking(!stream.handle.uses_completion())?;
-        Ok(PollUnixStream { stream })
+        Ok(PollUnixStream {
+            stream,
+            read_ready: RefCell::new(false),
+            write_ready: RefCell::new(false),
+        })
     }
 }
 
@@ -253,6 +260,8 @@ impl PollUnixStream {
     pub fn from_std(inner: StdUnixStream) -> Result<Self, io::Error> {
         Ok(Self {
             stream: UnixStream::from_std_with_mode(inner, RegistrationMode::Poll)?,
+            read_ready: RefCell::new(false),
+            write_ready: RefCell::new(false),
         })
     }
 
@@ -289,6 +298,40 @@ impl PollUnixStream {
     #[inline]
     pub fn shutdown(&self, how: Shutdown) -> Result<(), io::Error> {
         self.stream.shutdown(how)
+    }
+
+    /// Tries to perform an I/O operation on the socket, returning an error if it is not ready.
+    #[inline]
+    pub fn try_io_readable<Io, IoR>(&self, io: Io) -> io::Result<IoR>
+    where
+        Io: FnOnce() -> io::Result<IoR>,
+    {
+        if *self.read_ready.borrow() {
+            let result = io();
+            if result.is_err() {
+                *self.read_ready.borrow_mut() = false;
+            }
+            result
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "read not ready"))
+        }
+    }
+
+    /// Tries to perform an I/O operation on the socket, returning an error if it is not ready.
+    #[inline]
+    pub fn try_io_writable<Io, IoR>(&self, io: Io) -> io::Result<IoR>
+    where
+        Io: FnOnce() -> io::Result<IoR>,
+    {
+        if *self.write_ready.borrow() {
+            let result = io();
+            if result.is_err() {
+                *self.write_ready.borrow_mut() = false;
+            }
+            result
+        } else {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "write not ready"))
+        }
     }
 }
 
@@ -393,6 +436,8 @@ impl UnixStream {
         inner.set_nonblocking(!handle.uses_completion())?;
         Ok(PollUnixStream {
             stream: Self { inner, handle },
+            read_ready: RefCell::new(false),
+            write_ready: RefCell::new(false),
         })
     }
 }
@@ -479,6 +524,36 @@ impl AsyncWrite for UnixStream {
         let mut op = WritevOp::new(handle, bufs);
         let result = poll_fn(|cx| handle.poll_op(cx, &mut op)).await;
         (result, op.take_bufs())
+    }
+}
+
+impl AsyncReadPoll for PollUnixStream {
+    #[inline]
+    fn poll_readable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
+        if *self.read_ready.borrow() {
+            return Poll::Ready(Ok(()));
+        }
+        let poll = self
+            .stream
+            .handle
+            .poll_op_poll(cx, &mut ReadinessOp::new_readable(&self.stream.handle))?;
+        *self.read_ready.borrow_mut() = true;
+        poll.map(Ok)
+    }
+}
+
+impl AsyncWritePoll for PollUnixStream {
+    #[inline]
+    fn poll_writable(&self, cx: &mut std::task::Context) -> std::task::Poll<io::Result<()>> {
+        if *self.write_ready.borrow() {
+            return Poll::Ready(Ok(()));
+        }
+        let poll = self
+            .stream
+            .handle
+            .poll_op_poll(cx, &mut ReadinessOp::new_writable(&self.stream.handle))?;
+        *self.write_ready.borrow_mut() = true;
+        poll.map(Ok)
     }
 }
 
