@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.15
 
-**Not yet released**
+**Released in July 6, 2026**
 
 - Fixed high latency caused by incorrect io_uring driver optimization
 
