@@ -5,6 +5,7 @@
 **Not yet released**
 
 - Optimized `CompletionBuffer` to avoid unnecessary boxed allocations when not needed.
+- The event loop now flushes the I/O driver (like `io_uring` SQ or I/O completion ports) less frequently (when the batch size exceeds 64 tasks).
 
 ## `vibeio` 0.2.15
 

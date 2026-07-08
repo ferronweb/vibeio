@@ -720,6 +720,8 @@ impl Runtime {
                 }
             }
 
+            let allow_flush = batch.len() > 64;
+
             for task in batch.drain(..) {
                 let mut future_slot = task.future.borrow_mut();
                 if let Some(mut future) = future_slot.take() {
@@ -737,7 +739,7 @@ impl Runtime {
                 }
             }
 
-            if inner.driver.should_flush() {
+            if allow_flush && inner.driver.should_flush() {
                 inner.driver.flush();
             }
         }
