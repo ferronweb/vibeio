@@ -664,14 +664,11 @@ impl Runtime {
                 }
             }
 
-            let mut next_task_taken = false;
-
             batch.clear();
 
             let mut budget = 256;
             if let Some(next_task) = inner.take_next_task() {
                 batch.push(next_task);
-                next_task_taken = true;
                 budget -= 1;
             }
             // Always drain to fill the rest of the batch
@@ -740,7 +737,7 @@ impl Runtime {
                 }
             }
 
-            if !next_task_taken && inner.driver.should_flush() {
+            if inner.driver.should_flush() {
                 inner.driver.flush();
             }
         }
