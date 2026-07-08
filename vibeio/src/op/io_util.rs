@@ -11,10 +11,10 @@ pub(crate) enum CompletionBuffer<B> {
     Boxed(Box<B>),
 }
 
-impl<B> CompletionBuffer<B> {
+impl<B: crate::io::IoBuf> CompletionBuffer<B> {
     #[inline]
     pub(crate) fn new(buf: B, stable: bool) -> Self {
-        if stable {
+        if stable && buf.would_box() {
             Self::Boxed(Box::new(buf))
         } else {
             Self::Inline(buf)

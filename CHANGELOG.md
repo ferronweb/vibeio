@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Optimized `CompletionBuffer` to avoid unnecessary boxed allocations when not needed.
+
 ## `vibeio` 0.2.15
 
 **Released in July 6, 2026**
