@@ -1,6 +1,6 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.16
 
 **Not yet released**
 
