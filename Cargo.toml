@@ -3,8 +3,8 @@ members = ["vibeio", "examples", "vibeio-hyper", "vibeio-quinn"]
 resolver = "2"
 
 [workspace.dependencies]
-vibeio = { version = "=0.2.16", default-features = false }
-vibeio-hyper = "=0.2.16"
+vibeio = { version = "=0.2.17", default-features = false }
+vibeio-hyper = "=0.2.17"
 
 [patch.crates-io]
 vibeio = { path = "./vibeio" }

@@ -1,14 +1,15 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.17
 
-**Not yet released**
+**Released in July 23, 2026**
 
 - Fixed compilation errors when building for GNU/Hurd targets (caused by missing `sin_len` and `sin6_len` struct fields in `sockaddr_in` and `sockaddr_in6` respectively).
+- Fixed event loop stalls when `poll` is used with `mio` (not `epoll`).
 
 ## `vibeio` 0.2.16
 
-**Not yet released**
+**Released in July 21, 2026**
 
 - Fixed musl v1.2.x detection based on environment variables for updated `libc` crate versions.
 - Optimized `CompletionBuffer` to avoid unnecessary boxed allocations when not needed.

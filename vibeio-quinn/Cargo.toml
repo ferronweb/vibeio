@@ -1,6 +1,6 @@
 [package]
 name = "vibeio-quinn"
-version = "0.2.16"
+version = "0.2.17"
 edition = "2021"
 authors = ["Dorian Niemiec <dorian@ferron.sh>"]
 description = "A compatibility layer for using `quinn` with the `vibeio` async runtime"
