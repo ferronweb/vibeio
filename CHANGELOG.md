@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Fixed compilation errors when building for GNU/Hurd targets (caused by missing `sin_len` and `sin6_len` struct fields in `sockaddr_in` and `sockaddr_in6` respectively).
+
 ## `vibeio` 0.2.16
 
 **Not yet released**

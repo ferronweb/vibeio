@@ -59,6 +59,7 @@ fn socket_addr_to_raw(address: SocketAddr) -> (libc::sockaddr_storage, libc::soc
                     target_os = "netbsd",
                     target_os = "haiku",
                     target_os = "aix",
+                    target_os = "hurd",
                 ))]
                 sin_len: 0,
             };
@@ -93,6 +94,7 @@ fn socket_addr_to_raw(address: SocketAddr) -> (libc::sockaddr_storage, libc::soc
                     target_os = "netbsd",
                     target_os = "haiku",
                     target_os = "aix",
+                    target_os = "hurd",
                 ))]
                 sin6_len: 0,
             };
