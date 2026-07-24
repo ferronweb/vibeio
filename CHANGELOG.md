@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.18
 
-**Not yet released**
+**Released in July 24, 2026**
 
 - Added support for `sendfile_exact()` on FreeBSD.
 - `sendfile_exact()` now uses `sendfile` syscall directly when using poll-based I/O on Linux.
