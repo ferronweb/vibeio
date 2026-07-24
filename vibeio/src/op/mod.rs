@@ -21,6 +21,10 @@ mod recvfrom;
 #[cfg(all(target_os = "linux", feature = "fs"))]
 mod rename;
 mod send;
+// Windows "TransmitFile" could be supported, but it isn't because of
+// Windows client edition concurrency limits on "TransmitFile" (max 2 operations)
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "splice"))]
+mod sendfile;
 mod sendto;
 #[cfg(all(target_os = "linux", feature = "splice"))]
 mod splice;
@@ -67,6 +71,8 @@ pub use recvfrom::RecvfromOp;
 #[cfg(all(target_os = "linux", feature = "fs"))]
 pub use rename::RenameOp;
 pub use send::SendOp;
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "splice"))]
+pub use sendfile::SendfileOp;
 pub use sendto::SendtoOp;
 #[cfg(all(target_os = "linux", feature = "splice"))]
 pub use splice::SpliceOp;

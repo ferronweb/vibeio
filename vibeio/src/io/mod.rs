@@ -5,7 +5,7 @@
 //! - `AsyncReadPoll` and `AsyncWritePoll`: poll-based async read/write readiness interfaces.
 //! - `IoBuf` and `IoBufMut`: buffer traits for async I/O operations.
 //! - `pipe()`: create async-aware pipe endpoints.
-//! - `splice()` and `sendfile_exact()`: zero-copy I/O operations (Linux only).
+//! - `splice()` (Linux only) and `sendfile_exact()` (Linux, FreeBSD): zero-copy I/O operations.
 //! - `copy()`: copy data between async I/O objects.
 //! - `split()`: split I/O objects into independent read/write halves.
 //!
@@ -33,14 +33,16 @@
 //!   `(Result<T, Error>, Buffer)` to support buffer reuse.
 //! - The `IoBuf` trait is implemented for common buffer types like `Vec<u8>`,
 //!   `String`, byte arrays, and `Box<[u8]>`.
-//! - On Linux with the `splice` feature, `splice()` and `sendfile_exact()`
-//!   provide zero-copy I/O.
+//! - With the `splice` feature, `splice()` (Linux only) and `sendfile_exact()`
+//!   (Linux, FreeBSD) provide zero-copy I/O.
 
 #![allow(async_fn_in_trait)]
 
 mod buf;
 #[cfg(all(unix, feature = "pipe"))]
 mod pipe;
+#[cfg(feature = "splice")]
+mod sendfile;
 #[cfg(all(target_os = "linux", feature = "splice"))]
 mod splice;
 #[cfg(feature = "stdio")]
@@ -52,6 +54,8 @@ use crate::fd_inner::InnerRawHandle;
 pub use self::buf::*;
 #[cfg(all(unix, feature = "pipe"))]
 pub use self::pipe::*;
+#[cfg(feature = "splice")]
+pub use self::sendfile::*;
 #[cfg(all(target_os = "linux", feature = "splice"))]
 pub use self::splice::*;
 #[cfg(feature = "stdio")]
