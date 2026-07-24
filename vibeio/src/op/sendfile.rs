@@ -41,8 +41,8 @@ impl Op for SendfileOp<'_> {
             #[cfg(target_os = "linux")]
             let returned = unsafe {
                 libc::sendfile(
-                    self.fd_in.as_raw_fd(),
                     self.fd_out.handle,
+                    self.fd_in.as_raw_fd(),
                     std::ptr::null_mut(),
                     self.len,
                 )
