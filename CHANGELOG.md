@@ -7,6 +7,34 @@
 - Slightly optimized async task executor performance.
 - Optimized async timer performance.
 
+## `vibeio` 0.2.18
+
+**Released in July 24, 2026**
+
+- Added support for `sendfile_exact()` on FreeBSD.
+- `sendfile_exact()` now uses `sendfile` syscall directly when using poll-based I/O on Linux.
+
+## `vibeio` 0.2.17
+
+**Released in July 23, 2026**
+
+- Fixed compilation errors when building for GNU/Hurd targets (caused by missing `sin_len` and `sin6_len` struct fields in `sockaddr_in` and `sockaddr_in6` respectively).
+- Fixed event loop stalls when `poll` is used with `mio` (not `epoll`).
+
+## `vibeio` 0.2.16
+
+**Released in July 21, 2026**
+
+- Fixed musl v1.2.x detection based on environment variables for updated `libc` crate versions.
+- Optimized `CompletionBuffer` to avoid unnecessary boxed allocations when not needed.
+- The event loop now flushes the I/O driver (like `io_uring` SQ or I/O completion ports) less frequently (when the batch size exceeds 64 tasks).
+
+## `vibeio` 0.2.15
+
+**Released in July 6, 2026**
+
+- Fixed high latency caused by incorrect io_uring driver optimization
+
 ## `vibeio` 0.2.14
 
 **Released in July 4, 2026**

@@ -200,18 +200,6 @@ impl UringDriver {
         wait_for_one: bool,
         timeout: Option<Duration>,
     ) -> Result<(), io::Error> {
-        // Drain already-available completions before submitting, to avoid
-        // an unnecessary syscall when completions are pending.
-        let mut need_interrupt;
-        {
-            let mut ring = self.ring.borrow_mut();
-            let mut state = self.state.borrow_mut();
-            need_interrupt = Self::drain_cq(&mut ring, &mut state);
-        }
-        if need_interrupt {
-            self.submit_interrupt();
-        }
-
         {
             let mut ring = self.ring.borrow_mut();
             let should_submit = if wait_for_one {
@@ -282,11 +270,11 @@ impl UringDriver {
         }
 
         // Drain any new completions produced by the submit above.
-        {
+        let need_interrupt = {
             let mut ring = self.ring.borrow_mut();
             let mut state = self.state.borrow_mut();
-            need_interrupt = Self::drain_cq(&mut ring, &mut state);
-        }
+            Self::drain_cq(&mut ring, &mut state)
+        };
         if need_interrupt {
             self.submit_interrupt();
         }

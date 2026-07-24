@@ -48,6 +48,13 @@ pub trait IoBuf: Send + 'static {
 
     /// Returns the capacity of the buffer.
     fn buf_capacity(&self) -> usize;
+
+    /// Returns whether the buffer would be heap-allocated if it were to be used as
+    /// a [`CompletionBuffer`].
+    #[inline]
+    fn would_box(&self) -> bool {
+        true
+    }
 }
 
 /// Trait for mutable buffers.
@@ -81,6 +88,11 @@ impl IoBuf for Vec<u8> {
     fn buf_capacity(&self) -> usize {
         self.capacity()
     }
+
+    #[inline]
+    fn would_box(&self) -> bool {
+        false
+    }
 }
 
 impl IoBufMut for Vec<u8> {
@@ -109,6 +121,11 @@ impl IoBuf for String {
     #[inline]
     fn buf_capacity(&self) -> usize {
         self.capacity()
+    }
+
+    #[inline]
+    fn would_box(&self) -> bool {
+        false
     }
 }
 
@@ -139,6 +156,11 @@ impl IoBuf for &'static [u8] {
     fn buf_capacity(&self) -> usize {
         self.len()
     }
+
+    #[inline]
+    fn would_box(&self) -> bool {
+        false
+    }
 }
 
 impl IoBuf for &'static str {
@@ -156,6 +178,11 @@ impl IoBuf for &'static str {
     fn buf_capacity(&self) -> usize {
         self.len()
     }
+
+    #[inline]
+    fn would_box(&self) -> bool {
+        false
+    }
 }
 
 impl<const N: usize> IoBuf for [u8; N] {
@@ -172,6 +199,11 @@ impl<const N: usize> IoBuf for [u8; N] {
     #[inline]
     fn buf_capacity(&self) -> usize {
         N
+    }
+
+    #[inline]
+    fn would_box(&self) -> bool {
+        true
     }
 }
 
@@ -198,6 +230,11 @@ impl IoBuf for Box<[u8]> {
     #[inline]
     fn buf_capacity(&self) -> usize {
         self.len()
+    }
+
+    #[inline]
+    fn would_box(&self) -> bool {
+        false
     }
 }
 
@@ -251,6 +288,11 @@ impl<I: IoBuf> IoBuf for IoBufWithCursor<I> {
     fn buf_capacity(&self) -> usize {
         self.buf.buf_capacity() - self.cursor
     }
+
+    #[inline]
+    fn would_box(&self) -> bool {
+        self.buf.would_box()
+    }
 }
 
 impl<I: IoBufMut> IoBufMut for IoBufWithCursor<I> {
@@ -292,6 +334,11 @@ impl IoBuf for IoBufTemporaryPoll {
     #[inline]
     fn buf_capacity(&self) -> usize {
         self.len
+    }
+
+    #[inline]
+    fn would_box(&self) -> bool {
+        false
     }
 }
 

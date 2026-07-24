@@ -27,7 +27,7 @@ impl Interruptor for MioInterruptor {
 struct Registration {
     fd: RawFd,
     waiter: Option<Waker>,
-    interest: Interest,
+    interest: Option<Interest>,
 }
 
 struct DriverState {
@@ -89,6 +89,7 @@ impl MioDriver {
                 }
 
                 if let Some(registration) = state.registrations.get_mut(event.token().0) {
+                    registration.interest = None; // Prevent poll (when no epoll) from stalling
                     if let Some(task) = registration.waiter.take() {
                         task.wake();
                     }
@@ -131,7 +132,7 @@ impl Driver for MioDriver {
             entry.insert(Registration {
                 fd: handle.handle,
                 waiter: None,
-                interest,
+                interest: Some(interest),
             });
             token
         };
@@ -166,7 +167,7 @@ impl Driver for MioDriver {
         let mut source = mio::unix::SourceFd(&registration.fd);
         self.registry
             .reregister(&mut source, handle.token, interest)?;
-        registration.interest = interest;
+        registration.interest = Some(interest);
         Ok(())
     }
 
@@ -211,14 +212,14 @@ impl Driver for MioDriver {
             )
         })?;
 
-        if registration.interest != interest {
+        if registration.interest != Some(interest) {
             // Re-register, but only if the interest has change
             self.registry.reregister(
                 &mut mio::unix::SourceFd(&registration.fd),
                 token,
                 interest,
             )?;
-            registration.interest = interest;
+            registration.interest = Some(interest);
         }
 
         Self::update_waiter(&mut registration.waiter, waker);
