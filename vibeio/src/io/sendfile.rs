@@ -107,11 +107,13 @@ pub async fn sendfile_exact<'a, 'b>(
     sendfile_exact_poll(from, to, len).await
 }
 
+#[cfg(target_os = "linux")]
 struct WriteOwnedFd {
     _writer: OwnedFd,
     handle: ManuallyDrop<InnerRawHandle>,
 }
 
+#[cfg(target_os = "linux")]
 impl WriteOwnedFd {
     fn new(writer: OwnedFd) -> std::io::Result<Self> {
         let handle =
@@ -130,6 +132,7 @@ impl WriteOwnedFd {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<'a> AsInnerRawHandle<'a> for WriteOwnedFd {
     #[inline]
     fn as_inner_raw_handle(&'a self) -> &'a InnerRawHandle {
@@ -137,6 +140,7 @@ impl<'a> AsInnerRawHandle<'a> for WriteOwnedFd {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for WriteOwnedFd {
     #[inline]
     fn drop(&mut self) {
