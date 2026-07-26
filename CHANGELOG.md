@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Added platform-specific (Apple, Linux, Unix, Windows) getters for file metadata.
+
 ## `vibeio` 0.2.18
 
 **Released in July 24, 2026**
