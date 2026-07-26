@@ -180,9 +180,7 @@ impl Metadata {
     pub fn st_dev(&self) -> u64 {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => {
-                libc::makedev(st.stx_dev_major as u32, st.stx_dev_minor as u32) as u64
-            }
+            MetadataInner::Statx(st) => libc::makedev(st.stx_dev_major, st.stx_dev_minor) as u64,
             MetadataInner::Std(md) => md.dev(),
         }
     }
@@ -216,7 +214,7 @@ impl Metadata {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
             MetadataInner::Statx(st) => st.stx_nlink as u64, // u32 → u64
-            MetadataInner::Std(st) => st.st_nlink() as u64,
+            MetadataInner::Std(st) => st.st_nlink(),
         }
     }
 
@@ -252,9 +250,7 @@ impl Metadata {
     pub fn st_rdev(&self) -> u64 {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => {
-                libc::makedev(st.stx_rdev_major as u32, st.stx_rdev_minor as u32) as u64
-            }
+            MetadataInner::Statx(st) => libc::makedev(st.stx_rdev_major, st.stx_rdev_minor) as u64,
             MetadataInner::Std(md) => md.rdev(),
         }
     }
@@ -353,7 +349,7 @@ impl Metadata {
     pub fn st_blocks(&self) -> u64 {
         match &self.inner {
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => st.stx_blocks as u64, // u64
+            MetadataInner::Statx(st) => st.stx_blocks, // u64
             MetadataInner::Std(md) => md.st_blocks(),
         }
     }
@@ -392,9 +388,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.dev(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => {
-                libc::makedev(st.stx_dev_major as u32, st.stx_dev_minor as u32) as u64
-            }
+            MetadataInner::Statx(st) => libc::makedev(st.stx_dev_major, st.stx_dev_minor) as u64,
         }
     }
 
@@ -438,7 +432,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.uid(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => st.stx_uid as u32,
+            MetadataInner::Statx(st) => st.stx_uid,
         }
     }
 
@@ -449,7 +443,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.gid(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => st.stx_gid as u32,
+            MetadataInner::Statx(st) => st.stx_gid,
         }
     }
 
@@ -460,9 +454,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.rdev(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => {
-                libc::makedev(st.stx_rdev_major as u32, st.stx_rdev_minor as u32) as u64
-            }
+            MetadataInner::Statx(st) => libc::makedev(st.stx_rdev_major, st.stx_rdev_minor) as u64,
         }
     }
 
@@ -473,7 +465,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.size(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => st.stx_size as u64,
+            MetadataInner::Statx(st) => st.stx_size,
         }
     }
 
@@ -484,7 +476,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.atime(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => st.stx_atime.tv_sec as i64,
+            MetadataInner::Statx(st) => st.stx_atime.tv_sec,
         }
     }
 
@@ -506,7 +498,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.mtime(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => st.stx_mtime.tv_sec as i64,
+            MetadataInner::Statx(st) => st.stx_mtime.tv_sec,
         }
     }
 
@@ -528,7 +520,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.ctime(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => st.stx_ctime.tv_sec as i64,
+            MetadataInner::Statx(st) => st.stx_ctime.tv_sec,
         }
     }
 
@@ -561,7 +553,7 @@ impl Metadata {
         match &self.inner {
             MetadataInner::Std(md) => md.blocks(),
             #[cfg(all(target_os = "linux", any(target_env = "gnu", musl_v1_2_3)))]
-            MetadataInner::Statx(st) => st.stx_blocks as u64,
+            MetadataInner::Statx(st) => st.stx_blocks,
         }
     }
 
