@@ -111,7 +111,9 @@ impl<'a, B: IoVectoredBuf> WritevOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.bufs.take().unwrap()
+        self.bufs
+            .take()
+            .expect("writev op buffers must be present to take")
     }
 }
 
@@ -125,7 +127,10 @@ impl<B: IoVectoredBuf> Op for WritevOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let bufs = self.bufs.as_ref().unwrap();
+        let bufs = self
+            .bufs
+            .as_ref()
+            .expect("writev op buffers must be present while polling");
 
         #[cfg(unix)]
         let result = {
@@ -212,7 +217,10 @@ impl<B: IoVectoredBuf> Op for WritevOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let bufs = self.bufs.as_ref().unwrap();
+        let bufs = self
+            .bufs
+            .as_ref()
+            .expect("writev op buffers must be present while polling");
         match self.handle.handle {
             RawOsHandle::Socket(socket) => {
                 let iovecs = bufs.as_iovecs();
@@ -318,7 +326,10 @@ impl<B: IoVectoredBuf> Op for WritevOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let bufs = self.bufs.as_ref().unwrap();
+        let bufs = self
+            .bufs
+            .as_ref()
+            .expect("writev op buffers must be present while polling");
 
         let iovecs = if let Some(iovecs) = self.completion_system_iovecs.take() {
             iovecs

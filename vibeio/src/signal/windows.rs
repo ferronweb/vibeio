@@ -73,7 +73,10 @@ pub fn ctrl_c() -> io::Result<CtrlC> {
 }
 
 fn register_waker(state: &CtrlCState, waker: &Waker) {
-    let mut wakers = state.wakers.lock().unwrap();
+    let mut wakers = state
+        .wakers
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(existing) = wakers.iter_mut().find(|existing| existing.will_wake(waker)) {
         *existing = waker.clone();
     } else {
@@ -102,7 +105,10 @@ unsafe extern "system" fn ctrl_c_handler(ctrl_type: u32) -> i32 {
         if let Some(state) = CTRL_C_STATE.get() {
             state.counter.fetch_add(1, Ordering::Release);
             let wakers = {
-                let mut wakers = state.wakers.lock().unwrap();
+                let mut wakers = state
+                    .wakers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 std::mem::take(&mut *wakers)
             };
             for waker in wakers {

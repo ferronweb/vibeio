@@ -37,7 +37,10 @@ impl<'a, B: IoBufMut> ReadAtOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap().into_inner()
+        self.buf
+            .take()
+            .expect("readat op buffer must be present to take")
+            .into_inner()
     }
 }
 
@@ -76,7 +79,11 @@ impl<B: IoBufMut> Op for ReadAtOp<'_, B> {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
         let read = result as usize;
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("readat op buffer must be present while polling")
+            .as_mut();
         unsafe { buf.set_buf_init(read) };
         Poll::Ready(Ok(read))
     }
@@ -84,7 +91,11 @@ impl<B: IoBufMut> Op for ReadAtOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("readat op buffer must be present while polling")
+            .as_mut();
         let RawOsHandle::Handle(handle) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -134,7 +145,11 @@ impl<B: IoBufMut> Op for ReadAtOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("readat op buffer must be present while polling")
+            .as_mut();
         let read_len = u32::try_from(buf.buf_capacity()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,

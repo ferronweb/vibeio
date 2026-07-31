@@ -4,6 +4,7 @@
 
 **Not yet released**
 
+- Improved error reporting for some internal `vibeio` panics.
 - `IoVectoredBuf` now requires `as_iovecs` to be implemented for the buffer type (similar with `IoVectoredBufMut` with `as_iovecs_mut`).
 
 ## `vibeio` 0.2.19
