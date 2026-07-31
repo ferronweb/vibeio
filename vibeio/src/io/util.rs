@@ -215,7 +215,6 @@ where
     let f1 = copy(&mut a_r, &mut b_w);
     let f2 = copy(&mut b_r, &mut a_w);
 
-    // Run both copies concurrently and await their results.
     let (res1, res2) = futures_util::future::join(f1, f2).await;
 
     // Propagate any errors; on success return the number of bytes copied for

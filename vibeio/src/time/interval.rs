@@ -128,7 +128,6 @@ impl Interval {
 
                     // Advance base_next by `missed` periods to compute the next deadline.
                     let mut new_next = base_next;
-                    // loop to add period missed times
                     for _ in 0..missed {
                         new_next += self.period;
                     }
@@ -136,7 +135,6 @@ impl Interval {
                     // Set next_deadline to the instant after the catch-up window.
                     self.next_deadline = Some(new_next + self.period);
 
-                    // Return the number of missed ticks so caller can catch up.
                     missed
                 }
             }

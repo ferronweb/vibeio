@@ -932,7 +932,6 @@ pub async fn create_dir_all(path: impl AsRef<std::path::Path>) -> std::io::Resul
     let mut stack = Vec::new();
     let mut p = path;
 
-    // Build stack of missing directories
     loop {
         // Try to create current path
         match create_dir(p).await {
@@ -1341,7 +1340,6 @@ mod tests {
             let md = metadata(&path).await.expect("metadata should succeed");
             assert!(md.is_dir());
 
-            // Clean up
             crate::fs::remove_dir(base.join("a/b/c"))
                 .await
                 .expect("remove_dir c");
@@ -1363,7 +1361,6 @@ mod tests {
             let target = unique_path("symlink_target");
             let link = unique_path("symlink");
 
-            // Create a file and a symlink to it
             write(&target, b"test content")
                 .await
                 .expect("write should succeed");
@@ -1383,7 +1380,6 @@ mod tests {
             assert!(!target_md.is_symlink());
             assert_eq!(target_md.len(), 12);
 
-            // Clean up
             crate::fs::remove_file(&link)
                 .await
                 .expect("remove_file should succeed");

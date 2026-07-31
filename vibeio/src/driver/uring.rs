@@ -30,7 +30,6 @@ impl Interruptor for UringInterruptor {
     #[inline]
     fn interrupt(&self) {
         if let Some(eventfd) = self.eventfd.upgrade() {
-            // Write to the eventfd to wake up the driver
             let value: u64 = 1;
             let _ = unsafe {
                 libc::write(
@@ -88,7 +87,6 @@ impl Drop for UringDriver {
 impl UringDriver {
     #[inline]
     pub(crate) fn new(entries: u32, builder: io_uring::Builder) -> Result<Self, io::Error> {
-        // Create eventfd for interruption
         let eventfd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
         if eventfd < 0 {
             return Err(io::Error::last_os_error());

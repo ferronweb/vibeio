@@ -151,7 +151,6 @@ impl TimingWheel {
                 let slot = entry.slot;
                 let slab_index = handle.slab_index;
 
-                // Remove from the wheel slot
                 if let Some(pos) = self.wheels[level][slot]
                     .iter()
                     .position(|&idx| idx == slab_index)
@@ -159,7 +158,6 @@ impl TimingWheel {
                     self.wheels[level][slot].remove(pos);
                 }
 
-                // Remove from slab
                 self.entries.remove(slab_index);
                 self.refresh_min_expiration();
             }
@@ -217,7 +215,6 @@ impl TimingWheel {
     /// Cascade all timers from higher levels down through the hierarchy
     /// This processes all slots at each level and moves timers to appropriate lower levels
     fn cascade_all_levels(&mut self, expired_wakers: &mut Vec<Waker>) {
-        // Process from highest level down to level 1
         for level in (1..NUM_LEVELS).rev() {
             self.cascade_level(level, expired_wakers);
         }
@@ -455,8 +452,6 @@ mod tests {
             "Waker should have been called or at least not panic"
         );
     }
-
-    // ==================== TimingWheel Tests ====================
 
     #[test]
     fn test_timing_wheel_empty() {

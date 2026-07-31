@@ -169,11 +169,6 @@ impl Metadata {
         }
     }
 
-    // ========================================================================
-    // Platform-specific getters: Linux (statx variant)
-    // Mirrors `std::os::linux::fs::MetadataExt`
-    // ========================================================================
-
     /// Returns the device ID on which this file resides.
     #[cfg(target_os = "linux")]
     #[inline]
@@ -376,11 +371,6 @@ impl Metadata {
         }
     }
 
-    // ========================================================================
-    // Platform-specific getters: Unix (Std variant)
-    // Mirrors `std::os::unix::fs::MetadataExt`
-    // =========================================================================
-
     /// Returns the ID of the device containing the file.
     #[cfg(unix)]
     #[inline]
@@ -556,11 +546,6 @@ impl Metadata {
             MetadataInner::Statx(st) => st.stx_blocks,
         }
     }
-
-    // ========================================================================
-    // Platform-specific getters: macOS/Darwin (Std variant)
-    // Mirrors `std::os::darwin::fs::MetadataExt`
-    // ========================================================================
 
     /// Returns the device ID on which this file resides.
     #[cfg(all(target_vendor = "apple", not(any(target_os = "linux"))))]
@@ -741,10 +726,6 @@ impl Metadata {
             MetadataInner::Std(md) => md.st_flags(),
         }
     }
-
-    // ========================================================================
-    // Platform-specific getters: Windows (MetadataExt trait)
-    // ========================================================================
 
     /// Returns the value of the `dwFileAttributes` field of this metadata.
     #[cfg(windows)]

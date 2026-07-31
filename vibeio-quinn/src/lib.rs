@@ -110,8 +110,6 @@ impl Runtime for VibeioRuntime {
     }
 }
 
-// ---- Timer ----
-
 struct VibeioTimer {
     inner: Pin<Box<vibeio::time::Sleep>>,
 }
@@ -137,8 +135,6 @@ impl AsyncTimer for VibeioTimer {
         self.get_mut().inner.as_mut().poll(cx)
     }
 }
-
-// ---- UDP Socket ----
 
 struct VibeioUdpSocket {
     io: PollUdpSocket,
@@ -210,8 +206,6 @@ impl AsyncUdpSocket for VibeioUdpSocket {
         self.state.may_fragment()
     }
 }
-
-// ---- UDP Poller ----
 
 struct VibeioUdpPoller {
     socket: Arc<VibeioUdpSocket>,

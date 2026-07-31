@@ -401,7 +401,6 @@ impl Op for ConnectOp<'_> {
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
         let result = if let Some(completion_token) = self.completion_token {
-            // Get the completion result
             match driver.get_completion_result(completion_token) {
                 Some(result) => {
                     self.completion_token = None;

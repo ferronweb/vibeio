@@ -428,7 +428,6 @@ impl Op for AcceptOp<'_> {
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
         let result = if let Some(completion_token) = self.completion_token {
-            // Get the completion result
             match driver.get_completion_result(completion_token) {
                 Some(result) => {
                     self.completion_token = None;
@@ -468,7 +467,6 @@ impl Op for AcceptOp<'_> {
                 return Poll::Ready(Err(err));
             }
 
-            // Get peer address via getpeername
             let mut peer = MaybeUninit::<libc::sockaddr_storage>::zeroed();
             let mut peer_len = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
             let getpeername_result = unsafe {
