@@ -238,7 +238,10 @@ pub fn ctrl_c() -> io::Result<CtrlC> {
 }
 
 fn register_waker(state: &SignalState, waker: &Waker) {
-    let mut wakers = state.wakers.lock().unwrap();
+    let mut wakers = state
+        .wakers
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(existing) = wakers.iter_mut().find(|existing| existing.will_wake(waker)) {
         *existing = waker.clone();
     } else {
@@ -248,7 +251,10 @@ fn register_waker(state: &SignalState, waker: &Waker) {
 
 fn register_signal(kind: SignalKind) -> io::Result<Arc<SignalState>> {
     let registry = registry()?;
-    let mut signals = registry.signals.lock().unwrap();
+    let mut signals = registry
+        .signals
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(entry) = signals.get_mut(&kind.0) {
         entry.refs += 1;
         return Ok(entry.state.clone());
@@ -279,7 +285,10 @@ fn unregister_signal(kind: SignalKind) {
     };
 
     let prev_action = {
-        let mut signals = registry.signals.lock().unwrap();
+        let mut signals = registry
+            .signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let entry = match signals.get_mut(&kind.0) {
             Some(entry) => entry,
             None => return,
@@ -360,14 +369,20 @@ fn dispatch_loop(read_fd: RawFd, registry: Arc<Registry>) {
 
 fn dispatch_signal(registry: &Registry, signum: libc::c_int) {
     let state = {
-        let signals = registry.signals.lock().unwrap();
+        let signals = registry
+            .signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         signals.get(&signum).map(|entry| entry.state.clone())
     };
 
     if let Some(state) = state {
         state.counter.fetch_add(1, Ordering::Release);
         let wakers = {
-            let mut wakers = state.wakers.lock().unwrap();
+            let mut wakers = state
+                .wakers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             std::mem::take(&mut *wakers)
         };
         for waker in wakers {

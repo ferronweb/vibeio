@@ -224,7 +224,10 @@ impl<'a, B: IoBuf> SendtoOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap().into_inner()
+        self.buf
+            .take()
+            .expect("sendto op buffer must be present to take")
+            .into_inner()
     }
 }
 
@@ -238,7 +241,11 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("sendto op buffer must be present while polling")
+            .as_ref();
 
         #[cfg(unix)]
         let result = {
@@ -314,7 +321,11 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("sendto op buffer must be present while polling")
+            .as_ref();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -381,7 +392,11 @@ impl<B: IoBuf> Op for SendtoOp<'_, B> {
         use io_uring::{opcode, types};
 
         let (raw_addr, raw_addr_len) = socket_addr_to_raw(self.addr);
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("sendto op buffer must be present while polling")
+            .as_ref();
         let completion = self.completion_state.get_or_insert_with(|| {
             Box::new(SendtoLinuxCompletion {
                 addr: unsafe { std::mem::zeroed() },

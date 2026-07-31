@@ -37,7 +37,10 @@ impl<'a, B: IoBuf> WriteAtOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap().into_inner()
+        self.buf
+            .take()
+            .expect("writeat op buffer must be present to take")
+            .into_inner()
     }
 }
 
@@ -89,7 +92,11 @@ impl<B: IoBuf> Op for WriteAtOp<'_, B> {
             ));
         };
 
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("writeat op buffer must be present while polling")
+            .as_ref();
         let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -132,7 +139,11 @@ impl<B: IoBuf> Op for WriteAtOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("writeat op buffer must be present while polling")
+            .as_ref();
         let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,

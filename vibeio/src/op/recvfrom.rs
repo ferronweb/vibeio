@@ -188,7 +188,10 @@ impl<'a, B: IoBufMut> RecvfromOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap().into_inner()
+        self.buf
+            .take()
+            .expect("recvfrom op buffer must be present to take")
+            .into_inner()
     }
 }
 
@@ -202,7 +205,11 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("recvfrom op buffer must be present while polling")
+            .as_mut();
 
         #[cfg(unix)]
         let result = {
@@ -296,7 +303,11 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
                 .as_ref()
                 .ok_or_else(|| io::Error::other("recvfrom completion missing source address"))
                 .and_then(|state| sockaddr_storage_to_socketaddr(&state.addr));
-            let buf = self.buf.as_mut().unwrap().as_mut();
+            let buf = self
+                .buf
+                .as_mut()
+                .expect("recvfrom op buffer must be present while polling")
+                .as_mut();
             unsafe { buf.set_buf_init(read) };
             Poll::Ready(address.map(|address| (read, address)))
         }
@@ -321,7 +332,11 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
                     )
                 })
                 .and_then(|state| sockaddr_storage_to_socketaddr(&state.addr));
-            let buf = self.buf.as_mut().unwrap().as_mut();
+            let buf = self
+                .buf
+                .as_mut()
+                .expect("recvfrom op buffer must be present while polling")
+                .as_mut();
             unsafe { buf.set_buf_init(read) };
             return Poll::Ready(address.map(|address| (read, address)));
         }
@@ -330,7 +345,11 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("recvfrom op buffer must be present while polling")
+            .as_mut();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -396,7 +415,11 @@ impl<B: IoBufMut> Op for RecvfromOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("recvfrom op buffer must be present while polling")
+            .as_mut();
         let completion = self.completion_state.get_or_insert_with(|| {
             Box::new(RecvfromLinuxCompletion {
                 addr: unsafe { std::mem::zeroed() },

@@ -93,7 +93,10 @@ impl<'a, B: IoBufMut> RecvOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap().into_inner()
+        self.buf
+            .take()
+            .expect("recv op buffer must be present to take")
+            .into_inner()
     }
 }
 
@@ -107,7 +110,11 @@ impl<B: IoBufMut> Op for RecvOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("recv op buffer must be present while polling")
+            .as_mut();
 
         #[cfg(unix)]
         let result = {
@@ -157,7 +164,6 @@ impl<B: IoBufMut> Op for RecvOp<'_, B> {
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
         let result = if let Some(completion_token) = self.completion_token {
-            // Get the completion result
             match driver.get_completion_result(completion_token) {
                 Some(result) => {
                     self.completion_token = None;
@@ -184,7 +190,11 @@ impl<B: IoBufMut> Op for RecvOp<'_, B> {
             return Poll::Ready(Err(io::Error::from_raw_os_error(-result)));
         }
         let read = result as usize;
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("recv op buffer must be present while polling")
+            .as_mut();
         unsafe { buf.set_buf_init(read) };
         Poll::Ready(Ok(read))
     }
@@ -192,7 +202,11 @@ impl<B: IoBufMut> Op for RecvOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("recv op buffer must be present while polling")
+            .as_mut();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -249,7 +263,11 @@ impl<B: IoBufMut> Op for RecvOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_mut().unwrap().as_mut();
+        let buf = self
+            .buf
+            .as_mut()
+            .expect("recv op buffer must be present while polling")
+            .as_mut();
         let entry = opcode::Recv::new(
             types::Fd(self.handle.handle),
             buf.as_buf_mut_ptr(),

@@ -77,7 +77,10 @@ impl<'a, B: IoBuf> SendOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap().into_inner()
+        self.buf
+            .take()
+            .expect("send op buffer must be present to take")
+            .into_inner()
     }
 }
 
@@ -91,7 +94,11 @@ impl<B: IoBuf> Op for SendOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("send op buffer must be present while polling")
+            .as_ref();
 
         #[cfg(unix)]
         let result = {
@@ -164,7 +171,11 @@ impl<B: IoBuf> Op for SendOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("send op buffer must be present while polling")
+            .as_ref();
         let RawOsHandle::Socket(socket) = self.handle.handle else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -220,7 +231,11 @@ impl<B: IoBuf> Op for SendOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("send op buffer must be present while polling")
+            .as_ref();
         let entry = opcode::Send::new(
             types::Fd(self.handle.handle),
             buf.as_buf_ptr(),

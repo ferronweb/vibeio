@@ -108,6 +108,29 @@ impl Sleep {
             }
         }
     }
+
+    /// Handles a submission that was woken immediately by the timer driver
+    /// (duration rounded to zero or similar).
+    fn handle_immediate_wakeup(&self, cx: &mut Context<'_>) -> Poll<()> {
+        match self.zero_behavior {
+            ZeroBehavior::Immediate => {
+                self.fired.set(true);
+                Poll::Ready(())
+            }
+            ZeroBehavior::Yield => {
+                // If we haven't scheduled the one-shot yield yet, schedule it
+                // by waking ourselves and return Pending. On the subsequent
+                // poll we will observe `yield_scheduled` and complete.
+                if !self.yield_scheduled.replace(true) {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    self.fired.set(true);
+                    Poll::Ready(())
+                }
+            }
+        }
+    }
 }
 
 impl Future for Sleep {
@@ -121,76 +144,56 @@ impl Future for Sleep {
             return Poll::Ready(());
         }
 
-        if this.handle.is_none() {
-            // Schedule with runtime timer.
-            let timer_rc = this.timer.get_or_insert_with(|| {
-                current_timer().expect("Sleep::poll called outside of runtime")
-            });
+        let timer_rc = this
+            .timer
+            .get_or_insert_with(|| current_timer().expect("Sleep::poll called outside of runtime"));
 
-            // The timer driver expects a task `Waker`. We clone the task waker here.
+        if this.handle.is_none() {
+            // First poll: schedule the timer. The timer driver expects a task
+            // `Waker`; we clone the task waker here.
             let waker = cx.waker().clone();
-            match timer_rc.submit(this.deadline, waker) {
+            return match timer_rc.submit(this.deadline, waker) {
                 Some(handle) => {
                     this.handle = Some(handle);
-                    // Not fired yet.
                     Poll::Pending
                 }
-                None => {
-                    // Timer driver woke us immediately (duration rounded to 0 or similar).
-                    match this.zero_behavior {
-                        ZeroBehavior::Immediate => {
-                            this.fired.set(true);
-                            Poll::Ready(())
-                        }
-                        ZeroBehavior::Yield => {
-                            // If we haven't scheduled the one-shot yield yet, schedule it
-                            // by waking ourselves and return Pending. On the subsequent
-                            // poll we will observe `yield_scheduled` and complete.
-                            if !this.yield_scheduled.replace(true) {
-                                cx.waker().wake_by_ref();
-                                Poll::Pending
-                            } else {
-                                this.fired.set(true);
-                                Poll::Ready(())
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // We were previously scheduled, and now we've been polled again.
-            // The runtime's timer driver will wake the task by calling the task
-            // waker when the timer expires.
+                None => this.handle_immediate_wakeup(cx),
+            };
+        }
 
-            // Check if the deadline has actually been reached
-            if Instant::now() >= this.deadline {
-                this.fired.set(true);
-                // Drop the handle (we'll also attempt to cancel it in Drop if it remains).
-                this.handle = None;
-                Poll::Ready(())
-            } else {
-                // Spurious wakeup, we need to wait more.
-                // The timer might have woken us up early, or another waker woke the task.
-                // Re-register the waker to ensure we get woken up again.
-                if let Some(handle) = this.handle.take() {
-                    if let Some(timer_rc) = current_timer() {
-                        timer_rc.cancel(handle);
-                        let waker = cx.waker().clone();
-                        match timer_rc.submit(this.deadline, waker) {
-                            Some(handle) => {
-                                this.handle = Some(handle);
-                                // Not fired yet.
-                                return Poll::Pending;
-                            }
-                            None => {
-                                // Timer driver woke us immediately (duration rounded to 0 or similar).
-                                this.fired.set(true);
-                                return Poll::Ready(());
-                            }
-                        }
-                    }
-                }
+        // We were previously scheduled, and now we've been polled again.
+        // The runtime's timer driver will wake the task by calling the task
+        // waker when the timer expires.
+
+        // Check if the deadline has actually been reached.
+        if Instant::now() >= this.deadline {
+            this.fired.set(true);
+            // Drop the handle (we'll also attempt to cancel it in Drop if it remains).
+            this.handle = None;
+            return Poll::Ready(());
+        }
+
+        // Spurious wakeup: the timer might have woken us up early, or another
+        // waker woke the task. Re-register the waker to ensure we get woken up
+        // again.
+        let handle = match this.handle.take() {
+            Some(handle) => handle,
+            None => return Poll::Pending,
+        };
+        let Some(timer_rc) = current_timer() else {
+            return Poll::Pending;
+        };
+        timer_rc.cancel(handle);
+        let waker = cx.waker().clone();
+        match timer_rc.submit(this.deadline, waker) {
+            Some(handle) => {
+                this.handle = Some(handle);
                 Poll::Pending
+            }
+            None => {
+                // Timer driver woke us immediately (duration rounded to 0 or similar).
+                this.fired.set(true);
+                Poll::Ready(())
             }
         }
     }

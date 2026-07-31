@@ -80,7 +80,10 @@ impl<'a, B: IoBuf> WriteOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.buf.take().unwrap().into_inner()
+        self.buf
+            .take()
+            .expect("write op buffer must be present to take")
+            .into_inner()
     }
 }
 
@@ -94,7 +97,11 @@ impl<B: IoBuf> Op for WriteOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("write op buffer must be present while polling")
+            .as_ref();
 
         #[cfg(unix)]
         let result = {
@@ -139,7 +146,6 @@ impl<B: IoBuf> Op for WriteOp<'_, B> {
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
         let result = if let Some(completion_token) = self.completion_token {
-            // Get the completion result
             match driver.get_completion_result(completion_token) {
                 Some(result) => {
                     self.completion_token = None;
@@ -171,7 +177,11 @@ impl<B: IoBuf> Op for WriteOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("write op buffer must be present while polling")
+            .as_ref();
         match self.handle.handle {
             RawOsHandle::Socket(socket) => {
                 let write_len = u32::try_from(buf.buf_len()).map_err(|_| {
@@ -253,7 +263,11 @@ impl<B: IoBuf> Op for WriteOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let buf = self.buf.as_ref().unwrap().as_ref();
+        let buf = self
+            .buf
+            .as_ref()
+            .expect("write op buffer must be present while polling")
+            .as_ref();
         let entry = opcode::Write::new(
             types::Fd(self.handle.handle),
             buf.as_buf_ptr(),

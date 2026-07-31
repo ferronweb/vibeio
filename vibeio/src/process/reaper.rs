@@ -68,10 +68,6 @@ pub(crate) async fn start_zombie_reaper() -> async_channel::Sender<ZombieReaperM
     tx
 }
 
-// ---------------------------------------------------------------------------
-// Windows reaper implementation
-// ---------------------------------------------------------------------------
-
 #[cfg(windows)]
 struct WaitContext {
     child: std::process::Child,
@@ -166,10 +162,6 @@ async fn zombie_reaper_fn(rx: async_channel::Receiver<ZombieReaperMessage>) {
     zombie_reaper_fn_unix(rx).await
 }
 
-// ---------------------------------------------------------------------------
-// Linux pidfd-based reaper (kernel ≥ 5.3)
-// ---------------------------------------------------------------------------
-
 /// Probe whether `pidfd_open` is supported on this kernel.
 #[cfg(target_os = "linux")]
 #[inline]
@@ -252,10 +244,6 @@ async fn zombie_reaper_fn_linux_pidfd(rx: async_channel::Receiver<ZombieReaperMe
         });
     }
 }
-
-// ---------------------------------------------------------------------------
-// Generic Unix reaper implementations (non-Linux or kernel < 5.3)
-// ---------------------------------------------------------------------------
 
 #[inline]
 #[cfg(all(unix, feature = "signal"))]

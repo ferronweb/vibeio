@@ -110,7 +110,9 @@ impl<'a, B: IoVectoredBufMut> ReadvOp<'a, B> {
 
     #[inline]
     pub fn take_bufs(mut self) -> B {
-        self.bufs.take().unwrap()
+        self.bufs
+            .take()
+            .expect("readv op buffers must be present to take")
     }
 }
 
@@ -124,7 +126,10 @@ impl<B: IoVectoredBufMut> Op for ReadvOp<'_, B> {
         cx: &mut Context<'_>,
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
-        let bufs = self.bufs.as_mut().unwrap();
+        let bufs = self
+            .bufs
+            .as_mut()
+            .expect("readv op buffers must be present while polling");
         #[cfg(unix)]
         let result = {
             let mut iovecs = iovec_to_system(&mut bufs.as_iovecs_mut());
@@ -157,7 +162,6 @@ impl<B: IoVectoredBufMut> Op for ReadvOp<'_, B> {
         driver: &AnyDriver,
     ) -> Poll<io::Result<Self::Output>> {
         let result = if let Some(completion_token) = self.completion_token {
-            // Get the completion result
             match driver.get_completion_result(completion_token) {
                 Some(result) => {
                     self.completion_token = None;
@@ -191,7 +195,10 @@ impl<B: IoVectoredBufMut> Op for ReadvOp<'_, B> {
 
         #[cfg(windows)]
         {
-            let bufs = self.bufs.as_mut().unwrap();
+            let bufs = self
+                .bufs
+                .as_mut()
+                .expect("readv op buffers must be present while polling");
             if let Some(staging) = self.completion_staging.take() {
                 let mut src_offset = 0usize;
                 let mut remaining = result as usize;
@@ -220,7 +227,10 @@ impl<B: IoVectoredBufMut> Op for ReadvOp<'_, B> {
     #[cfg(windows)]
     #[inline]
     fn submit_windows(&mut self, overlapped: *mut OVERLAPPED) -> Result<(), io::Error> {
-        let bufs = self.bufs.as_mut().unwrap();
+        let bufs = self
+            .bufs
+            .as_mut()
+            .expect("readv op buffers must be present while polling");
         match self.handle.handle {
             RawOsHandle::Socket(socket) => {
                 let iovecs = bufs.as_iovecs();
@@ -322,9 +332,11 @@ impl<B: IoVectoredBufMut> Op for ReadvOp<'_, B> {
     ) -> Result<io_uring::squeue::Entry, io::Error> {
         use io_uring::{opcode, types};
 
-        let bufs = self.bufs.as_mut().unwrap();
+        let bufs = self
+            .bufs
+            .as_mut()
+            .expect("readv op buffers must be present while polling");
 
-        // Build a temporary iovec array for the syscall.
         let mut iovecs = if let Some(iovecs) = self.completion_system_iovecs.take() {
             iovecs
         } else {
