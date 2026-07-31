@@ -529,15 +529,15 @@ mod tests {
         let counter = Arc::new(Mutex::new(0));
         let waker = mock_waker(counter.clone());
 
-        let handle1 = wheel.insert(waker, 100);
-        wheel.remove(handle1);
+        let first_handle = wheel.insert(waker, 100);
+        wheel.remove(first_handle);
 
         // Re-insert with same slab_index but different generation
         let waker2 = mock_waker(counter.clone());
-        let handle2 = wheel.insert(waker2, 200);
+        let second_handle = wheel.insert(waker2, 200);
 
         // Old handle should not cancel the new timer
-        wheel.remove(handle1);
+        wheel.remove(first_handle);
         assert!(!wheel.is_empty());
         assert_eq!(
             wheel.nearest_wakeup(),
@@ -545,7 +545,7 @@ mod tests {
         );
 
         // New handle should work
-        wheel.remove(handle2);
+        wheel.remove(second_handle);
         assert!(wheel.is_empty());
     }
 
