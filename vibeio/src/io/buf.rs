@@ -365,10 +365,7 @@ pub struct IoVec {
 /// Trait for vectored read buffers.
 pub trait IoVectoredBuf: 'static {
     /// Returns a pointer to an array of `iovec` structures and its length.
-    #[inline]
-    fn as_iovecs(&self) -> Box<[IoVec]> {
-        unimplemented!()
-    }
+    fn as_iovecs(&self) -> Box<[IoVec]>;
 
     /// Returns `true` if the vectored buffer is empty.
     #[inline]
@@ -380,10 +377,7 @@ pub trait IoVectoredBuf: 'static {
 /// Trait for vectored write buffers.
 pub trait IoVectoredBufMut: IoVectoredBuf {
     /// Returns a mutable pointer to an array of `iovec` structures and its length.
-    #[inline]
-    fn as_iovecs_mut(&mut self) -> Box<[IoVec]> {
-        unimplemented!()
-    }
+    fn as_iovecs_mut(&mut self) -> Box<[IoVec]>;
 }
 
 #[cfg(unix)]

@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- `IoVectoredBuf` now requires `as_iovecs` to be implemented for the buffer type (similar with `IoVectoredBufMut` with `as_iovecs_mut`).
+
 ## `vibeio` 0.2.19
 
 **Released in July 26, 2026**
@@ -120,13 +126,13 @@
 **Released in March 17, 2026**
 
 - Fixed some compilation errors on Linux targets with musl libc
- 
+
 ## `vibeio` 0.2.1
 
 **Released in March 17, 2026**
 
 - Improved sendfile_exact correctness
- 
+
 ## `vibeio` 0.2.0
 
 **Released in March 17, 2026**
