@@ -13,5 +13,4 @@ repository = "https://github.com/ferronweb/vibeio"
 
 [dependencies]
 quinn = { version = "0.11.9", default-features = false }
-quinn-udp = "0.5.14"
 vibeio = { workspace = true, features = ["time"] }

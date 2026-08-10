@@ -40,8 +40,11 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Storage_FileSystem",
 ] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-io-uring = "0.6"
+[target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64", target_arch = "loongarch64", target_arch = "powerpc64")))'.dependencies]
+io-uring = "0.7"
+
+[target.'cfg(all(target_os = "linux", not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64", target_arch = "loongarch64", target_arch = "powerpc64"))))'.dependencies]
+io-uring = { version = "0.7", features = ["bindgen"] } # These platforms don't have pre-built bindings for `io-uring` crate, so use bindgen.
 
 [dev-dependencies]
 

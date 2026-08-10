@@ -6,6 +6,7 @@
 
 - Improved error reporting for some internal `vibeio` panics.
 - `IoVectoredBuf` now requires `as_iovecs` to be implemented for the buffer type (similar with `IoVectoredBufMut` with `as_iovecs_mut`).
+- Updated `io-uring` crate dependency to 0.7.x (this may require Linux `io_uring` headers being installed for some CPU architectures)
 
 ## `vibeio` 0.2.19
 
