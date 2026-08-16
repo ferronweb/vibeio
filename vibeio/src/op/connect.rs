@@ -522,7 +522,7 @@ impl Drop for ConnectOp<'_> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
-            if let Some(driver) = crate::current_driver() {
+            if let Some(driver) = crate::try_current_driver() {
                 driver.ignore_completion(completion_token, Box::new(()));
             }
         }

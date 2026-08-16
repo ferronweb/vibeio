@@ -19,7 +19,7 @@ use crate::fd_inner::RawOsHandle;
 use crate::io::IoVec;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
-use crate::{current_driver, driver::AnyDriver};
+use crate::{driver::AnyDriver, try_current_driver};
 use crate::{driver::CompletionIoResult, io::IoVectoredBufMut};
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
@@ -363,7 +363,7 @@ impl<B: IoVectoredBufMut> Drop for ReadvOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
-            if let Some(driver) = current_driver() {
+            if let Some(driver) = try_current_driver() {
                 #[cfg(target_os = "linux")]
                 let bufs = self.completion_system_iovecs.take();
                 #[cfg(windows)]

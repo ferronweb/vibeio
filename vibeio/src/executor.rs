@@ -286,6 +286,18 @@ pub(crate) fn current_driver() -> Option<Rc<AnyDriver>> {
     })
 }
 
+/// Get the I/O driver for the current runtime
+///
+/// Returns `None` if called outside a runtime context or if runtime is already borrowed.
+pub(crate) fn try_current_driver() -> Option<Rc<AnyDriver>> {
+    CURRENT_RUNTIME.with(|runtime| {
+        let runtime = runtime.try_borrow().ok()?;
+        runtime
+            .as_ref()
+            .map(|runtime_inner| runtime_inner.driver.clone())
+    })
+}
+
 /// Get the timer for the current runtime.
 ///
 /// Returns `None` if called outside a runtime context or if timers are not enabled.

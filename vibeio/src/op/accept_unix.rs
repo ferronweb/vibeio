@@ -4,10 +4,10 @@ use std::task::{Context, Poll};
 
 use mio::Interest;
 
-use crate::current_driver;
 use crate::driver::{AnyDriver, CompletionIoResult};
 use crate::fd_inner::InnerRawHandle;
 use crate::op::Op;
+use crate::try_current_driver;
 
 #[inline]
 fn set_cloexec(fd: RawFd) -> Result<(), io::Error> {
@@ -154,7 +154,7 @@ impl Drop for AcceptUnixOp<'_> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
-            if let Some(driver) = current_driver() {
+            if let Some(driver) = try_current_driver() {
                 driver.ignore_completion(completion_token, Box::new(()));
             }
         }

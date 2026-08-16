@@ -3,10 +3,10 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::task::{Context, Poll};
 
-use crate::current_driver;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::op::Op;
+use crate::try_current_driver;
 
 pub struct StatxOp {
     dirfd: libc::c_int,
@@ -110,7 +110,7 @@ impl Drop for StatxOp {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
-            if let Some(driver) = current_driver() {
+            if let Some(driver) = try_current_driver() {
                 let statxbuf = self.statxbuf.take();
                 driver.ignore_completion(completion_token, Box::new(statxbuf));
             }

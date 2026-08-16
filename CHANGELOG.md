@@ -1,5 +1,11 @@
 # `vibeio` change log
 
+## `vibeio` UNRELEASED
+
+**Not yet released**
+
+- Fixed some panics when runtime is shut down due to an internal runtime being already borrowed.
+
 ## `vibeio` 0.2.20
 
 **Released in August 16, 2026**

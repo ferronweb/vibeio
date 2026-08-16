@@ -10,7 +10,6 @@ use windows_sys::Win32::{
     System::IO::OVERLAPPED,
 };
 
-use crate::current_driver;
 use crate::driver::AnyDriver;
 use crate::driver::CompletionIoResult;
 use crate::fd_inner::InnerRawHandle;
@@ -21,6 +20,7 @@ use crate::io::IoVec;
 use crate::io::IoVectoredBuf;
 use crate::op::io_util::poll_result_or_wait;
 use crate::op::Op;
+use crate::try_current_driver;
 
 /// Converts a slice of `IoSlice` to a system iovec buffer.
 #[cfg(unix)]
@@ -357,7 +357,7 @@ impl<B: IoVectoredBuf> Drop for WritevOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
-            if let Some(driver) = current_driver() {
+            if let Some(driver) = try_current_driver() {
                 #[cfg(target_os = "linux")]
                 let bufs = self.completion_system_iovecs.take();
                 #[cfg(windows)]

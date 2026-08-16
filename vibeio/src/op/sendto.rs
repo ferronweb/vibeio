@@ -440,7 +440,7 @@ impl<B: IoBuf> Drop for SendtoOp<'_, B> {
     #[inline]
     fn drop(&mut self) {
         if let Some(completion_token) = self.completion_token {
-            if let Some(driver) = crate::current_driver() {
+            if let Some(driver) = crate::try_current_driver() {
                 #[cfg(any(windows, target_os = "linux"))]
                 let completion_state = self.completion_state.take();
                 #[cfg(not(any(windows, target_os = "linux")))]
