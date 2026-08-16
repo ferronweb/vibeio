@@ -9,7 +9,6 @@
 //! - The dispatch thread wakes registered wakers for received signals.
 //! - Multiple listeners for the same signal share the same handler.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::os::fd::RawFd;
@@ -20,6 +19,7 @@ use std::task::{Context, Poll, Waker};
 
 use futures_util::future::poll_fn;
 use once_cell::sync::OnceCell;
+use rustc_hash::FxHashMap;
 
 /// Unix signal kind wrapper.
 ///
@@ -124,7 +124,7 @@ struct RegisteredSignal {
 }
 
 struct Registry {
-    signals: Mutex<HashMap<libc::c_int, RegisteredSignal>>,
+    signals: Mutex<FxHashMap<libc::c_int, RegisteredSignal>>,
 }
 
 static REGISTRY: OnceCell<Arc<Registry>> = OnceCell::new();
@@ -318,7 +318,7 @@ fn init_registry() -> io::Result<Arc<Registry>> {
     SIGNAL_WRITE_FD.store(write_fd, Ordering::Release);
 
     let registry = Arc::new(Registry {
-        signals: Mutex::new(HashMap::new()),
+        signals: Mutex::new(FxHashMap::default()),
     });
 
     start_dispatch_thread(read_fd, Arc::clone(&registry))?;

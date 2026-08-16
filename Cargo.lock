@@ -731,6 +731,7 @@ dependencies = [
  "mio",
  "once_cell",
  "oneshot",
+ "rustc-hash",
  "rusty_pool",
  "slab",
  "tokio",
