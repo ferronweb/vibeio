@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.20
 
-**Not yet released**
+**Released in August 16, 2026**
 
 - Improved error reporting for some internal `vibeio` panics.
 - `IoVectoredBuf` now requires `as_iovecs` to be implemented for the buffer type (similar with `IoVectoredBufMut` with `as_iovecs_mut`).
