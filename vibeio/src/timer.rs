@@ -375,9 +375,9 @@ impl Timer {
         // If there's a deadline, we need to ensure it's at least 1ms to avoid busy looping
         let now_tick = wheel.now();
         (
-            wheel
-                .nearest_wakeup()
-                .map(|deadline| Duration::from_millis(deadline.get().saturating_sub(now_tick).max(1))),
+            wheel.nearest_wakeup().map(|deadline| {
+                Duration::from_millis(deadline.get().saturating_sub(now_tick).max(1))
+            }),
             woken_up,
         )
     }
