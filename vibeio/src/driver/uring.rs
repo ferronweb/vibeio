@@ -46,8 +46,10 @@ impl Interruptor for UringInterruptor {
 struct PollRegistration {
     fd: RawFd,
     poll_mask: u32,
-    waiter: Option<Waker>,
-    poll_armed: bool,
+    waiter_read: Option<Waker>,
+    poll_read_armed: bool,
+    waiter_write: Option<Waker>,
+    poll_write_armed: bool,
 }
 
 enum HandleRegistration {
@@ -326,8 +328,19 @@ impl UringDriver {
             if key_kind == POLL_KEY_KIND {
                 let waiter = match state.registrations.get_mut(token.0) {
                     Some(HandleRegistration::Poll(registration)) => {
-                        registration.poll_armed = false;
-                        registration.waiter.take()
+                        let write = registration.poll_mask as i16 & libc::POLLOUT != 0;
+                        let read = registration.poll_mask as i16 & libc::POLLIN != 0;
+                        if write {
+                            registration.poll_write_armed = false;
+                            if read {
+                                registration.poll_read_armed = false;
+                                registration.waiter_read.take();
+                            }
+                            registration.waiter_write.take()
+                        } else {
+                            registration.poll_read_armed = false;
+                            registration.waiter_read.take()
+                        }
                     }
                     _ => None,
                 };
@@ -449,8 +462,10 @@ impl Driver for UringDriver {
                 entry.insert(HandleRegistration::Poll(PollRegistration {
                     fd: handle.handle,
                     poll_mask: Self::interest_to_poll_mask(interest),
-                    waiter: None,
-                    poll_armed: false,
+                    waiter_read: None,
+                    poll_read_armed: false,
+                    waiter_write: None,
+                    poll_write_armed: false,
                 }));
             }
         }
@@ -540,14 +555,24 @@ impl Driver for UringDriver {
                 }
             };
 
-            Self::update_waiter(&mut registration.waiter, waker);
+            let write = interest.is_writable();
+            if write {
+                Self::update_waiter(&mut registration.waiter_write, waker);
+            } else {
+                Self::update_waiter(&mut registration.waiter_read, waker);
+            }
             let desired_mask = Self::interest_to_poll_mask(interest);
             registration.poll_mask = desired_mask;
 
-            if registration.poll_armed {
+            if (write && registration.poll_write_armed) || (!write && registration.poll_read_armed)
+            {
                 None
             } else {
-                registration.poll_armed = true;
+                if write {
+                    registration.poll_write_armed = true;
+                } else {
+                    registration.poll_read_armed = true;
+                }
                 Some((registration.fd, desired_mask))
             }
         };
@@ -558,8 +583,16 @@ impl Driver for UringDriver {
                 if let Some(HandleRegistration::Poll(registration)) =
                     state.registrations.get_mut(token.0)
                 {
-                    registration.poll_armed = false;
-                    registration.waiter = None;
+                    let write = registration.poll_mask as i16 & libc::POLLOUT != 0;
+                    let read = registration.poll_mask as i16 & libc::POLLIN != 0;
+                    if write {
+                        registration.poll_write_armed = false;
+                        registration.waiter_write = None;
+                    }
+                    if read {
+                        registration.poll_read_armed = false;
+                        registration.waiter_read = None;
+                    }
                 }
                 return Err(submit_err);
             }
