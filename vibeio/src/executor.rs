@@ -467,7 +467,7 @@ pub(crate) fn offload_fs() -> bool {
 pub(crate) struct RuntimeInner {
     queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
     next_task: Rc<RefCell<VecDeque<Arc<Task>>>>,
-    remote_queue: Arc<SegQueue<usize>>,
+    remote_queue: Arc<SegQueue<Arc<Task>>>,
     token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
     waiting: Arc<AtomicBool>,
@@ -605,16 +605,13 @@ impl RuntimeInner {
         }
 
         if budget != 0 {
-            let slab = self.token_to_task.borrow();
             while budget != 0 {
-                let Some(token) = self.remote_queue.pop() else {
+                let Some(task) = self.remote_queue.pop() else {
                     break;
                 };
-                if let Some(task) = slab.get(token) {
-                    task.mark_dequeued();
-                    batch.push(task.clone());
-                    budget -= 1;
-                }
+                task.mark_dequeued();
+                batch.push(task);
+                budget -= 1;
             }
         }
 

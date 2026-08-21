@@ -20,7 +20,7 @@ pub struct Task {
     pub future: RefCell<Option<LocalBoxFuture<'static, ()>>>,
     pub queue: Weak<UnsafeCell<VecDeque<Arc<Task>>>>,
     pub next_task: Weak<RefCell<VecDeque<Arc<Task>>>>,
-    pub remote_queue: std::sync::Weak<SegQueue<usize>>,
+    pub remote_queue: std::sync::Weak<SegQueue<Arc<Task>>>,
     pub interruptor: AnyInterruptor,
     pub queued: AtomicBool,
     pub thread_id: std::thread::ThreadId,
@@ -102,7 +102,7 @@ impl Task {
 
         if !task.queued.swap(true, Ordering::Relaxed) {
             if let Some(remote_queue) = task.remote_queue.upgrade() {
-                remote_queue.push(task.token);
+                remote_queue.push(Arc::clone(task));
             }
         }
 
