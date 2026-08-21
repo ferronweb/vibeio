@@ -199,24 +199,66 @@ impl AnyDriver {
     #[cfg(target_os = "linux")]
     #[inline]
     pub(crate) fn new_uring_custom(builder: io_uring::Builder) -> Result<Self, io::Error> {
-        Ok(AnyDriver::IoUring(UringDriver::new(1024, builder)?))
+        Self::new_uring_custom_with_entries(4096, builder)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[inline]
+    pub(crate) fn new_uring_custom_with_entries(
+        entries: u32,
+        builder: io_uring::Builder,
+    ) -> Result<Self, io::Error> {
+        Ok(AnyDriver::IoUring(UringDriver::new(entries, builder)?))
     }
 
     #[cfg(target_os = "linux")]
     #[inline]
     pub(crate) fn new_uring() -> Result<Self, io::Error> {
+        Self::new_uring_with_entries(4096)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[inline]
+    pub(crate) fn new_uring_with_entries(entries: u32) -> Result<Self, io::Error> {
         let mut builder = io_uring::IoUring::builder();
         builder
             .setup_single_issuer()
             .setup_coop_taskrun()
             .setup_taskrun_flag()
             .setup_submit_all();
-        if let Ok(driver) = Self::new_uring_custom(builder) {
+        if let Ok(driver) = Self::new_uring_custom_with_entries(entries, builder) {
             return Ok(driver);
         }
 
-        // Fallback for older kernels
-        Self::new_uring_custom(io_uring::IoUring::builder())
+        // Fallback for older kernels: retry without the newer flags
+        Self::new_uring_custom_with_entries(entries, io_uring::IoUring::builder())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[inline]
+    pub(crate) fn new_best_with_entries(entries: u32) -> Result<Self, io::Error> {
+        if let Ok(driver) = Self::new_uring_with_entries(entries) {
+            return Ok(driver);
+        }
+        // If the requested size fails (e.g. capped), try the legacy default
+        if entries != 1024 {
+            if let Ok(driver) = Self::new_uring_with_entries(1024) {
+                return Ok(driver);
+            }
+        }
+        // Fallback to the next best driver (Mio on Unix, Iocp on Windows)
+        #[cfg(unix)]
+        if let Ok(driver) = Self::new_mio() {
+            return Ok(driver);
+        }
+        #[cfg(windows)]
+        if let Ok(driver) = Self::new_iocp() {
+            return Ok(driver);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "io_uring not available",
+        ))
     }
 
     #[inline]
