@@ -62,6 +62,10 @@ pub struct RuntimeBuilder {
     batch_size: usize,
     #[cfg(target_os = "linux")]
     sq_entries: u32,
+    #[cfg(target_os = "linux")]
+    provided_buffers: Option<u32>,
+    #[cfg(target_os = "linux")]
+    multishot_accept: bool,
 }
 
 impl RuntimeBuilder {
@@ -77,6 +81,10 @@ impl RuntimeBuilder {
             batch_size: 256,
             #[cfg(target_os = "linux")]
             sq_entries: 4096,
+            #[cfg(target_os = "linux")]
+            provided_buffers: None,
+            #[cfg(target_os = "linux")]
+            multishot_accept: false,
         }
     }
 
@@ -130,6 +138,58 @@ impl RuntimeBuilder {
     #[cfg(target_os = "linux")]
     pub fn sq_entries(mut self, entries: u32) -> Self {
         self.sq_entries = entries.max(64);
+        self
+    }
+
+    /// Configure the underlying `io_uring` builder.
+    ///
+    /// Only used when the io_uring driver is selected (Linux). Allows
+    /// tuning flags such as `setup_sqpoll`, `setup_coop_taskrun`,
+    /// `setup_submit_all`, etc. with automatic fallback for older kernels.
+    ///
+    /// # Example
+    /// ```
+    /// # #[cfg(target_os = "linux")]
+    /// # {
+    /// use vibeio::RuntimeBuilder;
+    /// let rt = RuntimeBuilder::new()
+    ///     .uring(|b| { b.setup_sqpoll(2000); })
+    ///     .build()
+    ///     .unwrap();
+    /// # }
+    /// ```
+    #[cfg(target_os = "linux")]
+    pub fn uring<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut io_uring::Builder),
+    {
+        let mut builder = match self.driver_kind.take() {
+            Some(DriverKind::IoUringCustom(b)) => b,
+            _ => io_uring::IoUring::builder(),
+        };
+        f(&mut builder);
+        self.driver_kind = Some(DriverKind::IoUringCustom(builder));
+        self
+    }
+
+    /// Sets the number of provided buffers for `IORING_OP_PROVIDE_BUFFERS`.
+    ///
+    /// Only used when the io_uring driver is selected (Linux). When set,
+    /// the driver registers a buffer ring to enable zero-alloc
+    /// `RECV_MULTISHOT` (kernel 6.0+). `None` disables the feature.
+    #[cfg(target_os = "linux")]
+    pub fn provided_buffers(mut self, n: u32) -> Self {
+        self.provided_buffers = Some(n.max(16));
+        self
+    }
+
+    /// Enable multishot accept (`IORING_OP_ACCEPT` with
+    /// `IORING_ACCEPT_MULTISHOT`, kernel 5.19+). When enabled, a single
+    /// SQE generates many CQEs without re-submit, cutting accept
+    /// re-arm cost for 10k burst connects.
+    #[cfg(target_os = "linux")]
+    pub fn multishot_accept(mut self, enable: bool) -> Self {
+        self.multishot_accept = enable;
         self
     }
 
