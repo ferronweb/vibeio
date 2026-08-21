@@ -234,33 +234,6 @@ impl AnyDriver {
         Self::new_uring_custom_with_entries(entries, io_uring::IoUring::builder())
     }
 
-    #[cfg(target_os = "linux")]
-    #[inline]
-    pub(crate) fn new_best_with_entries(entries: u32) -> Result<Self, io::Error> {
-        if let Ok(driver) = Self::new_uring_with_entries(entries) {
-            return Ok(driver);
-        }
-        // If the requested size fails (e.g. capped), try the legacy default
-        if entries != 1024 {
-            if let Ok(driver) = Self::new_uring_with_entries(1024) {
-                return Ok(driver);
-            }
-        }
-        // Fallback to the next best driver (Mio on Unix, Iocp on Windows)
-        #[cfg(unix)]
-        if let Ok(driver) = Self::new_mio() {
-            return Ok(driver);
-        }
-        #[cfg(windows)]
-        if let Ok(driver) = Self::new_iocp() {
-            return Ok(driver);
-        }
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "io_uring not available",
-        ))
-    }
-
     #[inline]
     pub(crate) fn new_best() -> Result<Self, io::Error> {
         #[cfg(target_os = "linux")]

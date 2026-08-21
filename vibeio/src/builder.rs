@@ -18,9 +18,15 @@ pub enum DriverKind {
     /// Uses the io_uring driver (Linux only).
     #[cfg(target_os = "linux")]
     IoUring,
+    /// Uses the io_uring driver with custom entry count (Linux only).
+    #[cfg(target_os = "linux")]
+    IoUringEntries(u32),
     /// Uses a custom io_uring driver (Linux only).
     #[cfg(target_os = "linux")]
     IoUringCustom(io_uring::Builder),
+    /// Uses a custom io_uring driver with custom entry count (Linux only).
+    #[cfg(target_os = "linux")]
+    IoUringCustomEntries(u32, io_uring::Builder),
 }
 
 impl DriverKind {
@@ -37,6 +43,12 @@ impl DriverKind {
             DriverKind::IoUring => AnyDriver::new_uring(),
             #[cfg(target_os = "linux")]
             DriverKind::IoUringCustom(builder) => AnyDriver::new_uring_custom(builder),
+            #[cfg(target_os = "linux")]
+            DriverKind::IoUringEntries(entries) => AnyDriver::new_uring_with_entries(entries),
+            #[cfg(target_os = "linux")]
+            DriverKind::IoUringCustomEntries(entries, builder) => {
+                AnyDriver::new_uring_custom_with_entries(entries, builder)
+            }
         }
     }
 }
@@ -60,12 +72,6 @@ pub struct RuntimeBuilder {
     enable_fs_offload: bool,
     blocking_pool: Option<Box<dyn BlockingThreadPool>>,
     batch_size: usize,
-    #[cfg(target_os = "linux")]
-    sq_entries: u32,
-    #[cfg(target_os = "linux")]
-    provided_buffers: Option<u32>,
-    #[cfg(target_os = "linux")]
-    multishot_accept: bool,
 }
 
 impl RuntimeBuilder {
@@ -79,12 +85,6 @@ impl RuntimeBuilder {
             enable_fs_offload: false,
             blocking_pool: None,
             batch_size: 256,
-            #[cfg(target_os = "linux")]
-            sq_entries: 4096,
-            #[cfg(target_os = "linux")]
-            provided_buffers: None,
-            #[cfg(target_os = "linux")]
-            multishot_accept: false,
         }
     }
 
@@ -130,17 +130,6 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Sets the io_uring submission queue size.
-    ///
-    /// Only used when the io_uring driver is selected (Linux). Larger
-    /// entries reduce `is_full -> submit` stalls under 10k concurrent
-    /// connections with pending read/write. Defaults to 4096 (was 1024).
-    #[cfg(target_os = "linux")]
-    pub fn sq_entries(mut self, entries: u32) -> Self {
-        self.sq_entries = entries.max(64);
-        self
-    }
-
     /// Configure the underlying `io_uring` builder.
     ///
     /// Only used when the io_uring driver is selected (Linux). Allows
@@ -172,27 +161,6 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Sets the number of provided buffers for `IORING_OP_PROVIDE_BUFFERS`.
-    ///
-    /// Only used when the io_uring driver is selected (Linux). When set,
-    /// the driver registers a buffer ring to enable zero-alloc
-    /// `RECV_MULTISHOT` (kernel 6.0+). `None` disables the feature.
-    #[cfg(target_os = "linux")]
-    pub fn provided_buffers(mut self, n: u32) -> Self {
-        self.provided_buffers = Some(n.max(16));
-        self
-    }
-
-    /// Enable multishot accept (`IORING_OP_ACCEPT` with
-    /// `IORING_ACCEPT_MULTISHOT`, kernel 5.19+). When enabled, a single
-    /// SQE generates many CQEs without re-submit, cutting accept
-    /// re-arm cost for 10k burst connects.
-    #[cfg(target_os = "linux")]
-    pub fn multishot_accept(mut self, enable: bool) -> Self {
-        self.multishot_accept = enable;
-        self
-    }
-
     /// Sets the default blocking thread pool for the runtime with specified maximum number of threads.
     #[cfg(feature = "blocking-default")]
     pub fn default_blocking_pool(mut self, max_threads: usize) -> Self {
@@ -206,71 +174,18 @@ impl RuntimeBuilder {
     ///
     /// If no driver was explicitly set, selects the best available driver for the platform.
     pub fn build(self) -> Result<crate::executor::Runtime, std::io::Error> {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(driver_kind) = self.driver_kind {
-                match driver_kind {
-                    DriverKind::IoUring => {
-                        let driver = AnyDriver::new_uring_with_entries(self.sq_entries)?;
-                        return Ok(crate::executor::Runtime::with_options(
-                            driver,
-                            self.enable_timer,
-                            self.blocking_pool,
-                            self.enable_fs_offload,
-                            self.batch_size,
-                        ));
-                    }
-                    DriverKind::IoUringCustom(builder) => {
-                        let driver = AnyDriver::new_uring_custom_with_entries(
-                            self.sq_entries,
-                            builder,
-                        )?;
-                        return Ok(crate::executor::Runtime::with_options(
-                            driver,
-                            self.enable_timer,
-                            self.blocking_pool,
-                            self.enable_fs_offload,
-                            self.batch_size,
-                        ));
-                    }
-                    _ => {
-                        let driver = driver_kind.into_driver()?;
-                        return Ok(crate::executor::Runtime::with_options(
-                            driver,
-                            self.enable_timer,
-                            self.blocking_pool,
-                            self.enable_fs_offload,
-                            self.batch_size,
-                        ));
-                    }
-                }
-            } else {
-                let driver = AnyDriver::new_best_with_entries(self.sq_entries)
-                    .or_else(|_| AnyDriver::new_best())?;
-                return Ok(crate::executor::Runtime::with_options(
-                    driver,
-                    self.enable_timer,
-                    self.blocking_pool,
-                    self.enable_fs_offload,
-                    self.batch_size,
-                ));
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let driver = if let Some(driver_kind) = self.driver_kind {
-                driver_kind.into_driver()?
-            } else {
-                AnyDriver::new_best()?
-            };
-            Ok(crate::executor::Runtime::with_options(
-                driver,
-                self.enable_timer,
-                self.blocking_pool,
-                self.enable_fs_offload,
-                self.batch_size,
-            ))
-        }
+        let driver = if let Some(driver_kind) = self.driver_kind {
+            driver_kind.into_driver()?
+        } else {
+            AnyDriver::new_best()?
+        };
+        Ok(crate::executor::Runtime::with_options(
+            driver,
+            self.enable_timer,
+            self.blocking_pool,
+            self.enable_fs_offload,
+            self.batch_size,
+        ))
     }
 }
 
