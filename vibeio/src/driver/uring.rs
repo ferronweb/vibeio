@@ -10,6 +10,7 @@ use io_uring::types::{SubmitArgs, Timespec};
 use io_uring::{opcode, squeue, types, IoUring};
 use mio::{Interest, Token};
 use slab::Slab;
+use smallvec::SmallVec;
 
 use crate::driver::{CompletionIoResult, Interruptor};
 use crate::{
@@ -267,11 +268,19 @@ impl UringDriver {
         }
 
         // Drain any new completions produced by the submit above.
+        // Use a SmallVec to keep the common case (≤16 wakes) on-stack and
+        // reuse the allocation; wake outside the RefCell borrows so task
+        // wakes (which may re-enter the driver via submit_poll) don't
+        // contend on the borrow or cause allocator jitter while it is held.
+        let mut wakers: SmallVec<[Waker; 16]> = SmallVec::new();
         let need_interrupt = {
             let mut ring = self.ring.borrow_mut();
             let mut state = self.state.borrow_mut();
-            Self::drain_cq(&mut ring, &mut state)
+            Self::drain_cq(&mut ring, &mut state, &mut wakers)
         };
+        for w in wakers.drain(..) {
+            w.wake();
+        }
         if need_interrupt {
             self.submit_interrupt();
         }
@@ -279,86 +288,70 @@ impl UringDriver {
         Ok(())
     }
 
-    /// Drain the completion queue and wake any registered waiters.
+    /// Drain the completion queue and collect waiters to wake.
+    ///
+    /// Wakers are collected into `wakers` and **not** woken here; the caller
+    /// must wake them after releasing `ring`/`state` borrows to avoid
+    /// re-entrant borrows and allocator jitter while the `RefCell`s are held.
     #[inline]
-    fn drain_cq(ring: &mut IoUring, state: &mut DriverState) -> bool {
+    fn drain_cq(
+        ring: &mut IoUring,
+        state: &mut DriverState,
+        wakers: &mut SmallVec<[Waker; 16]>,
+    ) -> bool {
         let mut interrupt = false;
 
-        // Collect wakers in a small inline array to avoid heap allocation
-        // in the common case (0-8 completions per collect_completions call).
-        // Most flush/wait calls produce very few completions.
-        let mut fast_wakers: [Option<Waker>; 8] = Default::default();
-        let mut fast_count = 0;
-        let mut overflow_wakers: Vec<Waker> = Vec::new();
+        // `wakers` is SmallVec<[Waker; 16]> — up to 16 completions stay on
+        // the stack; larger bursts (e.g. 1k accept flood) spill once to the
+        // heap instead of allocating a fresh Vec per burst. The caller reuses
+        // the allocation across calls when possible.
+        let cq = ring.completion();
 
-        {
-            let cq = ring.completion();
+        for cqe in cq {
+            let key = cqe.user_data();
+            let result = cqe.result();
 
-            for cqe in cq {
-                let key = cqe.user_data();
-                let result = cqe.result();
+            if key == u64::MAX {
+                // Task interrupted
+                interrupt = true;
+                continue;
+            } else if key == u64::MAX - 1 {
+                // Timeout (Linux <5.10)
+                continue;
+            }
 
-                if key == u64::MAX {
-                    // Task interrupted
-                    interrupt = true;
-                    continue;
-                } else if key == u64::MAX - 1 {
-                    // Timeout (Linux <5.10)
-                    continue;
-                }
+            let token = Self::decode_token(key);
+            let key_kind = Self::decode_key_kind(key);
 
-                let token = Self::decode_token(key);
-                let key_kind = Self::decode_key_kind(key);
-
-                if key_kind == POLL_KEY_KIND {
-                    let waiter = match state.registrations.get_mut(token.0) {
-                        Some(HandleRegistration::Poll(registration)) => {
-                            registration.poll_armed = false;
-                            registration.waiter.take()
-                        }
-                        _ => None,
-                    };
-                    if let Some(waiter) = waiter {
-                        if fast_count < fast_wakers.len() {
-                            fast_wakers[fast_count] = Some(waiter);
-                        } else {
-                            overflow_wakers.push(waiter);
-                        }
-                        fast_count += 1;
+            if key_kind == POLL_KEY_KIND {
+                let waiter = match state.registrations.get_mut(token.0) {
+                    Some(HandleRegistration::Poll(registration)) => {
+                        registration.poll_armed = false;
+                        registration.waiter.take()
                     }
-                    continue;
-                }
-
-                let mut remove_completion = false;
-                let waiter = match state.completions.get_mut(token.0) {
-                    Some(completion) => {
-                        completion.completed = Some(result);
-                        remove_completion = completion.ignored_data.is_some();
-                        completion.waiter.take()
-                    }
-                    None => None,
+                    _ => None,
                 };
-                if remove_completion {
-                    state.completions.remove(token.0);
-                }
                 if let Some(waiter) = waiter {
-                    if fast_count < fast_wakers.len() {
-                        fast_wakers[fast_count] = Some(waiter);
-                    } else {
-                        overflow_wakers.push(waiter);
-                    }
-                    fast_count += 1;
+                    wakers.push(waiter);
                 }
+                continue;
             }
-        }
 
-        for waker in fast_wakers.iter_mut().take(fast_count) {
-            if let Some(w) = waker.take() {
-                w.wake();
+            let mut remove_completion = false;
+            let waiter = match state.completions.get_mut(token.0) {
+                Some(completion) => {
+                    completion.completed = Some(result);
+                    remove_completion = completion.ignored_data.is_some();
+                    completion.waiter.take()
+                }
+                None => None,
+            };
+            if remove_completion {
+                state.completions.remove(token.0);
             }
-        }
-        for waker in overflow_wakers {
-            waker.wake();
+            if let Some(waiter) = waiter {
+                wakers.push(waiter);
+            }
         }
 
         interrupt

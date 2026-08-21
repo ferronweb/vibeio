@@ -734,6 +734,7 @@ dependencies = [
  "rustc-hash",
  "rusty_pool",
  "slab",
+ "smallvec",
  "tokio",
  "windows-sys 0.61.2",
 ]

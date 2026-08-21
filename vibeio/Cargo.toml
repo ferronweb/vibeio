@@ -15,6 +15,7 @@ repository = "https://github.com/ferronweb/vibeio"
 futures-util = "0.3.32"
 mio = "1.1.1"
 slab = "0.4.12"
+smallvec = "1.13"
 tokio = { version = "1.49.0", features = ["io-util"] }
 crossbeam-queue = "0.3"
 oneshot = { version = "0.2.1", features = ["async", "std"] }
