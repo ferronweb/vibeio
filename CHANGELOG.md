@@ -5,6 +5,10 @@
 **Not yet released**
 
 - Fixed some panics when runtime is shut down due to an internal runtime being already borrowed.
+- Fixed some issues with `io_uring` wakers by using separate wakers for read and write interests.
+- Improved `io_uring` performance (including bumping SQ size to 4096).
+- Optimized executor and task management in multiple places.
+- Optimized timer performance by skipping wheel and halving clock reads when idle.
 
 ## `vibeio` 0.2.20
 
