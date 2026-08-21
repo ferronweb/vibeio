@@ -24,7 +24,6 @@ pub struct Task {
     pub interruptor: AnyInterruptor,
     pub queued: AtomicBool,
     pub thread_id: std::thread::ThreadId,
-    pub token: usize,
     pub waiting: Arc<AtomicBool>,
     pub interrupt_pending: Arc<AtomicBool>,
 }

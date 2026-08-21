@@ -36,7 +36,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crossbeam_queue::SegQueue;
-use slab::Slab;
 
 #[cfg(feature = "blocking-default")]
 use crate::blocking::DefaultBlockingThreadPool;
@@ -469,7 +468,6 @@ pub(crate) struct RuntimeInner {
     queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
     next_task: Rc<RefCell<VecDeque<Arc<Task>>>>,
     remote_queue: Arc<SegQueue<Arc<Task>>>,
-    token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
     waiting: Arc<AtomicBool>,
     interrupt_pending: Arc<AtomicBool>,
@@ -518,8 +516,6 @@ impl RuntimeInner {
             state: state.clone(),
         });
 
-        let mut slab = self.token_to_task.borrow_mut();
-        let vacant_slab_entry = slab.vacant_entry();
         #[allow(clippy::arc_with_non_send_sync)]
         let task = Arc::new(Task {
             future: RefCell::new(Some(future)),
@@ -531,9 +527,7 @@ impl RuntimeInner {
             interruptor: self.driver.get_interruptor(),
             waiting: Arc::clone(&self.waiting),
             interrupt_pending: Arc::clone(&self.interrupt_pending),
-            token: vacant_slab_entry.key(),
         });
-        vacant_slab_entry.insert(task.clone());
 
         self.enqueue(task);
         JoinHandle::new(state)
@@ -545,8 +539,6 @@ impl RuntimeInner {
     #[inline]
     pub(crate) fn spawn_detached(&self, future: impl Future<Output = ()> + 'static) {
         let future = Box::pin(DetachedFuture { future });
-        let mut slab = self.token_to_task.borrow_mut();
-        let vacant_slab_entry = slab.vacant_entry();
         #[allow(clippy::arc_with_non_send_sync)]
         let task = Arc::new(Task {
             future: RefCell::new(Some(future)),
@@ -558,9 +550,7 @@ impl RuntimeInner {
             interruptor: self.driver.get_interruptor(),
             waiting: Arc::clone(&self.waiting),
             interrupt_pending: Arc::clone(&self.interrupt_pending),
-            token: vacant_slab_entry.key(),
         });
-        vacant_slab_entry.insert(task.clone());
         self.enqueue(task);
     }
 
@@ -683,7 +673,6 @@ impl Runtime {
                 ))),
                 #[allow(clippy::arc_with_non_send_sync)]
                 remote_queue: Arc::new(SegQueue::new()),
-                token_to_task: RefCell::new(Slab::with_capacity(4096)),
                 driver: Rc::new(driver),
                 waiting: Arc::new(AtomicBool::new(false)),
                 interrupt_pending: Arc::new(AtomicBool::new(false)),
@@ -814,11 +803,6 @@ impl Runtime {
                 inner.driver.wait(None);
 
                 inner.stop_waiting();
-                // The runtime just went idle: parked tasks remain slab entries
-                // (len is unchanged) but the capacity we reserved for the burst
-                // of connections that just closed can be reclaimed. shrink_to_fit
-                // only trims excess capacity, so live tasks are never dropped.
-                inner.token_to_task.borrow_mut().shrink_to_fit();
                 continue;
             }
 
@@ -832,9 +816,6 @@ impl Runtime {
                     if future.as_mut().poll(&mut context).is_pending() {
                         let mut future_slot = task.future.borrow_mut();
                         *future_slot = Some(future);
-                    } else {
-                        // Future completed, remove task from token_to_task slab to prevent memory leaks
-                        inner.token_to_task.borrow_mut().remove(task.token);
                     }
                 }
             }
