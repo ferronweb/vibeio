@@ -474,6 +474,7 @@ pub(crate) struct RuntimeInner {
     waiting: Arc<AtomicBool>,
     interrupt_pending: Arc<AtomicBool>,
     blocking_pool: Option<Box<dyn BlockingThreadPool>>,
+    batch_size: usize,
     #[cfg(feature = "fs")]
     fs_offload: bool,
     #[cfg(feature = "time")]
@@ -658,7 +659,7 @@ impl Runtime {
         #[cfg(feature = "blocking-default")]
         let blocking_pool: Option<Box<dyn BlockingThreadPool>> =
             Some(Box::new(DefaultBlockingThreadPool::new()));
-        Self::with_options(driver, true, blocking_pool, true)
+        Self::with_options(driver, true, blocking_pool, true, 256)
     }
 
     /// Create a new runtime with the given driver and options.
@@ -668,6 +669,7 @@ impl Runtime {
         enable_timer: bool,
         blocking_pool: Option<Box<dyn BlockingThreadPool>>,
         fs_offload: bool,
+        batch_size: usize,
     ) -> Self {
         #[cfg(not(feature = "fs"))]
         let _ = fs_offload;
@@ -685,6 +687,7 @@ impl Runtime {
                 waiting: Arc::new(AtomicBool::new(false)),
                 interrupt_pending: Arc::new(AtomicBool::new(false)),
                 blocking_pool,
+                batch_size,
                 #[cfg(feature = "fs")]
                 fs_offload,
                 #[cfg(feature = "time")]
@@ -755,7 +758,7 @@ impl Runtime {
             inner.interrupt_pending.clone(),
         );
         let root_waker = root_notify.waker();
-        let mut batch = Vec::with_capacity(256);
+        let mut batch = Vec::with_capacity(inner.batch_size);
 
         loop {
             if root_notify.take_ready() {
@@ -775,7 +778,7 @@ impl Runtime {
             }
 
             batch.clear();
-            inner.drain_ready(&mut batch, 256);
+            inner.drain_ready(&mut batch, inner.batch_size);
 
             if batch.is_empty() {
                 if root_notify.is_ready() {

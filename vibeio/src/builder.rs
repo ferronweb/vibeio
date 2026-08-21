@@ -59,6 +59,7 @@ pub struct RuntimeBuilder {
     enable_timer: bool,
     enable_fs_offload: bool,
     blocking_pool: Option<Box<dyn BlockingThreadPool>>,
+    batch_size: usize,
 }
 
 impl RuntimeBuilder {
@@ -71,6 +72,7 @@ impl RuntimeBuilder {
             enable_timer: false,
             enable_fs_offload: false,
             blocking_pool: None,
+            batch_size: 256,
         }
     }
 
@@ -102,6 +104,20 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Sets the number of tasks polled per scheduler loop iteration (the poll
+    /// batch size). Larger batches amortize syscall/flush overhead across more
+    /// tasks; smaller batches reduce worst-case latency for a single long
+    /// batch. Defaults to 256.
+    ///
+    /// For a thread-per-core web server handling many short-lived requests,
+    /// raising this (e.g. 512-1024) can improve throughput under bursty
+    /// accept/completion floods; lowering it tightens tail latency when a
+    /// single task does significant synchronous work per poll.
+    pub fn batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
     /// Sets the default blocking thread pool for the runtime with specified maximum number of threads.
     #[cfg(feature = "blocking-default")]
     pub fn default_blocking_pool(mut self, max_threads: usize) -> Self {
@@ -125,6 +141,7 @@ impl RuntimeBuilder {
             self.enable_timer,
             self.blocking_pool,
             self.enable_fs_offload,
+            self.batch_size,
         ))
     }
 }
