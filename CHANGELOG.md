@@ -4,6 +4,8 @@
 
 **Not yet released**
 
+- Added Linux-specific `uring()` method to runtime builder.
+- Added `spawn_detached` fast path for spawning tasks without join handles.
 - Fixed some panics when runtime is shut down due to an internal runtime being already borrowed.
 - Fixed some issues with `io_uring` wakers by using separate wakers for read and write interests.
 - Improved `io_uring` performance (including bumping SQ size to 4096).
