@@ -683,6 +683,15 @@ impl Runtime {
                 }
             }
 
+            // Opportunistic timer spin: wakes timers before draining so they
+            // are included in the same batch. This avoids one-iteration starvation
+            // that previously gated spin on batch.len()>64, hurting p99 for
+            // request/keepalive timeouts under load.
+            #[cfg(feature = "time")]
+            if let Some(timer) = inner.timer.as_ref() {
+                let _ = timer.spin_and_get_deadline();
+            }
+
             batch.clear();
             inner.drain_ready(&mut batch, 256);
 
@@ -722,16 +731,6 @@ impl Runtime {
                 continue;
             }
 
-            #[cfg(feature = "time")]
-            if batch.len() > 64 {
-                if let Some(timer) = inner.timer.as_ref() {
-                    // Spin the timing wheel to avoid starving timers
-                    let _ = timer.spin_and_get_deadline();
-                }
-            }
-
-            let allow_flush = batch.len() > 64;
-
             for task in batch.drain(..) {
                 let mut future_slot = task.future.borrow_mut();
                 if let Some(mut future) = future_slot.take() {
@@ -749,7 +748,10 @@ impl Runtime {
                 }
             }
 
-            if allow_flush && inner.driver.should_flush() {
+            // Flush i/o_uring submissions promptly even for small batches.
+            // Previously gated on batch.len()>64, which added up to 256 polls
+            // of latency to first write in the batch (p99 regression for H1/H2).
+            if inner.driver.should_flush() {
                 inner.driver.flush();
             }
         }
