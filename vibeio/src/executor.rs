@@ -681,6 +681,7 @@ impl Runtime {
                 next_task: Rc::new(RefCell::new(VecDeque::with_capacity(
                     crate::task::NEXT_TASK_INLINE_CAP,
                 ))),
+                #[allow(clippy::arc_with_non_send_sync)]
                 remote_queue: Arc::new(SegQueue::new()),
                 token_to_task: RefCell::new(Slab::with_capacity(4096)),
                 driver: Rc::new(driver),
