@@ -346,27 +346,38 @@ impl Timer {
 
     #[inline]
     pub fn spin_and_get_deadline(&self) -> (Option<Duration>, bool) {
-        let mut instant = self.instant.borrow_mut();
-        let mut wheel = self.wheel.borrow_mut();
-        let mut woken_up = false;
-        if !wheel.is_empty() {
-            // Advance the timer wheel, but only if not empty
-            for waker in wheel.advance(instant.elapsed().as_millis() as u64) {
-                // Wake the pending tasks
-                waker.wake();
-                woken_up = true;
-            }
+        if self.wheel.borrow().is_empty() {
+            // Common case for request handlers without pending sleeps (e.g. an
+            // http server with keepalive but no timeouts): skip the timing
+            // wheel entirely. We still refresh `instant` to keep the deadline
+            // mapping correct for a future `submit`, but that is a single
+            // `clock_gettime` instead of the two the full path performs. This
+            // runs on every scheduler loop iteration, so shaving the syscall
+            // here removes per-batch timer overhead.
+            *self.instant.borrow_mut() = Instant::now();
+            return (None, false);
         }
 
-        *instant = Instant::now();
+        let mut instant = self.instant.borrow_mut();
+        let mut wheel = self.wheel.borrow_mut();
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(*instant);
+        *instant = now;
+        let mut woken_up = false;
+        // Advance the timer wheel
+        for waker in wheel.advance(elapsed.as_millis() as u64) {
+            // Wake the pending tasks
+            waker.wake();
+            woken_up = true;
+        }
 
         // The deadline is absolute, so we need to subtract the current time to get the relative deadline
         // If there's a deadline, we need to ensure it's at least 1ms to avoid busy looping
-        let now = wheel.now();
+        let now_tick = wheel.now();
         (
             wheel
                 .nearest_wakeup()
-                .map(|deadline| Duration::from_millis(deadline.get().saturating_sub(now).max(1))),
+                .map(|deadline| Duration::from_millis(deadline.get().saturating_sub(now_tick).max(1))),
             woken_up,
         )
     }
