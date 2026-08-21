@@ -106,6 +106,32 @@ where
     }
 }
 
+/// Detached task wrapper: polls an inner future to completion and drops
+/// the output. No JoinState allocation, no wake propagation. Used for
+/// fire-and-forget http connection handlers where the handle is never
+/// awaited. Saves one Rc+RefCell alloc per connection (~10k RPS).
+struct DetachedFuture<F> {
+    future: F,
+}
+
+impl<F> Future for DetachedFuture<F>
+where
+    F: Future,
+{
+    type Output = ();
+
+    #[inline]
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: once `self` is pinned we never move `future`.
+        let this = unsafe { self.get_unchecked_mut() };
+        // SAFETY: `future` is pinned together with `self`.
+        match unsafe { Pin::new_unchecked(&mut this.future) }.poll(cx) {
+            Poll::Ready(_) => Poll::Ready(()),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 /// A handle to a spawned asynchronous task.
 ///
 /// This handle implements `Future` and can be `await`ed to retrieve the task's output.
@@ -369,6 +395,27 @@ where
     runtime.spawn(future)
 }
 
+/// Spawn a detached task on the current runtime without a `JoinHandle`.
+///
+/// Use this for fire-and-forget handlers (e.g. per-connection http tasks)
+/// where the handle is never awaited. Saves one `Rc<RefCell<JoinState>>`
+/// allocation and atomic wake per connection.
+///
+/// # Panics
+/// Panics if called outside a runtime context.
+#[inline]
+pub fn spawn_detached(future: impl Future<Output = ()> + 'static) {
+    let runtime = CURRENT_RUNTIME.with(|runtime| {
+        let runtime = runtime.borrow();
+        if let Some(runtime_inner) = &*runtime {
+            runtime_inner.clone()
+        } else {
+            panic!("can't spawn a task outside runtime");
+        }
+    });
+    runtime.spawn_detached(future)
+}
+
 /// Spawn a blocking task on the thread pool.
 ///
 /// This function spawns the given closure on a blocking thread pool and returns
@@ -488,6 +535,31 @@ impl RuntimeInner {
 
         self.enqueue(task);
         JoinHandle::new(state)
+    }
+
+    /// Spawn a detached task without a JoinHandle. Avoids the `Rc<RefCell<JoinState>>`
+    /// alloc/wake traffic for fire-and-forget handlers (e.g. hyper per-connection
+    /// tasks where the handle is dropped immediately).
+    #[inline]
+    pub(crate) fn spawn_detached(&self, future: impl Future<Output = ()> + 'static) {
+        let future = Box::pin(DetachedFuture { future });
+        let mut slab = self.token_to_task.borrow_mut();
+        let vacant_slab_entry = slab.vacant_entry();
+        #[allow(clippy::arc_with_non_send_sync)]
+        let task = Arc::new(Task {
+            future: RefCell::new(Some(future)),
+            queue: Rc::downgrade(&self.queue),
+            next_task: Rc::downgrade(&self.next_task),
+            remote_queue: Arc::downgrade(&self.remote_queue),
+            queued: AtomicBool::new(true),
+            thread_id: std::thread::current().id(),
+            interruptor: self.driver.get_interruptor(),
+            waiting: Arc::downgrade(&self.waiting),
+            interrupt_pending: Arc::downgrade(&self.interrupt_pending),
+            token: vacant_slab_entry.key(),
+        });
+        vacant_slab_entry.insert(task.clone());
+        self.enqueue(task);
     }
 
     /// Spawn a blocking task on this runtime's thread pool.
@@ -641,6 +713,18 @@ impl Runtime {
             .as_ref()
             .expect("runtime has been dropped")
             .spawn(future)
+    }
+
+    /// Spawn a detached task without a `JoinHandle`.
+    ///
+    /// Saves one `Rc<RefCell<JoinState>>` alloc per task; use for http
+    /// per-connection handlers.
+    #[inline]
+    pub fn spawn_detached(&self, future: impl Future<Output = ()> + 'static) {
+        self.inner
+            .as_ref()
+            .expect("runtime has been dropped")
+            .spawn_detached(future)
     }
 
     /// Spawn a blocking task on this runtime's thread pool.
