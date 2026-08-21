@@ -527,8 +527,8 @@ impl RuntimeInner {
             queued: AtomicBool::new(true),
             thread_id: std::thread::current().id(),
             interruptor: self.driver.get_interruptor(),
-            waiting: Arc::downgrade(&self.waiting),
-            interrupt_pending: Arc::downgrade(&self.interrupt_pending),
+            waiting: Arc::clone(&self.waiting),
+            interrupt_pending: Arc::clone(&self.interrupt_pending),
             token: vacant_slab_entry.key(),
         });
         vacant_slab_entry.insert(task.clone());
@@ -554,8 +554,8 @@ impl RuntimeInner {
             queued: AtomicBool::new(true),
             thread_id: std::thread::current().id(),
             interruptor: self.driver.get_interruptor(),
-            waiting: Arc::downgrade(&self.waiting),
-            interrupt_pending: Arc::downgrade(&self.interrupt_pending),
+            waiting: Arc::clone(&self.waiting),
+            interrupt_pending: Arc::clone(&self.interrupt_pending),
             token: vacant_slab_entry.key(),
         });
         vacant_slab_entry.insert(task.clone());

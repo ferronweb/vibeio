@@ -25,8 +25,8 @@ pub struct Task {
     pub queued: AtomicBool,
     pub thread_id: std::thread::ThreadId,
     pub token: usize,
-    pub waiting: std::sync::Weak<AtomicBool>,
-    pub interrupt_pending: std::sync::Weak<AtomicBool>,
+    pub waiting: Arc<AtomicBool>,
+    pub interrupt_pending: Arc<AtomicBool>,
 }
 
 impl Task {
@@ -106,20 +106,13 @@ impl Task {
             }
         }
 
-        // Interrupt the driver if it's waiting
-        if task
-            .waiting
-            .upgrade()
-            .is_some_and(|waiting| waiting.load(Ordering::Acquire))
+        // Interrupt the driver if it's waiting. Use strong Arc refs to avoid
+        // two Weak::upgrade atomics per cross-thread wake (hot for channel
+        // dispatch to thread-per-core workers).
+        if task.waiting.load(Ordering::Acquire)
+            && !task.interrupt_pending.swap(true, Ordering::AcqRel)
         {
-            let should_interrupt = task
-                .interrupt_pending
-                .upgrade()
-                .is_none_or(|pending| !pending.swap(true, Ordering::AcqRel));
-            if should_interrupt {
-                // Interrupt the driver if the waker is not on the same thread as the runtime
-                task.interruptor.interrupt();
-            }
+            task.interruptor.interrupt();
         }
     }
 
