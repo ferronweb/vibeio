@@ -1,8 +1,8 @@
 # `vibeio` change log
 
-## `vibeio` UNRELEASED
+## `vibeio` 0.2.21
 
-**Not yet released**
+**Released in August 21, 2026**
 
 - Added Linux-specific `uring()` method to runtime builder.
 - Added `spawn_detached` fast path for spawning tasks without join handles.
