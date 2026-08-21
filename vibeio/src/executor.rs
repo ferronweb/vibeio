@@ -419,7 +419,7 @@ pub(crate) fn offload_fs() -> bool {
 
 pub(crate) struct RuntimeInner {
     queue: Rc<UnsafeCell<VecDeque<Arc<Task>>>>,
-    next_task: Rc<RefCell<Option<Arc<Task>>>>,
+    next_task: Rc<RefCell<VecDeque<Arc<Task>>>>,
     remote_queue: Arc<SegQueue<usize>>,
     token_to_task: RefCell<Slab<Arc<Task>>>,
     driver: Rc<AnyDriver>,
@@ -514,9 +514,24 @@ impl RuntimeInner {
         }
     }
 
-    /// Drain ready tasks into the given batch.
+    /// Drain ready tasks into the given batch. Priority: inline next_task ->
+    /// remote_queue -> main queue. This keeps burst wakes from io_uring
+    /// completions on the fast path and avoids contention on the main
+    /// UnsafeCell queue, cutting p99 jitter.
     #[inline]
     fn drain_ready(&self, batch: &mut Vec<Arc<Task>>, mut budget: usize) {
+        if budget != 0 {
+            let mut next = self.next_task.borrow_mut();
+            while budget != 0 {
+                let Some(task) = next.pop_front() else {
+                    break;
+                };
+                task.mark_dequeued();
+                batch.push(task);
+                budget -= 1;
+            }
+        }
+
         if budget != 0 {
             let slab = self.token_to_task.borrow();
             while budget != 0 {
@@ -552,22 +567,12 @@ impl RuntimeInner {
 
     #[inline]
     fn should_skip_wait(&self) -> bool {
-        if self.next_task.borrow().is_some() || !self.remote_queue.is_empty() {
+        if !self.next_task.borrow().is_empty() || !self.remote_queue.is_empty() {
             return true;
         }
 
         // SAFETY: the runtime only mutates the local ready queue on the runtime thread.
         unsafe { !(&*self.queue.get()).is_empty() }
-    }
-
-    /// Take the next task to run, if any.
-    #[inline]
-    fn take_next_task(&self) -> Option<Arc<Task>> {
-        let task = self.next_task.take();
-        if let Some(task) = &task {
-            task.mark_dequeued();
-        }
-        task
     }
 }
 
@@ -601,7 +606,9 @@ impl Runtime {
         Runtime {
             inner: Some(Rc::new(RuntimeInner {
                 queue: ready_queue,
-                next_task: Rc::new(RefCell::new(None)),
+                next_task: Rc::new(RefCell::new(VecDeque::with_capacity(
+                    crate::task::NEXT_TASK_INLINE_CAP,
+                ))),
                 remote_queue: Arc::new(SegQueue::new()),
                 token_to_task: RefCell::new(Slab::with_capacity(4096)),
                 driver: Rc::new(driver),
@@ -677,16 +684,7 @@ impl Runtime {
             }
 
             batch.clear();
-
-            let mut budget = 256;
-            if let Some(next_task) = inner.take_next_task() {
-                batch.push(next_task);
-                budget -= 1;
-            }
-            // Always drain to fill the rest of the batch
-            if budget > 0 {
-                inner.drain_ready(&mut batch, budget);
-            }
+            inner.drain_ready(&mut batch, 256);
 
             if batch.is_empty() {
                 if root_notify.is_ready() {
