@@ -203,7 +203,8 @@ impl BlockOnNotify {
 
     #[inline]
     fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::Acquire)
+        // Only ever read on the scheduler thread that owns this notify.
+        self.ready.load(Ordering::Relaxed)
     }
 
     #[inline]
@@ -809,6 +810,11 @@ impl Runtime {
                 inner.driver.wait(None);
 
                 inner.stop_waiting();
+                // The runtime just went idle: parked tasks remain slab entries
+                // (len is unchanged) but the capacity we reserved for the burst
+                // of connections that just closed can be reclaimed. shrink_to_fit
+                // only trims excess capacity, so live tasks are never dropped.
+                inner.token_to_task.borrow_mut().shrink_to_fit();
                 continue;
             }
 
